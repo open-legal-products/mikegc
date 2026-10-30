@@ -36,6 +36,7 @@ test("Legal records a business request, works it and resolves it exactly once", 
     const text = await response.text();
     return text ? JSON.parse(text) : null;
   }
+  let passed = false;
   try {
     for (const name of ["Lawyer A", "Lawyer B"]) {
       const email = `intake-browser-${randomUUID()}@test.local`;
@@ -197,16 +198,12 @@ test("Legal records a business request, works it and resolves it exactly once", 
     // A colleague finds it in the shared queue, takes it and waits on Jane.
     await lawyerB.goto("/intake");
     await lawyerB
-      .getByRole("button", { name: "Filter by assigned lawyer" })
+      .getByRole("button", { name: "Assigned to me", exact: true })
       .click();
-    await lawyerB.getByRole("menuitem", { name: "Assigned to me" }).click();
     await expect(
       lawyerB.getByRole("link", { name: "Synthetic supplier NDA" }),
     ).toHaveCount(0);
-    await lawyerB
-      .getByRole("button", { name: "Filter by assigned lawyer" })
-      .click();
-    await lawyerB.getByRole("menuitem", { name: "Everyone" }).click();
+    await lawyerB.getByRole("button", { name: "All", exact: true }).click();
     await lawyerB.getByRole("link", { name: "Synthetic supplier NDA" }).click();
     // Every member can open the attachment, not only its uploader.
     const opened = lawyerB.waitForResponse(
@@ -315,11 +312,20 @@ test("Legal records a business request, works it and resolves it exactly once", 
         .getByText("Jane withdrew the request.", { exact: true }),
     ).toBeVisible();
     expect(errors).toEqual([]);
+    passed = true;
   } finally {
-    await admin(`/rest/v1/organizations?id=eq.${org}`, "DELETE");
-    for (const p of people) {
-      await p.page.context().close();
-      await admin(`/auth/v1/admin/users/${p.id}`, "DELETE");
+    // Attachments keep the organization referenced, so remove them first.
+    // A cleanup failure must not hide the failure that ended the test.
+    try {
+      await admin(`/rest/v1/documents?org_id=eq.${org}`, "DELETE");
+      await admin(`/rest/v1/organizations?id=eq.${org}`, "DELETE");
+      for (const p of people) {
+        await p.page.context().close();
+        await admin(`/auth/v1/admin/users/${p.id}`, "DELETE");
+      }
+    } catch (error) {
+      if (passed) throw error;
+      console.error(error);
     }
   }
 });
