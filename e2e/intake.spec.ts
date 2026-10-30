@@ -217,8 +217,8 @@ test("Legal records a business request, works it and resolves it exactly once", 
       .click();
     expect((await opened).status()).toBe(200);
     await lawyerB.reload();
-    // The header holds the facts, the assignee and one primary action; the
-    // rest is in the More actions menu.
+    // The summary holds the facts and the assignee; the page header holds the
+    // one primary action and the More actions menu.
     const summaryB = lawyerB.getByRole("region", { name: "Request summary" });
     await summaryB
       .getByRole("button", { name: "Assigned to Intake Lawyer A" })
@@ -229,14 +229,14 @@ test("Legal records a business request, works it and resolves it exactly once", 
         .getByRole("region", { name: "Activity" })
         .getByText("Assigned to Intake Lawyer B", { exact: true }),
     ).toBeVisible();
-    await summaryB.getByRole("button", { name: "More actions" }).click();
+    await lawyerB.getByRole("button", { name: "More actions" }).click();
     await lawyerB
       .getByRole("menuitem", { name: "Mark waiting on requester" })
       .click();
     await expect(
       summaryB.getByText("Waiting on requester", { exact: true }),
     ).toBeVisible();
-    await summaryB.getByRole("button", { name: "More actions" }).click();
+    await lawyerB.getByRole("button", { name: "More actions" }).click();
     await lawyerB.getByRole("menuitem", { name: "Resume" }).click();
     await expect(summaryB.getByText("In progress", { exact: true })).toBeVisible();
 
@@ -298,9 +298,9 @@ test("Legal records a business request, works it and resolves it exactly once", 
 
     // Closed requests can be reopened, and cancelling records a reason.
     const summaryA = lawyerA.getByRole("region", { name: "Request summary" });
-    await summaryA.getByRole("button", { name: "Reopen" }).click();
+    await lawyerA.getByRole("button", { name: "Reopen" }).click();
     await expect(summaryA.getByText("In progress", { exact: true })).toBeVisible();
-    await summaryA.getByRole("button", { name: "More actions" }).click();
+    await lawyerA.getByRole("button", { name: "More actions" }).click();
     await lawyerA.getByRole("menuitem", { name: "Cancel request" }).click();
     await lawyerA
       .getByRole("dialog")

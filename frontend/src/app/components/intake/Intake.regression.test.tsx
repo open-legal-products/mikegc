@@ -79,6 +79,7 @@ vi.mock("@/app/components/shared/PageHeader", () => ({
           type?: string;
           title?: string;
           label?: ReactNode;
+          render?: ReactNode;
           disabled?: boolean;
           onClick?: () => void;
         }
@@ -87,7 +88,9 @@ vi.mock("@/app/components/shared/PageHeader", () => ({
     <header>
       {children}
       {actions.map((action, index) =>
-        !action || action.type === "search" ? null : (
+        !action || action.type === "search" ? null : action.type === "custom" ? (
+          <span key={index}>{action.render}</span>
+        ) : (
           <button
             key={index}
             type="button"
@@ -1004,12 +1007,23 @@ describe("request detail", () => {
     expect(within(summary).getByText("In progress")).toBeInTheDocument();
     expect(within(summary).getByText("Jane Business")).toBeInTheDocument();
     expect(within(summary).getByText("jane@business.test")).toBeInTheDocument();
+    // The page header shows the subject once; the summary only names the page
+    // for assistive technology.
+    expect(
+      within(summary).getByRole("heading", { level: 1, name: "Confidential request A" }),
+    ).toHaveClass("sr-only");
     expect(
       within(summary)
         .getAllByRole("button")
+        .map((button) => button.textContent),
+    ).toEqual(["Assigned to Lawyer B"]);
+    const header = screen.getByRole("banner");
+    expect(
+      within(header)
+        .getAllByRole("button")
         .map((button) => button.getAttribute("aria-label") ?? button.textContent),
-    ).toEqual(["Resolve", "More actions", "Assigned to Lawyer B"]);
-    await user.click(within(summary).getByRole("button", { name: "More actions" }));
+    ).toEqual(["Resolve", "More actions"]);
+    await user.click(within(header).getByRole("button", { name: "More actions" }));
     expect(
       screen.getAllByRole("menuitem").map((item) => item.textContent),
     ).toEqual([

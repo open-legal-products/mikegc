@@ -244,7 +244,11 @@ export function Detail({
     }, label);
   }
   const caps = request?.capabilities;
-  const upload = useIntakeDocumentUpload(orgId, requestId, () => void refresh());
+  const upload = useIntakeDocumentUpload(
+    orgId,
+    requestId,
+    () => void refresh(),
+  );
   // Files dropped anywhere on the page are added to the request.
   const dragDepth = useRef(0);
   const [dragging, setDragging] = useState(false);
@@ -259,19 +263,132 @@ export function Detail({
     : undefined;
   // Notes and changes read as one story, oldest first.
   const timeline = [
-    ...events.map((event) => ({ key: `e${event.id}`, at: event.created_at, event })),
-    ...messages.map((message) => ({ key: `m${message.id}`, at: message.created_at, message })),
+    ...events.map((event) => ({
+      key: `e${event.id}`,
+      at: event.created_at,
+      event,
+    })),
+    ...messages.map((message) => ({
+      key: `m${message.id}`,
+      at: message.created_at,
+      message,
+    })),
   ].sort((a, b) => Date.parse(a.at) - Date.parse(b.at));
   const assign = (assigneeId: string | null) =>
     command("assignment", "assign the request", { assignee_id: assigneeId });
   const others = members.filter(
     (m) => m.user_id !== accountId && m.user_id !== request?.assignee_id,
   );
-  const hasMenu = !!caps && (caps.wait || caps.resume || caps.edit || caps.cancel);
+  const hasMenu =
+    !!caps && (caps.wait || caps.resume || caps.edit || caps.cancel);
   return (
     <div className="flex h-full min-h-0 flex-col">
       <PageHeader
         shrink
+        actions={
+          request && caps
+            ? [
+                (caps.resolve || caps.reopen) && {
+                  type: "custom",
+                  render: caps.resolve ? (
+                    <PillButtonUI
+                      tone="black"
+                      size="sm"
+                      disabled={operation.locked}
+                      onClick={() => setClosing("resolve")}
+                    >
+                      Resolve
+                    </PillButtonUI>
+                  ) : caps.reopen ? (
+                    <PillButtonUI
+                      tone="black"
+                      size="sm"
+                      disabled={operation.locked}
+                      onClick={() => command("reopen", "reopen the request")}
+                    >
+                      Reopen
+                    </PillButtonUI>
+                  ) : null,
+                },
+                hasMenu &&
+                  !operation.locked && {
+                    type: "custom",
+                    render: (
+                      <RowActions
+                        ariaLabel="More actions"
+                        renderItems={(close) => (
+                          <>
+                            {caps.wait && (
+                              <DropdownItem
+                                onSelect={() => {
+                                  close();
+                                  command(
+                                    "wait",
+                                    "mark the request as waiting",
+                                  );
+                                }}
+                              >
+                                Mark waiting on requester
+                              </DropdownItem>
+                            )}
+                            {caps.resume && (
+                              <DropdownItem
+                                onSelect={() => {
+                                  close();
+                                  command("resume", "resume the request");
+                                }}
+                              >
+                                Resume
+                              </DropdownItem>
+                            )}
+                            {caps.edit && (
+                              <DropdownItem
+                                onSelect={() => {
+                                  close();
+                                  setEditing(true);
+                                }}
+                              >
+                                Edit details
+                              </DropdownItem>
+                            )}
+                            <DropdownItem
+                              onSelect={() => {
+                                close();
+                                const link = new URL(
+                                  `/intake/${requestId}?org=${orgId}`,
+                                  window.location.origin,
+                                ).href;
+                                navigator.clipboard.writeText(link).then(
+                                  () => notifySuccess("Link copied"),
+                                  (e) =>
+                                    notifyError(e, { action: "copy the link" }),
+                                );
+                              }}
+                            >
+                              Copy link
+                            </DropdownItem>
+                            {caps.cancel && (
+                              <>
+                                <DropdownSeparator />
+                                <DropdownItem
+                                  variant="destructive"
+                                  onSelect={() => {
+                                    close();
+                                    setClosing("cancel");
+                                  }}
+                                >
+                                  Cancel request
+                                </DropdownItem>
+                              </>
+                            )}
+                          </>
+                        )}
+                      />
+                    ),
+                  },
+              ]
+            : undefined
+        }
         breadcrumbs={[
           {
             label: "Intake",
@@ -341,106 +458,16 @@ export function Detail({
           ) : (
             <div className="space-y-6 pt-2">
               <section aria-label="Request summary" className="space-y-2">
-                <div className="flex flex-wrap items-start justify-between gap-3">
-                  <h1 className="min-w-0 font-serif text-2xl text-gray-900">
-                    {request.subject}
-                  </h1>
-                  <div className="flex shrink-0 items-center gap-1.5">
-                    {caps.resolve ? (
-                      <PillButtonUI
-                        tone="black"
-                        size="sm"
-                        disabled={operation.locked}
-                        onClick={() => setClosing("resolve")}
-                      >
-                        Resolve
-                      </PillButtonUI>
-                    ) : caps.reopen ? (
-                      <PillButtonUI
-                        tone="black"
-                        size="sm"
-                        disabled={operation.locked}
-                        onClick={() => command("reopen", "reopen the request")}
-                      >
-                        Reopen
-                      </PillButtonUI>
-                    ) : null}
-                    {hasMenu && !operation.locked && (
-                      <RowActions
-                        ariaLabel="More actions"
-                        renderItems={(close) => (
-                          <>
-                            {caps.wait && (
-                              <DropdownItem
-                                onSelect={() => {
-                                  close();
-                                  command("wait", "mark the request as waiting");
-                                }}
-                              >
-                                Mark waiting on requester
-                              </DropdownItem>
-                            )}
-                            {caps.resume && (
-                              <DropdownItem
-                                onSelect={() => {
-                                  close();
-                                  command("resume", "resume the request");
-                                }}
-                              >
-                                Resume
-                              </DropdownItem>
-                            )}
-                            {caps.edit && (
-                              <DropdownItem
-                                onSelect={() => {
-                                  close();
-                                  setEditing(true);
-                                }}
-                              >
-                                Edit details
-                              </DropdownItem>
-                            )}
-                            <DropdownItem
-                              onSelect={() => {
-                                close();
-                                const link = new URL(
-                                  `/intake/${requestId}?org=${orgId}`,
-                                  window.location.origin,
-                                ).href;
-                                navigator.clipboard.writeText(link).then(
-                                  () => notifySuccess("Link copied"),
-                                  (e) => notifyError(e, { action: "copy the link" }),
-                                );
-                              }}
-                            >
-                              Copy link
-                            </DropdownItem>
-                            {caps.cancel && (
-                              <>
-                                <DropdownSeparator />
-                                <DropdownItem
-                                  variant="destructive"
-                                  onSelect={() => {
-                                    close();
-                                    setClosing("cancel");
-                                  }}
-                                >
-                                  Cancel request
-                                </DropdownItem>
-                              </>
-                            )}
-                          </>
-                        )}
-                      />
-                    )}
-                  </div>
-                </div>
+                {/* The page header shows the subject; this names the page for assistive technology. */}
+                <h1 className="sr-only">{request.subject}</h1>
                 <ul className="flex flex-wrap gap-x-1.5 gap-y-0.5 text-sm text-gray-600 [&>li:not(:last-child)]:after:ml-1.5 [&>li:not(:last-child)]:after:text-gray-400 [&>li:not(:last-child)]:after:content-['·']">
                   <li className="font-medium text-gray-900">
                     {request.requester_name}
                   </li>
                   {request.requester_team && <li>{request.requester_team}</li>}
-                  {request.requester_email && <li>{request.requester_email}</li>}
+                  {request.requester_email && (
+                    <li>{request.requester_email}</li>
+                  )}
                   <li>{INTAKE_CATEGORY_LABELS[request.category]}</li>
                   {request.requested_by_date && (
                     <li
@@ -449,7 +476,9 @@ export function Detail({
                           ? `${request.timezone} · not a legal deadline`
                           : "Not a legal deadline"
                       }
-                      className={isIntakeOverdue(request) ? "text-red-600" : undefined}
+                      className={
+                        isIntakeOverdue(request) ? "text-red-600" : undefined
+                      }
                     >
                       Due {formatIntakeDate(request.requested_by_date)}
                       {isIntakeOverdue(request) && ", overdue"}
@@ -537,7 +566,8 @@ export function Detail({
                     {pinned.body}
                   </TextSlabUI>
                   <p className="text-xs text-gray-500">
-                    {pinned.author_name} · {formatIntakeDateTime(pinned.created_at)}
+                    {pinned.author_name} ·{" "}
+                    {formatIntakeDateTime(pinned.created_at)}
                   </p>
                 </section>
               )}
@@ -580,11 +610,16 @@ export function Detail({
                     ) : (
                       <li key={entry.key} className="space-y-1">
                         <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-gray-500">
-                          <UserAvatar size="sm" name={entry.message.author_name} />
+                          <UserAvatar
+                            size="sm"
+                            name={entry.message.author_name}
+                          />
                           <span className="font-medium text-gray-700">
                             {entry.message.author_name}
                           </span>
-                          <span>{INTAKE_MESSAGE_LABELS[entry.message.kind]}</span>
+                          <span>
+                            {INTAKE_MESSAGE_LABELS[entry.message.kind]}
+                          </span>
                           <time dateTime={entry.at}>
                             {formatIntakeDateTime(entry.at)}
                           </time>
@@ -619,7 +654,12 @@ export function Detail({
                         size="sm"
                         disabled={!note.trim() || operation.locked}
                         onClick={() =>
-                          command("notes", "add the note", { body: note }, "note")
+                          command(
+                            "notes",
+                            "add the note",
+                            { body: note },
+                            "note",
+                          )
                         }
                       >
                         Add note
@@ -686,7 +726,9 @@ export function Detail({
           onConfirm={() =>
             command(
               closing,
-              closing === "resolve" ? "resolve the request" : "cancel the request",
+              closing === "resolve"
+                ? "resolve the request"
+                : "cancel the request",
               { body: reason },
               "reason",
             )
