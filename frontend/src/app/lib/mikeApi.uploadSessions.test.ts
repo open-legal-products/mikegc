@@ -18,6 +18,7 @@ import {
     uploadStandaloneDocument,
     uploadStandaloneDocuments,
     uploadWorkflowAssets,
+    uploadIntakeDocuments,
 } from "./mikeApi";
 import { uploadProcessingPollDelayMs } from "@/shared/api/uploadSessionClient";
 
@@ -1001,6 +1002,17 @@ describe("direct upload sessions", () => {
             run: (file: File) => uploadWorkflowAssets("workflow-1", [{ file }]),
             purpose: "document_create",
             destination: { scope: "workflow", workflow_id: "workflow-1" },
+        },
+        {
+            name: "intake request documents",
+            run: (file: File) =>
+                uploadIntakeDocuments("org-1", "request-1", [{ file }]),
+            purpose: "document_create",
+            destination: {
+                scope: "intake",
+                org_id: "org-1",
+                request_id: "request-1",
+            },
         },
         {
             name: "editor save with a content precondition and no PDF generation",

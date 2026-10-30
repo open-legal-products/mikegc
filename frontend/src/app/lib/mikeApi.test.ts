@@ -1,4 +1,4 @@
-import {getIntakeMembers,listIntakeRequests,submitIntakeRequest,getIntakeRequest,editIntakeRequest,getIntakeMessages,getIntakeEvents,commandIntakeRequest} from "./mikeApi";
+import {getIntakeMembers,getIntakeDocuments,listIntakeRequests,submitIntakeRequest,getIntakeRequest,editIntakeRequest,getIntakeMessages,getIntakeEvents,commandIntakeRequest} from "./mikeApi";
 import { listOrgPrivateContent, setOrgPrivateContentPermission, openOrgPrivateContent, closeOrgPrivateContent } from "./mikeApi";
 import { setUserProfilePhoto, listDeletedOrganizations, restoreOrganization } from "./mikeApi";
 import { listOrgDepartures, reassignOrgDepartureArchives, deleteOrgDepartureArchives } from "./mikeApi";
@@ -3692,6 +3692,7 @@ describe("intake API boundary", () => {
             [()=>getIntakeMessages(scope,id),"requests/request%2Fid/messages?offset=0&limit=100","GET"],
             [()=>getIntakeMessages(scope,id,100),"requests/request%2Fid/messages?offset=100&limit=100","GET"],
             [()=>getIntakeEvents(scope,id),"requests/request%2Fid/events?offset=0&limit=100","GET"],
+            [()=>getIntakeDocuments(scope,id),"requests/request%2Fid/documents","GET"],
             [()=>getIntakeEvents(scope,id,100),"requests/request%2Fid/events?offset=100&limit=100","GET"],
             [()=>commandIntakeRequest(scope,id,"resolve",command),"requests/request%2Fid/resolve","POST",command],
             [()=>commandIntakeRequest(scope,id,"notes",note),"requests/request%2Fid/notes","POST",note],
