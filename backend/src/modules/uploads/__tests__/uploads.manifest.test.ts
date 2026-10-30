@@ -24,6 +24,28 @@ function documentRequest(fileCount: number, sizeBytes = 1024) {
 }
 
 describe("parseUploadSessionRequest", () => {
+  it("accepts an intake request destination without folders", () => {
+    const destination = {
+      scope: "intake",
+      org_id: USER_ID,
+      request_id: SESSION_ID,
+    };
+    const request = { ...documentRequest(2), destination };
+    expect(
+      parseUploadSessionRequest(request, USER_ID, SESSION_ID).destination,
+    ).toEqual(destination);
+    for (const invalid of [
+      { ...request, destination: { scope: "intake", org_id: USER_ID } },
+      {
+        ...request,
+        files: [{ ...request.files[0], folder_id: SESSION_ID }],
+      },
+    ])
+      expect(() =>
+        parseUploadSessionRequest(invalid, USER_ID, SESSION_ID),
+      ).toThrow(UploadSessionValidationError);
+  });
+
   it("accepts an explicit PDF-generation opt-out for replacements and rejects non-booleans", () => {
     const request = {
       purpose: "document_version_replace",

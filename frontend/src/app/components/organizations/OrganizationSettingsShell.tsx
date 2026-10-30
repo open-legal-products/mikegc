@@ -78,7 +78,7 @@ export function organizationSettingsHref(
 }
 
 type OrganizationSettingsSection =
-  "general" | "members" | "audit" | "providers" | "privacy-data" | "features";
+  "general" | "members" | "audit" | "providers" | "privacy-data";
 
 export function OrganizationSettingsProvider({
   orgId,
@@ -223,11 +223,6 @@ export function OrganizationSettingsFrame({
       // Its actions reach every member's work, so it is its owners' alone.
       ...(isOwner
         ? [
-            {
-              id: "features",
-              label: "Features",
-              href: organizationSettingsHref(orgId, "features"),
-            },
             {
               id: "privacy-data",
               // Named as the same page is in a person's own settings.

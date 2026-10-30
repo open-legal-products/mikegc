@@ -15,6 +15,8 @@ export type IntakeViewMemory = {
   values: Map<string, unknown>;
   listeners: Set<() => void>;
   pending: (() => Promise<IntakeReceipt>) | null;
+  /** What the pending command does, in the imperative, for failure notices. */
+  action: string | null;
   busy: boolean;
   uncertain: boolean;
   outcome: { receipt: IntakeReceipt } | { error: unknown } | null;
@@ -36,6 +38,7 @@ export function createIntakeMemory(): IntakeViewMemory {
     values: new Map(),
     listeners: new Set(),
     pending: null,
+    action: null,
     busy: false,
     uncertain: false,
     outcome: null,
@@ -60,6 +63,7 @@ export function setIntakeMemoryAccount(next: string | null) {
   for (const view of views.values()) {
     view.valid = false;
     view.pending = null;
+    view.action = null;
     view.outcome = null;
     view.values.clear();
     notifyIntakeMemory(view);

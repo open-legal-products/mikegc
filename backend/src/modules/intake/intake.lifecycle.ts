@@ -1,19 +1,6 @@
-import type {
-  IntakeRequest,
-  IntakeMessage,
-  IntakeEvent,
-} from "@mike/contracts";
 import type { Db } from "../../lib/supabase";
-import { intakeRpc } from "./intake.requests";
+import { intakeRpc } from "./intake.shared";
 
-export interface IntakeExport {
-  version: 1;
-  requests: {
-    request: IntakeRequest;
-    messages: IntakeMessage[];
-    events: IntakeEvent[];
-  }[];
-}
 /** Stop lifecycle work when the authorized RPC fails, without exposing database details. */
 async function required<T>(
   db: Db,
@@ -23,74 +10,15 @@ async function required<T>(
   const result = await intakeRpc<T>(db, name, args);
   if (!result.ok)
     throw new Error(
-      "Intake data operation failed; rebuild the export after checking access.",
+      "Intake data operation failed; check access and try again.",
     );
   return result.data;
 }
-/** Build the requester's paginated snapshot and reject concurrent changes or erasure. */
-export async function buildIntakeExport(
-  db: Db,
-  userId: string,
-): Promise<IntakeExport> {
-  const requests: IntakeExport["requests"] = [];
-  let after: string | null = null;
-  for (;;) {
-    const page: IntakeRequest[] = await required(db, "intake_export_requests", {
-      p_actor: userId,
-      p_after: after,
-      p_limit: 100,
-    });
-    for (const request of page) {
-      /** Read every history page before checking that the request snapshot is still current. */
-      const history = async <T>(events: boolean): Promise<T[]> => {
-        const rows: T[] = [];
-        for (let offset = 0; ; offset += 100) {
-          const batch = await required<T[]>(db, "intake_read_history", {
-            p_org: request.org_id,
-            p_actor: userId,
-            p_request: request.id,
-            p_events: events,
-            p_offset: offset,
-            p_limit: 100,
-          });
-          rows.push(...batch);
-          if (batch.length < 100) return rows;
-        }
-      };
-      const messages = await history<IntakeMessage>(false);
-      const events = await history<IntakeEvent>(true);
-      const current = await required<IntakeRequest>(db, "intake_get_request", {
-        p_org: request.org_id,
-        p_actor: userId,
-        p_request: request.id,
-      });
-      if (
-        current.version !== request.version ||
-        current.incarnation_id !== request.incarnation_id ||
-        current.export_revision !== request.export_revision
-      ) {
-        throw new Error(
-          "Intake changed during export; retry to build a consistent snapshot.",
-        );
-      }
-      requests.push({ request, messages, events });
-    }
-    if (page.length < 100) break;
-    after = page[page.length - 1].id;
-  }
-  const manifest = {
-    version: 1,
-    requests: requests.map((x) => ({
-      id: x.request.id,
-      incarnation_id: x.request.incarnation_id,
-      export_revision: x.request.export_revision,
-    })),
-  };
-  if (!(await validateIntakeExport(db, userId, manifest)))
-    throw new Error("Intake export scope changed during generation.");
-  return { version: 1, requests };
-}
-/** Recheck access, immutable request identity and erasure revision before serving bytes. */
+/**
+ * Account exports no longer include intake requests, which are organization
+ * records. Artifacts built before that change carry an intake manifest, so a
+ * download still rechecks access, request identity and erasure revision.
+ */
 export async function validateIntakeExport(
   db: Db,
   userId: string,

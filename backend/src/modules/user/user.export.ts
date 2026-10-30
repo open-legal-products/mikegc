@@ -193,8 +193,9 @@ export async function loadUserExportArtifact(
     const filename =
         (row.result.filename as string | undefined) ?? "export.json";
     if (!storagePath) return { ok: false, kind: "not_found" };
-    // Legacy exports have no intake payload. New artifacts must carry a valid
-    // manifest; ownership of the export job alone cannot preserve revoked access.
+    // Current exports have no intake payload. Artifacts built while account
+    // exports included intake carry a manifest; ownership of the export job
+    // alone cannot preserve revoked access to those requests.
     /** Recheck the artifact's intake scope before and after fetching its bytes. */
     const intakeAllowed = () => row.result!.intake_format === undefined
         ? Promise.resolve(row.result!.intake_manifest === undefined)

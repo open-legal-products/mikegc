@@ -74,6 +74,15 @@ const documentDestinationSchema = z.discriminatedUnion("scope", [
       workflow_id: z.string().uuid(),
     })
     .strict(),
+  // A document attached to an intake request belongs to the request's
+  // organization and is linked to the request when it is created.
+  z
+    .object({
+      scope: z.literal("intake"),
+      org_id: z.string().uuid(),
+      request_id: z.string().uuid(),
+    })
+    .strict(),
 ]);
 
 const requestSchema = z.discriminatedUnion("purpose", [
@@ -208,11 +217,12 @@ export function parseUploadSessionRequest(
     }
     if (
       parsed.data.purpose === "document_create" &&
-      parsed.data.destination.scope === "standalone" &&
+      (parsed.data.destination.scope === "standalone" ||
+        parsed.data.destination.scope === "intake") &&
       file.folder_id
     ) {
       throw new UploadSessionValidationError(
-        "folder_id is not valid for standalone documents",
+        `folder_id is not valid for ${parsed.data.destination.scope} documents`,
       );
     }
 

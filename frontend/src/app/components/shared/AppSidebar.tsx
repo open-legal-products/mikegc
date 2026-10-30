@@ -1,7 +1,6 @@
 "use client";
 import { pushWithDraftGuard } from "@/app/hooks/navigationGuard";
 
-import { useIntakeNavigation } from "@/app/components/intake/useIntakeNavigation";
 
 import { UserAvatar } from "@/app/components/ui/user-avatar";
 
@@ -214,7 +213,8 @@ export function AppSidebar({ isOpen, onToggle }: AppSidebarProps) {
         setWorkspace,
     } = useWorkspace();
     const workspaceParam = workspaceId ?? undefined;
-    const showIntake = useIntakeNavigation(userId, activeOrganization?.id);
+    // Intake is always on in every organization workspace.
+    const showIntake = !!activeOrganization;
     // The switcher is navigation: what was on screen belonged to the
     // workspace just left, so the new one opens at its home.
     //

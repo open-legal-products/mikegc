@@ -22,8 +22,9 @@ Included now:
   structured rules and review contracts against them. See
   [Playbooks](docs/playbooks.md).
 
-- **Intake**: opt-in text-only requests, a shared Legal queue, clarification
-  and reviewed answers. See [Intake](docs/intake.md).
+- **Intake**: the Legal team's tracker for NDA requests and legal questions
+  from the business, with assignment, notes, target dates and recorded
+  resolutions. See [Intake](docs/intake.md).
 
 Planned, starting with:
 

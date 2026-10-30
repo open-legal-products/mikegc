@@ -9,24 +9,32 @@ import {
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AnchorHTMLAttributes, ReactNode } from "react";
-import type { IntakeConfiguration, IntakeRequest } from "@mike/contracts";
+import type {
+  IntakeEvent,
+  IntakeMessage,
+  IntakeRequest,
+  IntakeRequestPage,
+  IntakeRequestSummary,
+} from "@mike/contracts";
 import { IntakeInbox, Inbox } from "./IntakeInbox";
 import { IntakeDetail, Detail } from "./IntakeDetail";
-import { IntakeFeatureSetting, IntakeTeamModal } from "./IntakeSettings";
 import { setIntakeMemoryAccount } from "@/app/lib/intakeMemory";
 
 const mocks = vi.hoisted(() => ({
-  configuration: vi.fn(),
-  reviewers: vi.fn(),
-  configure: vi.fn(),
+  members: vi.fn(),
   list: vi.fn(),
   submit: vi.fn(),
+  edit: vi.fn(),
   request: vi.fn(),
   messages: vi.fn(),
   events: vi.fn(),
   command: vi.fn(),
+  documents: vi.fn(),
+  upload: vi.fn(),
+  document: vi.fn(),
   push: vi.fn(),
   notify: vi.fn(),
+  partial: vi.fn(),
   workspace: {
     accountId: "account-a",
     workspaceId: "org-a",
@@ -34,15 +42,18 @@ const mocks = vi.hoisted(() => ({
   },
 }));
 vi.mock("@/app/lib/mikeApi", () => ({
-  getIntakeConfiguration: mocks.configuration,
-  getIntakeReviewers: mocks.reviewers,
-  configureIntake: mocks.configure,
+  getIntakeMembers: mocks.members,
   listIntakeRequests: mocks.list,
   submitIntakeRequest: mocks.submit,
+  editIntakeRequest: mocks.edit,
   getIntakeRequest: mocks.request,
   getIntakeMessages: mocks.messages,
   getIntakeEvents: mocks.events,
   commandIntakeRequest: mocks.command,
+  getIntakeDocuments: mocks.documents,
+  uploadIntakeDocuments: mocks.upload,
+  getDocument: mocks.document,
+  getDocumentUrl: vi.fn(),
   isMfaRequiredError: (error: { code?: string }) =>
     error?.code === "mfa_verification_required",
 }));
@@ -54,9 +65,6 @@ vi.mock("@/app/contexts/WorkspaceContext", () => ({
   useWorkspace: () => mocks.workspace,
 }));
 vi.mock("@/app/hooks/useItemWorkspace", () => ({ useItemWorkspace: vi.fn() }));
-vi.mock("@/app/components/organizations/OrganizationSettingsShell", () => ({
-  useOrganizationSettings: () => ({ orgId: "org-a", org: { role: "owner" } }),
-}));
 vi.mock("@/app/components/shared/PageHeader", () => ({
   PageHeader: ({
     children,
@@ -96,6 +104,15 @@ vi.mock("@/app/components/shared/PageHeader", () => ({
 vi.mock("@/app/lib/userFacingError", () => ({
   describeError: () => ({ message: "Could not load requests." }),
   notifyError: mocks.notify,
+  notifyPartialFailure: mocks.partial,
+}));
+vi.mock("@/app/components/shared/DocumentSidePanel", () => ({
+  DocumentSidePanel: ({ doc }: { doc: { filename: string } | null }) =>
+    doc ? (
+      <div role="dialog" aria-label="Document viewer">
+        {doc.filename}
+      </div>
+    ) : null,
 }));
 vi.mock("@/app/components/popups/MfaVerificationPopup", () => ({
   MfaVerificationPopup: ({
@@ -121,44 +138,66 @@ function deferred<T>() {
   });
   return { promise, resolve, reject };
 }
-const configuration = (revision = 1): IntakeConfiguration => ({
-  configured: true,
-  enabled: true,
-  can_configure: true,
-  is_reviewer: true,
-  has_team: true,
-  revision,
-  reviewer_ids: ["lawyer-a"],
-});
+const capabilities = {
+  edit: true,
+  assign: true,
+  note: true,
+  wait: true,
+  resume: false,
+  resolve: true,
+  cancel: true,
+  reopen: false,
+};
 const request = (overrides: Partial<IntakeRequest> = {}): IntakeRequest => ({
-  incarnation_id: "incarnation-a",
-  export_revision: 1,
   id: "request-a",
   org_id: "org-a",
-  requester_id: "requester",
-  assignee_id: "lawyer-a",
   category: "general",
   subject: "Confidential request A",
   description: "Request description",
+  requester_name: "Jane Business",
+  requester_email: "jane@business.test",
+  requester_team: "Procurement",
   requested_by_date: null,
   timezone: null,
   state: "in_review",
   version: 1,
+  assignee_id: "lawyer-b",
+  assignee_name: "Lawyer B",
+  created_by_name: "Lawyer A",
   created_at: "2026-10-26T10:00:00Z",
   updated_at: "2026-10-26T10:00:00Z",
-  requester_name: "Requester",
-  assignee_name: "Lawyer A",
-  capabilities: {
-    assign: true,
-    ask: true,
-    reply: false,
-    publish: true,
-    cancel: false,
-  },
+  capabilities,
   ...overrides,
 });
-const EMPTY_INBOX =
-  "Ask the Legal team for help with an NDA or a legal question.";
+const summary = (
+  overrides: Partial<IntakeRequestSummary> = {},
+): IntakeRequestSummary => {
+  const full = request();
+  return {
+    id: full.id,
+    category: full.category,
+    subject: full.subject,
+    requester_name: full.requester_name,
+    requester_email: full.requester_email,
+    requester_team: full.requester_team,
+    requested_by_date: null,
+    timezone: null,
+    state: full.state,
+    version: full.version,
+    assignee_id: full.assignee_id,
+    assignee_name: full.assignee_name,
+    created_at: full.created_at,
+    updated_at: full.updated_at,
+    capabilities: { assign: true, cancel: true },
+    ...overrides,
+  };
+};
+const page = (
+  requests: IntakeRequestSummary[] = [],
+  next_cursor: string | null = null,
+): IntakeRequestPage => ({ requests, next_cursor });
+const EMPTY_QUEUE =
+  "Record an NDA request or legal question from the business to start tracking it.";
 const receipt = {
   request_id: "request-a",
   applied_version: 2,
@@ -174,27 +213,25 @@ beforeEach(() => {
     workspaceId: "org-a",
     activeOrganization: { id: "org-a" },
   };
-  mocks.configuration.mockResolvedValue(configuration());
-  mocks.reviewers.mockResolvedValue([
-    {
-      user_id: "lawyer-a",
-      display_name: "Lawyer A",
-      email: "a@example.test",
-      is_reviewer: true,
-    },
-    {
-      user_id: "lawyer-b",
-      display_name: "Lawyer B",
-      email: "b@example.test",
-      is_reviewer: true,
-    },
+  mocks.members.mockResolvedValue([
+    { user_id: "account-a", display_name: "Lawyer A", email: "a@example.test" },
+    { user_id: "lawyer-b", display_name: "Lawyer B", email: "b@example.test" },
   ]);
-  mocks.list.mockResolvedValue([]);
+  mocks.list.mockResolvedValue(page());
   mocks.request.mockResolvedValue(request());
   mocks.messages.mockResolvedValue([]);
   mocks.events.mockResolvedValue([]);
+  mocks.documents.mockResolvedValue([]);
+  mocks.upload.mockImplementation(async (_org, _request, files: { file: File }[]) =>
+    files.map(({ file }) => ({
+      clientId: file.name,
+      filename: file.name,
+      status: "completed",
+      result: null,
+      errorCode: null,
+    })),
+  );
   mocks.command.mockResolvedValue(receipt);
-  mocks.configure.mockResolvedValue({ ...receipt, request_id: null });
   vi.spyOn(window, "confirm").mockReturnValue(false);
   vi.stubGlobal(
     "matchMedia",
@@ -210,292 +247,114 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-describe("configuration revisions and MFA", () => {
-  it("keeps the loaded revision with a draft until an explicit conflict reload", async () => {
-    mocks.configuration
-      .mockResolvedValueOnce(configuration(1))
-      .mockResolvedValue(configuration(9));
-    mocks.configure.mockRejectedValue({ status: 409, code: "intake_conflict" });
-    render(<IntakeTeamModal orgId="org-a" onClose={() => {}} />);
-    fireEvent.click(await screen.findByRole("checkbox", { name: /Lawyer B/ }));
-    await act(async () => {});
-    expect(mocks.configuration).toHaveBeenCalledTimes(1);
-    fireEvent.click(
-      screen.getByRole("button", { name: "Save" }),
+async function openNewRequest() {
+  await screen.findByText(EMPTY_QUEUE);
+  await waitFor(() =>
+    expect(screen.getByRole("button", { name: "New request" })).toBeEnabled(),
+  );
+  fireEvent.click(screen.getByRole("button", { name: "New request" }));
+}
+function fillRequest(subject = "Supplier NDA") {
+  fireEvent.change(screen.getByLabelText("Subject"), {
+    target: { value: subject },
+  });
+  fireEvent.change(screen.getByLabelText("Requester"), {
+    target: { value: "Jane Business" },
+  });
+  fireEvent.change(screen.getByLabelText("What do they need?"), {
+    target: { value: "  Exact request text\nwith newlines  " },
+  });
+}
+
+describe("recording requests", () => {
+  it("records a request for a named requester and assigns it to its creator", async () => {
+    mocks.submit.mockImplementation(
+      async (_org: string, body: { id: string }) => ({
+        ...receipt,
+        request_id: body.id,
+      }),
     );
-    await screen.findByRole("button", { name: "Reload settings" });
-    expect(mocks.configure.mock.calls[0][1]).toMatchObject({
-      expected_revision: 1,
-      reviewer_ids: ["lawyer-a", "lawyer-b"],
+    render(<Inbox orgId="org-a" accountId="account-a" />);
+    await openNewRequest();
+    fillRequest();
+    fireEvent.change(screen.getByLabelText("Team (optional)"), {
+      target: { value: "Procurement" },
     });
-    expect(screen.getByRole("checkbox", { name: /Lawyer B/ })).toBeChecked();
-    expect(
-      screen.getByRole("button", { name: "Save" }),
-    ).toBeDisabled();
-    fireEvent.click(screen.getByRole("button", { name: "Reload settings" }));
-    expect(mocks.configuration).toHaveBeenCalledTimes(1);
-    vi.mocked(window.confirm).mockReturnValue(true);
-    fireEvent.click(screen.getByRole("button", { name: "Reload settings" }));
-    await waitFor(() => expect(mocks.configuration).toHaveBeenCalledTimes(2));
+    fireEvent.click(screen.getByRole("button", { name: "Record request" }));
+    await waitFor(() => expect(mocks.submit).toHaveBeenCalledTimes(1));
+    const body = mocks.submit.mock.calls[0][1];
+    expect(body).toMatchObject({
+      subject: "Supplier NDA",
+      description: "  Exact request text\nwith newlines  ",
+      requester_name: "Jane Business",
+      requester_email: null,
+      requester_team: "Procurement",
+      requested_by_date: null,
+      timezone: null,
+      assignee_id: "account-a",
+    });
     await waitFor(() =>
-      expect(
-        screen.getByRole("checkbox", { name: /Lawyer B/ }),
-      ).not.toBeChecked(),
+      expect(mocks.push).toHaveBeenCalledWith(`/intake/${body.id}?org=org-a`),
     );
   });
 
-  it("treats only a stale revision as a conflict that needs a reload", async () => {
-    mocks.configure.mockRejectedValueOnce({
-      status: 429,
-      code: "rate_limited",
+  it("can leave a request unassigned and checks the email inline", async () => {
+    render(<Inbox orgId="org-a" accountId="account-a" />);
+    await openNewRequest();
+    fillRequest();
+    fireEvent.change(screen.getByLabelText("Email (optional)"), {
+      target: { value: "not an email" },
     });
-    render(<IntakeTeamModal orgId="org-a" onClose={() => {}} />);
-    fireEvent.click(await screen.findByRole("checkbox", { name: /Lawyer B/ }));
-    fireEvent.click(screen.getByRole("button", { name: "Save" }));
-    await waitFor(() => expect(mocks.configure).toHaveBeenCalledTimes(1));
-    await act(async () => {});
     expect(
-      screen.queryByRole("button", { name: "Reload settings" }),
-    ).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Save" })).toBeEnabled();
-  });
-
-  it("reconciles the original uncertain command after an MFA challenge", async () => {
-    mocks.configure
-      .mockRejectedValueOnce(new TypeError("Lost response"))
-      .mockRejectedValueOnce({
-        status: 403,
-        code: "mfa_verification_required",
-      });
-    render(<IntakeTeamModal orgId="org-a" onClose={() => {}} />);
-    fireEvent.click(await screen.findByRole("checkbox", { name: /Lawyer B/ }));
-    fireEvent.click(
-      screen.getByRole("button", { name: "Save" }),
-    );
-    const verify = await screen.findByRole("button", { name: "Verify MFA" });
-    const original = structuredClone(mocks.configure.mock.calls[0][1]);
-    fireEvent.click(verify);
-    await waitFor(() => expect(mocks.configure).toHaveBeenCalledTimes(3));
-    expect(mocks.configure.mock.calls.map((call) => call[1])).toEqual([
-      original,
-      original,
-      original,
-    ]);
-    await waitFor(() => expect(mocks.configuration).toHaveBeenCalledTimes(2));
-  });
-
-  it("retries the exact configuration command after successful MFA", async () => {
-    mocks.configure.mockRejectedValueOnce({
-      status: 403,
-      code: "mfa_verification_required",
-    });
-    render(<IntakeTeamModal orgId="org-a" onClose={() => {}} />);
-    fireEvent.click(await screen.findByRole("checkbox", { name: /Lawyer B/ }));
-    fireEvent.click(
-      screen.getByRole("button", { name: "Save" }),
-    );
-    const verify = await screen.findByRole("button", { name: "Verify MFA" });
-    const original = structuredClone(mocks.configure.mock.calls[0][1]);
+      screen.getByText("Enter an email address like name@company.com."),
+    ).toBeInTheDocument();
     expect(
-      screen.getByRole("button", { name: "Save" }),
+      screen.getByRole("button", { name: "Record request" }),
     ).toBeDisabled();
-    fireEvent.click(verify);
-    await waitFor(() => expect(mocks.configure).toHaveBeenCalledTimes(2));
-    expect(mocks.configure.mock.calls[1]).toEqual(["org-a", original]);
-    await waitFor(() => expect(mocks.configuration).toHaveBeenCalledTimes(2));
-  });
-
-  it("hides the owner roster after uncertain access denial while allowing command reconciliation", async () => {
-    mocks.configure
-      .mockRejectedValueOnce(new TypeError("lost response"))
-      .mockRejectedValueOnce({ status: 403 });
-    mocks.configuration
-      .mockResolvedValueOnce(configuration())
-      .mockReturnValue(new Promise(() => {}));
-    render(<IntakeTeamModal orgId="org-a" onClose={() => {}} />);
-    fireEvent.click(await screen.findByRole("checkbox", { name: /Lawyer B/ }));
-    fireEvent.click(
-      screen.getByRole("button", { name: "Save" }),
-    );
-    await waitFor(() => expect(mocks.configure).toHaveBeenCalledTimes(2));
-    expect(screen.queryByText("a@example.test")).not.toBeInTheDocument();
-    expect(
-      screen.queryByRole("button", { name: "Save" }),
-    ).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Check again" })).toBeEnabled();
-    const original = structuredClone(mocks.configure.mock.calls[0]);
-    fireEvent.click(screen.getByRole("button", { name: "Check again" }));
-    await waitFor(() => expect(mocks.configure).toHaveBeenCalledTimes(3));
-    expect(mocks.configure.mock.calls[2]).toEqual(original);
-    expect(screen.queryByText("a@example.test")).not.toBeInTheDocument();
-  });
-});
-
-describe("intake defaults and table actions", () => {
-  it("pre-selects the whole organization until a Legal team is saved", async () => {
-    mocks.configuration.mockResolvedValue({
-      ...configuration(),
-      has_team: false,
-      reviewer_ids: [],
+    fireEvent.change(screen.getByLabelText("Email (optional)"), {
+      target: { value: "jane@business.test" },
     });
-    render(<IntakeTeamModal orgId="org-a" onClose={() => {}} />);
-    expect(
-      await screen.findByRole("checkbox", { name: /Lawyer A/ }),
-    ).toBeChecked();
-    expect(screen.getByRole("checkbox", { name: /Lawyer B/ })).toBeChecked();
-  });
-
-  it("switches intake off without changing the saved Legal team", async () => {
-    render(<IntakeFeatureSetting orgId="org-a" />);
-    fireEvent.click(await screen.findByRole("switch", { name: "Enable intake" }));
-    await waitFor(() => expect(mocks.configure).toHaveBeenCalledTimes(1));
-    expect(mocks.configure.mock.calls[0][1]).toMatchObject({
-      expected_revision: 1,
-      enabled: false,
-      reviewer_ids: ["lawyer-a"],
+    fireEvent.click(screen.getByLabelText("Assign to me"));
+    fireEvent.click(screen.getByRole("button", { name: "Record request" }));
+    await waitFor(() => expect(mocks.submit).toHaveBeenCalledTimes(1));
+    expect(mocks.submit.mock.calls[0][1]).toMatchObject({
+      requester_email: "jane@business.test",
+      assignee_id: null,
     });
   });
 
-  it("shows the saved intake setting again after a definitive rejection", async () => {
-    mocks.configure.mockRejectedValueOnce({
-      status: 429,
-      code: "rate_limited",
+  it("requires a known timezone for a target date", async () => {
+    render(<Inbox orgId="org-a" accountId="account-a" />);
+    await openNewRequest();
+    fillRequest();
+    fireEvent.change(screen.getByLabelText("Target date (optional)"), {
+      target: { value: "2026-11-10" },
     });
-    render(<IntakeFeatureSetting orgId="org-a" />);
-    const toggle = await screen.findByRole("switch", { name: "Enable intake" });
-    expect(toggle).toBeChecked();
-    fireEvent.click(toggle);
-    await waitFor(() => expect(mocks.configure).toHaveBeenCalledTimes(1));
-    await waitFor(() =>
-      expect(
-        screen.getByRole("switch", { name: "Enable intake" }),
-      ).toBeChecked(),
-    );
-    expect(
-      screen.getByRole("switch", { name: "Enable intake" }),
-    ).toBeEnabled();
-  });
-
-  it("explains that requests wait for a Legal team", async () => {
-    mocks.configuration.mockResolvedValue({
-      ...configuration(),
-      has_team: false,
-      reviewer_ids: [],
+    fireEvent.change(screen.getByLabelText("Timezone"), {
+      target: { value: "Europe/Londn" },
     });
-    render(<Inbox orgId="org-a" />);
     expect(
-      await screen.findByText(
-        "Choose a Legal team in Intake settings before requests can be sent.",
+      screen.getByText(
+        "Choose a timezone from the list, such as Europe/London.",
       ),
     ).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "New request" })).toBeDisabled();
-  });
-
-  it("cancels a request from its row menu after confirmation", async () => {
-    const user = userEvent.setup();
-    mocks.list.mockResolvedValue([
-      request({
-        version: 4,
-        capabilities: { ...request().capabilities, cancel: true },
-      }),
-    ]);
-    render(<Inbox orgId="org-a" />);
-    await user.click(
-      await screen.findByRole("button", {
-        name: "Actions for Confidential request A",
-      }),
-    );
-    await user.click(screen.getByRole("menuitem", { name: "Cancel request" }));
-    expect(mocks.command).not.toHaveBeenCalled();
-    const dialog = await screen.findByRole("dialog");
-    await user.click(within(dialog).getByRole("button", { name: "Cancel request" }));
-    await waitFor(() =>
-      expect(mocks.command).toHaveBeenCalledWith(
-        "org-a",
-        "request-a",
-        "cancel",
-        expect.objectContaining({ expected_version: 4 }),
-      ),
-    );
-  });
-});
-
-describe("request forms and list loading", () => {
-  it("limits the owner-reviewer's queue filter to current intake reviewers", async () => {
-    mocks.configuration.mockResolvedValue({
-      ...configuration(),
-      can_configure: true,
-      is_reviewer: true,
-    });
-    mocks.reviewers.mockResolvedValue([
-      {
-        user_id: "owner-reviewer",
-        display_name: "Owner Reviewer",
-        email: "owner@example.test",
-        is_reviewer: true,
-      },
-      {
-        user_id: "member",
-        display_name: "Ordinary Member",
-        email: "member@example.test",
-        is_reviewer: false,
-      },
-      {
-        user_id: "lawyer-a",
-        display_name: "Lawyer A",
-        email: "a@example.test",
-        is_reviewer: true,
-      },
-    ]);
-    const user = userEvent.setup();
-    render(<Inbox orgId="org-a" />);
-    await user.click(await screen.findByRole("button", { name: "Legal queue" }));
-    await user.click(
-      screen.getByRole("button", { name: "Filter by assigned lawyer" }),
-    );
     expect(
-      screen.getAllByRole("menuitem").map((item) => item.textContent),
-    ).toEqual(["All assigned lawyers", "Owner Reviewer", "Lawyer A"]);
-    await user.click(screen.getByRole("menuitem", { name: "Lawyer A" }));
-    await waitFor(() =>
-      expect(mocks.list).toHaveBeenLastCalledWith(
-        "org-a",
-        expect.objectContaining({ view: "queue", assignee: "lawyer-a" }),
-      ),
-    );
+      screen.getByRole("button", { name: "Record request" }),
+    ).toBeDisabled();
   });
 
-  it("does not hide a failed configuration behind a successful list", async () => {
-    const list = deferred<IntakeRequest[]>();
-    mocks.configuration.mockRejectedValue(
-      new Error("configuration unavailable"),
-    );
-    mocks.list.mockReturnValue(list.promise);
-    render(<Inbox orgId="org-a" />);
-    expect(await screen.findByRole("alert")).toHaveTextContent(
-      "Could not load requests.",
-    );
-    await act(async () => list.resolve([]));
-    expect(screen.getByRole("alert")).toHaveTextContent(
-      "Could not load requests.",
-    );
-    expect(screen.queryByText(EMPTY_INBOX)).not.toBeInTheDocument();
-  });
-
-  it("asks before closing a draft and retains its text when declined", async () => {
-    render(<Inbox orgId="org-a" />);
-    await waitFor(() =>
-      expect(screen.getByRole("button", { name: "New request" })).toBeEnabled(),
-    );
-    fireEvent.click(screen.getByRole("button", { name: "New request" }));
+  it("asks in a popup before closing a draft and retains its text when declined", async () => {
+    render(<Inbox orgId="org-a" accountId="account-a" />);
+    await openNewRequest();
     fireEvent.change(screen.getByLabelText("Subject"), {
       target: { value: "Unsent question" },
     });
     fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
-    expect(window.confirm).toHaveBeenCalledTimes(1);
+    expect(screen.getByText("Discard this draft?")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Keep editing" }));
     expect(screen.getByLabelText("Subject")).toHaveValue("Unsent question");
-    vi.mocked(window.confirm).mockReturnValue(true);
     fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    fireEvent.click(screen.getByRole("button", { name: "Discard" }));
     expect(screen.queryByLabelText("Subject")).not.toBeInTheDocument();
     expect(mocks.submit).not.toHaveBeenCalled();
   });
@@ -508,30 +367,17 @@ describe("request forms and list loading", () => {
         ...receipt,
         request_id: body.id,
       }));
-    render(<Inbox orgId="org-a" />);
-    await waitFor(() =>
-      expect(screen.getByRole("button", { name: "New request" })).toBeEnabled(),
-    );
-    fireEvent.click(screen.getByRole("button", { name: "New request" }));
-    fireEvent.change(screen.getByLabelText("Subject"), {
-      target: { value: "Business question" },
-    });
-    fireEvent.change(screen.getByLabelText("What do you need help with?"), {
-      target: { value: "  Exact request text\nwith newlines  " },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "Submit request" }));
+    render(<Inbox orgId="org-a" accountId="account-a" />);
+    await openNewRequest();
+    fillRequest();
+    fireEvent.click(screen.getByRole("button", { name: "Record request" }));
     await waitFor(() =>
       expect(screen.getByRole("button", { name: "Check again" })).toBeEnabled(),
     );
     const original = structuredClone(mocks.submit.mock.calls[0]);
-    expect(original[1]).toMatchObject({
-      id: expect.any(String),
-      command_id: expect.any(String),
-      description: "  Exact request text\nwith newlines  ",
-    });
     expect(mocks.submit.mock.calls[1]).toEqual(original);
     expect(
-      screen.getByRole("button", { name: "Submit request" }),
+      screen.getByRole("button", { name: "Record request" }),
     ).toBeDisabled();
     expect(mocks.push).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole("button", { name: "Check again" }));
@@ -543,10 +389,243 @@ describe("request forms and list loading", () => {
     expect(mocks.submit.mock.calls[2]).toEqual(original);
   });
 
-  it("clears loaded rows immediately while a new workspace list is pending", async () => {
-    const next = deferred<IntakeRequest[]>();
+  it("restores every field after navigation and clears only a discarded draft", async () => {
+    const first = render(<Inbox orgId="org-a" accountId="account-a" />);
+    await openNewRequest();
+    fillRequest("Final keystroke!");
+    fireEvent.click(screen.getByRole("button", { name: "Contract review" }));
+    fireEvent.change(screen.getByLabelText("Target date (optional)"), {
+      target: { value: "2026-11-10" },
+    });
+    fireEvent.change(screen.getByLabelText("Timezone"), {
+      target: { value: "Europe/Stockholm" },
+    });
+    fireEvent.click(screen.getByLabelText("Assign to me"));
+    first.unmount();
+    render(<Inbox orgId="org-a" accountId="account-a" />);
+    expect(screen.getByLabelText("Subject")).toHaveValue("Final keystroke!");
+    expect(screen.getByLabelText("Requester")).toHaveValue("Jane Business");
+    expect(screen.getByLabelText("What do they need?")).toHaveValue(
+      "  Exact request text\nwith newlines  ",
+    );
+    expect(screen.getByRole("button", { name: "Contract review" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    expect(screen.getByLabelText("Timezone")).toHaveValue("Europe/Stockholm");
+    expect(screen.getByLabelText("Assign to me")).not.toBeChecked();
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    fireEvent.click(screen.getByRole("button", { name: "Discard" }));
+    await openNewRequest();
+    expect(screen.getByLabelText("Subject")).toHaveValue("");
+    expect(screen.getByLabelText("Assign to me")).toBeChecked();
+  });
+});
+
+describe("queue", () => {
+  it("shows requester, target date and an overdue marker", async () => {
+    mocks.list.mockResolvedValue(
+      page([
+        summary({
+          requested_by_date: "2020-01-15",
+          timezone: "UTC",
+          assignee_id: null,
+          assignee_name: null,
+        }),
+      ]),
+    );
+    render(<Inbox orgId="org-a" accountId="account-a" />);
+    await screen.findByRole("link", { name: "Confidential request A" });
+    expect(screen.getByText("Jane Business")).toBeInTheDocument();
+    // The requester column is one line: the name, not their team or email.
+    expect(screen.queryByText("Procurement")).not.toBeInTheDocument();
+    expect(screen.getByText("In progress")).toBeInTheDocument();
+    expect(screen.getByText(", overdue")).toBeInTheDocument();
+    expect(screen.getByTitle("Target date passed")).toHaveClass("text-red-600");
+    expect(screen.getByText("Unassigned")).toBeInTheDocument();
+  });
+
+  it("switches between All and Assigned to me, searches lawyers and sorts by target date", async () => {
+    const user = userEvent.setup();
+    render(<Inbox orgId="org-a" accountId="account-a" />);
+    await user.click(await screen.findByRole("button", { name: "Assigned to me" }));
+    await waitFor(() =>
+      expect(mocks.list).toHaveBeenLastCalledWith(
+        "org-a",
+        expect.objectContaining({ assignee: "me" }),
+      ),
+    );
+    expect(
+      screen.queryByRole("button", { name: "Filter by assigned lawyer" }),
+    ).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "All" }));
+    await user.click(
+      await screen.findByRole("button", { name: "Filter by assigned lawyer" }),
+    );
+    await user.type(
+      screen.getByRole("searchbox", { name: "Search people" }),
+      "b@example",
+    );
+    await user.click(await screen.findByRole("button", { name: /Lawyer B/ }));
+    await waitFor(() =>
+      expect(mocks.list).toHaveBeenLastCalledWith(
+        "org-a",
+        expect.objectContaining({ assignee: "lawyer-b", sort: "updated" }),
+      ),
+    );
+    await user.click(
+      screen.getByRole("button", { name: "Sort by target date" }),
+    );
+    await user.click(
+      screen.getByRole("menuitem", { name: "Soonest target first" }),
+    );
+    await waitFor(() =>
+      expect(mocks.list).toHaveBeenLastCalledWith(
+        "org-a",
+        expect.objectContaining({ assignee: "lawyer-b", sort: "target" }),
+      ),
+    );
+  });
+
+  it("filters the queue by type on the server", async () => {
+    const user = userEvent.setup();
+    render(<Inbox orgId="org-a" accountId="account-a" />);
+    await user.click(
+      await screen.findByRole("button", { name: "Filter by type" }),
+    );
+    expect(
+      screen.getAllByRole("menuitem").map((item) => item.textContent),
+    ).toEqual(["All types", "Contract review", "Legal question"]);
+    await user.click(screen.getByRole("menuitem", { name: "Contract review" }));
+    await waitFor(() =>
+      expect(mocks.list).toHaveBeenLastCalledWith(
+        "org-a",
+        expect.objectContaining({ category: "nda" }),
+      ),
+    );
+  });
+
+  it("loads the next page by cursor without repeating rows", async () => {
     mocks.list
-      .mockResolvedValueOnce([request()])
+      .mockResolvedValueOnce(page([summary()], "cursor-1"))
+      .mockResolvedValueOnce(
+        page([
+          summary(),
+          summary({ id: "request-b", subject: "Second request" }),
+        ]),
+      );
+    render(<Inbox orgId="org-a" accountId="account-a" />);
+    fireEvent.click(await screen.findByRole("button", { name: "Load more" }));
+    await screen.findByRole("link", { name: "Second request" });
+    expect(mocks.list).toHaveBeenLastCalledWith(
+      "org-a",
+      expect.objectContaining({ cursor: "cursor-1" }),
+    );
+    expect(
+      screen.getAllByRole("link", { name: "Confidential request A" }),
+    ).toHaveLength(1);
+    expect(
+      screen.queryByRole("button", { name: "Load more" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("refreshes quietly on focus and keeps rows it scrolled to", async () => {
+    mocks.list
+      .mockResolvedValueOnce(page([summary()], "cursor-1"))
+      .mockResolvedValueOnce(
+        page([summary({ id: "request-b", subject: "Second request" })]),
+      );
+    render(<Inbox orgId="org-a" accountId="account-a" />);
+    fireEvent.click(await screen.findByRole("button", { name: "Load more" }));
+    await screen.findByRole("link", { name: "Second request" });
+    act(() => {
+      window.dispatchEvent(new Event("focus"));
+    });
+    expect(mocks.list).toHaveBeenCalledTimes(2);
+    expect(
+      screen.getByRole("link", { name: "Second request" }),
+    ).toBeInTheDocument();
+  });
+
+  it("cancels a request from its row menu with a reason", async () => {
+    const user = userEvent.setup();
+    mocks.list.mockResolvedValue(page([summary({ version: 4 })]));
+    render(<Inbox orgId="org-a" accountId="account-a" />);
+    await user.click(
+      await screen.findByRole("button", {
+        name: "Actions for Confidential request A",
+      }),
+    );
+    await user.click(screen.getByRole("menuitem", { name: "Cancel request" }));
+    const dialog = await screen.findByRole("dialog");
+    const confirm = within(dialog).getByRole("button", {
+      name: "Cancel request",
+    });
+    expect(confirm).toBeDisabled();
+    await user.type(
+      within(dialog).getByLabelText("Why is this being cancelled?"),
+      "Duplicate",
+    );
+    await user.click(confirm);
+    await waitFor(() =>
+      expect(mocks.command).toHaveBeenCalledWith(
+        "org-a",
+        "request-a",
+        "cancel",
+        {
+          command_id: expect.any(String),
+          expected_version: 4,
+          body: "Duplicate",
+        },
+      ),
+    );
+  });
+
+  it("assigns a request to the signed-in member from its row menu", async () => {
+    const user = userEvent.setup();
+    mocks.list.mockResolvedValue(page([summary({ version: 3 })]));
+    render(<Inbox orgId="org-a" accountId="account-a" />);
+    await user.click(
+      await screen.findByRole("button", {
+        name: "Actions for Confidential request A",
+      }),
+    );
+    await user.click(screen.getByRole("menuitem", { name: "Assign to me" }));
+    await waitFor(() =>
+      expect(mocks.command).toHaveBeenCalledWith(
+        "org-a",
+        "request-a",
+        "assignment",
+        expect.objectContaining({
+          expected_version: 3,
+          assignee_id: "account-a",
+        }),
+      ),
+    );
+  });
+
+  it("loads the queue and offers New request even when the member list fails", async () => {
+    mocks.members.mockRejectedValue(new Error("members unavailable"));
+    mocks.list.mockResolvedValue(page([summary()]));
+    render(<Inbox orgId="org-a" accountId="account-a" />);
+    await screen.findByRole("link", { name: "Confidential request A" });
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "New request" })).toBeEnabled();
+  });
+
+  it("shows a failed list as an error, never as an empty queue", async () => {
+    mocks.list.mockRejectedValue(new Error("list unavailable"));
+    render(<Inbox orgId="org-a" accountId="account-a" />);
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Could not load requests.",
+    );
+    expect(screen.queryByText(EMPTY_QUEUE)).not.toBeInTheDocument();
+  });
+
+  it("clears loaded rows immediately while a new workspace list is pending", async () => {
+    const next = deferred<IntakeRequestPage>();
+    mocks.list
+      .mockResolvedValueOnce(page([summary()]))
       .mockReturnValueOnce(next.promise);
     const view = render(<IntakeInbox />);
     await screen.findByRole("link", { name: "Confidential request A" });
@@ -560,17 +639,17 @@ describe("request forms and list loading", () => {
       screen.queryByRole("link", { name: "Confidential request A" }),
     ).not.toBeInTheDocument();
     expect(screen.getByRole("status")).toHaveTextContent("Loading requests");
-    await act(async () => next.resolve([]));
-    expect(screen.getByText(EMPTY_INBOX)).toBeInTheDocument();
+    await act(async () => next.resolve(page()));
+    expect(screen.getByText(EMPTY_QUEUE)).toBeInTheDocument();
   });
 
   it("rejects stale A responses across A to B to A workspace navigation", async () => {
-    const oldA = deferred<IntakeRequest[]>();
-    const oldB = deferred<IntakeRequest[]>();
+    const oldA = deferred<IntakeRequestPage>();
+    const oldB = deferred<IntakeRequestPage>();
     mocks.list
       .mockReturnValueOnce(oldA.promise)
       .mockReturnValueOnce(oldB.promise)
-      .mockResolvedValueOnce([request({ subject: "Fresh A" })]);
+      .mockResolvedValueOnce(page([summary({ subject: "Fresh A" })]));
     const view = render(<IntakeInbox />);
     mocks.workspace = {
       ...mocks.workspace,
@@ -586,8 +665,8 @@ describe("request forms and list loading", () => {
     view.rerender(<IntakeInbox />);
     await screen.findByRole("link", { name: "Fresh A" });
     await act(async () => {
-      oldB.resolve([request({ subject: "Old B" })]);
-      oldA.resolve([request({ subject: "Old A" })]);
+      oldB.resolve(page([summary({ subject: "Old B" })]));
+      oldA.resolve(page([summary({ subject: "Old A" })]));
     });
     expect(screen.getByRole("link", { name: "Fresh A" })).toBeInTheDocument();
     expect(screen.queryByText("Old A")).not.toBeInTheDocument();
@@ -595,66 +674,221 @@ describe("request forms and list loading", () => {
   });
 });
 
-describe("reviewer draft, preview and recovery", () => {
-  it("preserves an unsent answer when saving assignment", async () => {
-    render(<Detail orgId="org-a" requestId="request-a" />);
-    const editor = await screen.findByLabelText("Message to the requester");
-    fireEvent.change(editor, { target: { value: "Unsent answer" } });
-    const user = userEvent.setup();
-    await user.click(screen.getByLabelText("Assigned lawyer"));
-    await user.click(screen.getByRole("menuitem", { name: "Lawyer B" }));
-    fireEvent.click(screen.getByRole("button", { name: "Save assignment" }));
-    await waitFor(() => expect(mocks.request).toHaveBeenCalledTimes(2));
-    expect(screen.getByLabelText("Message to the requester")).toHaveValue(
-      "Unsent answer",
+const message = (overrides: Partial<IntakeMessage>): IntakeMessage => ({
+  id: "message-a",
+  kind: "note",
+  body: "A note",
+  author_name: "Lawyer A",
+  created_at: "2026-10-27T10:00:00Z",
+  ...overrides,
+});
+const event = (overrides: Partial<IntakeEvent>): IntakeEvent => ({
+  id: 1,
+  kind: "submitted",
+  from_state: null,
+  to_state: "submitted",
+  actor_name: "Lawyer A",
+  assignee_name: null,
+  created_at: "2026-10-26T10:00:00Z",
+  ...overrides,
+});
+const detail = (orgId = "org-a") => (
+  <Detail
+    orgId={orgId}
+    requestId="request-a"
+    accountId={mocks.workspace.accountId}
+  />
+);
+
+describe("contract review documents", () => {
+  const contract = () =>
+    new File(["contract"], "Supplier NDA.docx", {
+      type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    });
+  const chooseFiles = (files: File[]) => {
+    const input = document.querySelector<HTMLInputElement>('input[type="file"]')!;
+    fireEvent.change(input, { target: { files } });
+  };
+
+  it("offers a drop zone for every request type and accepts only supported files", async () => {
+    render(<Inbox orgId="org-a" accountId="account-a" />);
+    await openNewRequest();
+    expect(screen.getByText("Documents (optional)")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Contract review" }));
+    expect(screen.getByText("Documents (optional)")).toBeInTheDocument();
+    chooseFiles([contract(), new File(["x"], "notes.txt")]);
+    expect(screen.getByText("Supplier NDA.docx")).toBeInTheDocument();
+    expect(screen.queryByText("notes.txt")).not.toBeInTheDocument();
+    expect(screen.getByRole("alert")).toHaveTextContent("Unsupported file type");
+  });
+
+  it("uploads the documents to the request once it is recorded", async () => {
+    mocks.submit.mockImplementation(async (_org: string, body: { id: string }) => ({
+      ...receipt,
+      request_id: body.id,
+    }));
+    render(<Inbox orgId="org-a" accountId="account-a" />);
+    await openNewRequest();
+    fireEvent.click(screen.getByRole("button", { name: "Contract review" }));
+    fillRequest();
+    const file = contract();
+    chooseFiles([file]);
+    fireEvent.click(screen.getByRole("button", { name: "Record request" }));
+    await waitFor(() => expect(mocks.push).toHaveBeenCalled());
+    const requestId = mocks.submit.mock.calls[0][1].id;
+    expect(mocks.upload).toHaveBeenCalledWith("org-a", requestId, [{ file }]);
+    expect(mocks.upload.mock.invocationCallOrder[0]).toBeGreaterThan(
+      mocks.submit.mock.invocationCallOrder[0],
     );
+    expect(mocks.push).toHaveBeenCalledWith(`/intake/${requestId}?org=org-a`);
+    expect(mocks.partial).not.toHaveBeenCalled();
+  });
+
+  it("says the request was saved when its documents fail to upload", async () => {
+    mocks.submit.mockImplementation(async (_org: string, body: { id: string }) => ({
+      ...receipt,
+      request_id: body.id,
+    }));
+    mocks.upload.mockRejectedValue(new TypeError("offline"));
+    render(<Inbox orgId="org-a" accountId="account-a" />);
+    await openNewRequest();
+    fireEvent.click(screen.getByRole("button", { name: "Contract review" }));
+    fillRequest();
+    chooseFiles([contract()]);
+    fireEvent.click(screen.getByRole("button", { name: "Record request" }));
+    await waitFor(() => expect(mocks.push).toHaveBeenCalled());
+    expect(mocks.partial).toHaveBeenCalledWith(
+      "The request was saved, but its documents couldn't be uploaded. Add them from the request.",
+      { action: "upload the documents" },
+    );
+  });
+
+  it("uploads documents for a legal question, keeping them when the type changes", async () => {
+    mocks.submit.mockImplementation(async (_org: string, body: { id: string }) => ({
+      ...receipt,
+      request_id: body.id,
+    }));
+    render(<Inbox orgId="org-a" accountId="account-a" />);
+    await openNewRequest();
+    fireEvent.click(screen.getByRole("button", { name: "Contract review" }));
+    const file = contract();
+    chooseFiles([file]);
+    fireEvent.click(screen.getByRole("button", { name: "Legal question" }));
+    expect(screen.getByText("Supplier NDA.docx")).toBeInTheDocument();
+    fillRequest();
+    fireEvent.click(screen.getByRole("button", { name: "Record request" }));
+    await waitFor(() => expect(mocks.push).toHaveBeenCalled());
+    const body = mocks.submit.mock.calls[0][1];
+    expect(body.category).toBe("general");
+    expect(mocks.upload).toHaveBeenCalledWith("org-a", body.id, [{ file }]);
+  });
+
+  it("lists, opens and adds documents on the request", async () => {
+    mocks.documents.mockResolvedValue([
+      {
+        document_id: "doc-a",
+        filename: "Supplier NDA.docx",
+        file_type: "docx",
+        size_bytes: 1234,
+        status: "ready",
+        added_by_name: "Lawyer A",
+        created_at: "2026-10-27T10:00:00Z",
+      },
+      {
+        document_id: "doc-b",
+        filename: "Schedule.pdf",
+        file_type: "pdf",
+        size_bytes: 10,
+        status: "processing",
+        added_by_name: "Lawyer A",
+        created_at: "2026-10-27T10:01:00Z",
+      },
+    ]);
+    mocks.document.mockResolvedValue({ id: "doc-a", filename: "Supplier NDA.docx" });
+    render(
+      <Detail orgId="org-a" requestId="request-a" accountId="account-a" />,
+    );
+    const documents = await screen.findByRole("region", { name: "Documents" });
+    expect(within(documents).getByText("Processing…")).toBeInTheDocument();
+    fireEvent.click(
+      within(documents).getByRole("button", { name: "Supplier NDA.docx" }),
+    );
+    expect(
+      await screen.findByRole("dialog", { name: "Document viewer" }),
+    ).toHaveTextContent("Supplier NDA.docx");
+    expect(mocks.document).toHaveBeenCalledWith("doc-a");
+    const file = contract();
+    chooseFiles([file]);
+    await waitFor(() =>
+      expect(mocks.upload).toHaveBeenCalledWith("org-a", "request-a", [{ file }]),
+    );
+    await waitFor(() => expect(mocks.documents).toHaveBeenCalledTimes(2));
+  });
+});
+
+describe("request detail", () => {
+  it("adds a note without a version and clears the draft once saved", async () => {
+    render(detail());
+    const editor = await screen.findByLabelText("Add a note");
+    fireEvent.change(editor, {
+      target: { value: "  Called Jane.\nShe agreed.  " },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Add note" }));
+    await waitFor(() => expect(mocks.command).toHaveBeenCalledTimes(1));
     expect(mocks.command.mock.calls[0]).toEqual([
       "org-a",
       "request-a",
-      "assignment",
-      expect.objectContaining({ expected_version: 1, assignee_id: "lawyer-b" }),
+      "notes",
+      { command_id: expect.any(String), body: "  Called Jane.\nShe agreed.  " },
     ]);
-    expect(mocks.command.mock.calls[0][3]).not.toHaveProperty("body");
+    await waitFor(() =>
+      expect(screen.getByLabelText("Add a note")).toHaveValue(""),
+    );
+    expect(mocks.request).toHaveBeenCalledTimes(2);
   });
 
-  it("invalidates an edited preview and retries the exact approved body and version", async () => {
+  it("resolves with an exact resolution and retries the same command after a lost response", async () => {
     mocks.command
       .mockRejectedValueOnce(new TypeError("lost response"))
       .mockRejectedValueOnce(new TypeError("offline"));
-    render(<Detail orgId="org-a" requestId="request-a" />);
-    const editor = await screen.findByLabelText("Message to the requester");
-    fireEvent.change(editor, { target: { value: "First answer" } });
-    fireEvent.click(screen.getByRole("button", { name: "Preview answer" }));
-    expect(
-      screen.getByRole("region", { name: "Answer preview" }),
-    ).toHaveTextContent("First answer");
-    fireEvent.change(editor, {
-      target: { value: "  Exact revised answer\nSecond line  " },
+    const user = userEvent.setup();
+    render(detail());
+    await user.click(await screen.findByRole("button", { name: "Resolve" }));
+    const dialog = await screen.findByRole("dialog");
+    const field = within(dialog).getByLabelText("Resolution");
+    fireEvent.change(field, {
+      target: { value: "  Approved with edits.\nSecond line  " },
     });
-    expect(
-      screen.queryByRole("button", { name: "Share answer and resolve" }),
-    ).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Preview answer" }));
-    fireEvent.click(
-      screen.getByRole("button", { name: "Share answer and resolve" }),
-    );
+    await user.click(within(dialog).getByRole("button", { name: "Resolve" }));
     await waitFor(() =>
-      expect(screen.getByRole("button", { name: "Check again" })).toBeEnabled(),
+      expect(
+        within(dialog).getByRole("button", { name: "Check again" }),
+      ).toBeEnabled(),
     );
-    expect(mocks.command).toHaveBeenCalledTimes(2);
     const original = structuredClone(mocks.command.mock.calls[0]);
-    expect(original[3]).toMatchObject({
-      body: "  Exact revised answer\nSecond line  ",
-      expected_version: 1,
-    });
+    expect(original).toEqual([
+      "org-a",
+      "request-a",
+      "resolve",
+      {
+        command_id: expect.any(String),
+        expected_version: 1,
+        body: "  Approved with edits.\nSecond line  ",
+      },
+    ]);
     expect(mocks.command.mock.calls[1]).toEqual(original);
-    expect(editor).toBeDisabled();
-    fireEvent.click(screen.getByRole("button", { name: "Check again" }));
+    expect(field).toBeDisabled();
+    await user.click(
+      within(dialog).getByRole("button", { name: "Check again" }),
+    );
     await waitFor(() => expect(mocks.command).toHaveBeenCalledTimes(3));
     expect(mocks.command.mock.calls[2]).toEqual(original);
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
+    );
   });
 
-  it("retains draft on 409 and requires a fresh preview at the refreshed version", async () => {
+  it("keeps a resolution after a conflict and resends it as a new command at the refreshed version", async () => {
     mocks.command.mockRejectedValueOnce({
       status: 409,
       code: "intake_conflict",
@@ -662,28 +896,23 @@ describe("reviewer draft, preview and recovery", () => {
     mocks.request
       .mockResolvedValueOnce(request())
       .mockResolvedValue(request({ version: 2 }));
-    render(<Detail orgId="org-a" requestId="request-a" />);
-    fireEvent.change(await screen.findByLabelText("Message to the requester"), {
+    const user = userEvent.setup();
+    render(detail());
+    await user.click(await screen.findByRole("button", { name: "Resolve" }));
+    fireEvent.change(await screen.findByLabelText("Resolution"), {
       target: { value: "Needs confirmation" },
     });
-    fireEvent.click(screen.getByRole("button", { name: "Preview answer" }));
-    fireEvent.click(
-      screen.getByRole("button", { name: "Share answer and resolve" }),
+    await user.click(
+      within(screen.getByRole("dialog")).getByRole("button", {
+        name: "Resolve",
+      }),
     );
     await waitFor(() => expect(mocks.request).toHaveBeenCalledTimes(2));
-    await waitFor(() =>
-      expect(
-        screen.queryByRole("button", { name: "Share answer and resolve" }),
-      ).not.toBeInTheDocument(),
-    );
-    expect(screen.getByLabelText("Message to the requester")).toHaveValue(
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByLabelText("Resolution")).toHaveValue(
       "Needs confirmation",
     );
-    expect(mocks.command).toHaveBeenCalledTimes(1);
-    fireEvent.click(screen.getByRole("button", { name: "Preview answer" }));
-    fireEvent.click(
-      screen.getByRole("button", { name: "Share answer and resolve" }),
-    );
+    await user.click(within(dialog).getByRole("button", { name: "Resolve" }));
     await waitFor(() => expect(mocks.command).toHaveBeenCalledTimes(2));
     expect(mocks.command.mock.calls[1][3]).toMatchObject({
       expected_version: 2,
@@ -694,6 +923,106 @@ describe("reviewer draft, preview and recovery", () => {
     );
   });
 
+  it("keeps an unsent note when saving an assignment, and assigns to me in one click", async () => {
+    render(detail());
+    const editor = await screen.findByLabelText("Add a note");
+    fireEvent.change(editor, { target: { value: "Unsent note" } });
+    fireEvent.click(screen.getByRole("button", { name: "Assign to me" }));
+    await waitFor(() => expect(mocks.request).toHaveBeenCalledTimes(2));
+    expect(screen.getByLabelText("Add a note")).toHaveValue("Unsent note");
+    expect(mocks.command.mock.calls[0]).toEqual([
+      "org-a",
+      "request-a",
+      "assignment",
+      {
+        command_id: expect.any(String),
+        expected_version: 1,
+        assignee_id: "account-a",
+      },
+    ]);
+  });
+
+  it("pins the resolution and names people and automatic changes in history", async () => {
+    mocks.request.mockResolvedValue(
+      request({
+        state: "resolved",
+        capabilities: {
+          ...capabilities,
+          resolve: false,
+          reopen: true,
+          edit: false,
+        },
+      }),
+    );
+    mocks.messages.mockResolvedValue([
+      message({ id: "m1", body: "Called the supplier" }),
+      message({ id: "m2", kind: "resolution", body: "Approved as drafted." }),
+    ]);
+    mocks.events.mockResolvedValue([
+      event({ id: 1, assignee_name: "Lawyer B" }),
+      event({
+        id: 2,
+        kind: "assignee_left",
+        actor_name: null,
+        assignee_name: "Lawyer B",
+      }),
+      event({ id: 3, kind: "resolve" }),
+    ]);
+    render(detail());
+    const outcome = await screen.findByRole("region", { name: "Resolution" });
+    expect(outcome).toHaveTextContent("Approved as drafted.");
+    expect(
+      screen.getByText("Recorded and assigned to Lawyer B"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("Unassigned because Lawyer B left the organization"),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/^Automatically ·/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Reopen" })).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Edit details" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("edits details at the loaded version", async () => {
+    mocks.edit.mockResolvedValue(receipt);
+    render(detail());
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Edit details" }),
+    );
+    expect(screen.getByLabelText("Requester")).toHaveValue("Jane Business");
+    fireEvent.change(screen.getByLabelText("Requester"), {
+      target: { value: "Sam Business" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save details" }));
+    await waitFor(() => expect(mocks.edit).toHaveBeenCalledTimes(1));
+    expect(mocks.edit.mock.calls[0]).toEqual([
+      "org-a",
+      "request-a",
+      expect.objectContaining({
+        expected_version: 1,
+        requester_name: "Sam Business",
+        requester_email: "jane@business.test",
+        description: "Request description",
+      }),
+    ]);
+    await waitFor(() => expect(mocks.request).toHaveBeenCalledTimes(2));
+  });
+
+  it("refreshes in place when the window regains focus", async () => {
+    render(detail());
+    await screen.findByText("Confidential request A");
+    const refreshed = deferred<IntakeRequest>();
+    mocks.request.mockReturnValue(refreshed.promise);
+    act(() => {
+      window.dispatchEvent(new Event("focus"));
+    });
+    expect(mocks.request).toHaveBeenCalledTimes(2);
+    expect(screen.getByText("Confidential request A")).toBeInTheDocument();
+    await act(async () => refreshed.resolve(request({ subject: "Renamed A" })));
+    expect(screen.getByText("Renamed A")).toBeInTheDocument();
+  });
+
   it("hides revoked content immediately after an uncertain 403 while retaining the command", async () => {
     const recheck = deferred<IntakeRequest>();
     mocks.request
@@ -702,20 +1031,16 @@ describe("reviewer draft, preview and recovery", () => {
     mocks.command
       .mockRejectedValueOnce(new TypeError("lost response"))
       .mockRejectedValueOnce({ status: 403 });
-    render(<Detail orgId="org-a" requestId="request-a" />);
-    fireEvent.change(await screen.findByLabelText("Message to the requester"), {
+    render(detail());
+    fireEvent.change(await screen.findByLabelText("Add a note"), {
       target: { value: "Sensitive draft" },
     });
-    fireEvent.click(
-      screen.getByRole("button", { name: "Ask for information" }),
-    );
+    fireEvent.click(screen.getByRole("button", { name: "Add note" }));
     await waitFor(() => expect(mocks.request).toHaveBeenCalledTimes(2));
     expect(
       screen.queryByText("Confidential request A"),
     ).not.toBeInTheDocument();
-    expect(
-      screen.queryByLabelText("Message to the requester"),
-    ).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Add a note")).not.toBeInTheDocument();
     const original = structuredClone(mocks.command.mock.calls[0]);
     fireEvent.click(screen.getByRole("button", { name: "Check again" }));
     await waitFor(() => expect(mocks.command).toHaveBeenCalledTimes(3));
@@ -742,179 +1067,53 @@ describe("reviewer draft, preview and recovery", () => {
   });
 });
 
-it("filters the Legal queue by current reviewer", async () => {
-  const user = userEvent.setup();
-  render(<Inbox orgId="org-a" />);
-  await user.click(await screen.findByRole("button", { name: "Legal queue" }));
-  await user.click(
-    await screen.findByRole("button", { name: "Filter by assigned lawyer" }),
-  );
-  await user.click(screen.getByRole("menuitem", { name: "Lawyer B" }));
-  await waitFor(() =>
-    expect(mocks.list).toHaveBeenLastCalledWith(
-      "org-a",
-      expect.objectContaining({
-        view: "queue",
-        assignee: "lawyer-b",
-        offset: 0,
-      }),
-    ),
-  );
-});
-
 describe("history navigation recovery", () => {
-  it("restores every new-request field and clears only an explicitly discarded draft", async () => {
-    const first = render(<Inbox orgId="org-a" />);
-    await waitFor(() =>
-      expect(screen.getByRole("button", { name: "New request" })).toBeEnabled(),
-    );
-    fireEvent.click(screen.getByRole("button", { name: "New request" }));
-    fireEvent.change(screen.getByLabelText("Subject"), {
-      target: { value: "Final keystroke!" },
+  it("restores a note draft after rechecking access", async () => {
+    const first = render(detail());
+    fireEvent.change(await screen.findByLabelText("Add a note"), {
+      target: { value: "Retained note!" },
     });
-    fireEvent.change(screen.getByLabelText("What do you need help with?"), {
-      target: { value: "Private request" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "NDA request" }));
-    fireEvent.change(screen.getByLabelText("Target date (optional)"), {
-      target: { value: "2026-11-10" },
-    });
-    fireEvent.change(screen.getByLabelText("Timezone"), {
-      target: { value: "Europe/Stockholm" },
-    });
-    first.unmount();
-    render(<Inbox orgId="org-a" />);
-    expect(screen.getByLabelText("Subject")).toHaveValue("Final keystroke!");
-    expect(screen.getByLabelText("What do you need help with?")).toHaveValue(
-      "Private request",
-    );
-    expect(screen.getByRole("button", { name: "NDA request" })).toHaveAttribute(
-      "aria-pressed",
-      "true",
-    );
-    expect(screen.getByLabelText("Target date (optional)")).toHaveValue(
-      "2026-11-10",
-    );
-    expect(screen.getByLabelText("Timezone")).toHaveValue("Europe/Stockholm");
-    vi.mocked(window.confirm).mockReturnValue(true);
-    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
-    await waitFor(() =>
-      expect(screen.getByRole("button", { name: "New request" })).toBeEnabled(),
-    );
-    fireEvent.click(screen.getByRole("button", { name: "New request" }));
-    expect(screen.getByLabelText("Subject")).toHaveValue("");
-  });
-
-  it("keeps configuration selections at their original revision after remount", async () => {
-    mocks.configuration.mockResolvedValue(configuration(1));
-    const first = render(<IntakeTeamModal orgId="org-a" onClose={() => {}} />);
-    fireEvent.click(await screen.findByRole("checkbox", { name: /Lawyer B/ }));
-    first.unmount();
-    mocks.configuration.mockResolvedValue(configuration(2));
-    render(<IntakeTeamModal orgId="org-a" onClose={() => {}} />);
-    expect(
-      await screen.findByRole("checkbox", { name: /Lawyer B/ }),
-    ).toBeChecked();
-    fireEvent.click(
-      screen.getByRole("button", { name: "Save" }),
-    );
-    await waitFor(() => expect(mocks.configure).toHaveBeenCalledTimes(1));
-    expect(mocks.configure.mock.calls[0][1]).toMatchObject({
-      expected_revision: 1,
-      reviewer_ids: ["lawyer-a", "lawyer-b"],
-    });
-  });
-
-  it("restores a conversation draft after rechecking access but requires a fresh preview", async () => {
-    const first = render(<Detail orgId="org-a" requestId="request-a" />);
-    fireEvent.change(await screen.findByLabelText("Message to the requester"), {
-      target: { value: "Retained answer!" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "Preview answer" }));
     first.unmount();
     mocks.request.mockResolvedValue(request({ version: 7 }));
-    render(<Detail orgId="org-a" requestId="request-a" />);
-    expect(
-      screen.queryByLabelText("Message to the requester"),
-    ).not.toBeInTheDocument();
-    expect(
-      await screen.findByLabelText("Message to the requester"),
-    ).toHaveValue("Retained answer!");
-    expect(
-      screen.queryByRole("button", { name: "Share answer and resolve" }),
-    ).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Preview answer" }));
-    fireEvent.click(
-      screen.getByRole("button", { name: "Share answer and resolve" }),
+    render(detail());
+    expect(screen.queryByLabelText("Add a note")).not.toBeInTheDocument();
+    expect(await screen.findByLabelText("Add a note")).toHaveValue(
+      "Retained note!",
     );
-    await waitFor(() => expect(mocks.command).toHaveBeenCalledTimes(1));
-    expect(mocks.command.mock.calls[0][3]).toMatchObject({
-      body: "Retained answer!",
-      expected_version: 7,
-    });
   });
 
-  it("hides a retained answer after access is revoked while away", async () => {
-    const first = render(<Detail orgId="org-a" requestId="request-a" />);
-    fireEvent.change(await screen.findByLabelText("Message to the requester"), {
-      target: { value: "Private retained answer" },
+  it("hides a retained draft after access is revoked while away", async () => {
+    const first = render(detail());
+    fireEvent.change(await screen.findByLabelText("Add a note"), {
+      target: { value: "Private retained note" },
     });
     first.unmount();
     mocks.request.mockRejectedValue({ status: 403 });
-    render(<Detail orgId="org-a" requestId="request-a" />);
+    render(detail());
     await screen.findByRole("alert");
     expect(
-      screen.queryByDisplayValue("Private retained answer"),
+      screen.queryByDisplayValue("Private retained note"),
     ).not.toBeInTheDocument();
     expect(screen.queryByText("Request description")).not.toBeInTheDocument();
   });
 
   it("keeps drafts separate between organizations and clears them on account change", async () => {
-    const first = render(<Detail orgId="org-a" requestId="request-a" />);
-    fireEvent.change(await screen.findByLabelText("Message to the requester"), {
+    const first = render(detail("org-a"));
+    fireEvent.change(await screen.findByLabelText("Add a note"), {
       target: { value: "Account A org A" },
     });
     first.unmount();
-    const second = render(<Detail orgId="org-b" requestId="request-a" />);
-    expect(
-      await screen.findByLabelText("Message to the requester"),
-    ).toHaveValue("");
+    const second = render(detail("org-b"));
+    expect(await screen.findByLabelText("Add a note")).toHaveValue("");
     second.unmount();
-    const third = render(<Detail orgId="org-a" requestId="request-a" />);
-    expect(
-      await screen.findByLabelText("Message to the requester"),
-    ).toHaveValue("Account A org A");
+    const third = render(detail("org-a"));
+    expect(await screen.findByLabelText("Add a note")).toHaveValue(
+      "Account A org A",
+    );
     third.unmount();
     setIntakeMemoryAccount("account-b");
     mocks.workspace.accountId = "account-b";
-    render(<Detail orgId="org-a" requestId="request-a" />);
-    expect(
-      await screen.findByLabelText("Message to the requester"),
-    ).toHaveValue("");
-  });
-});
-
-it("keeps the acknowledged settings revision if editing resumes during refresh", async () => {
-  const refresh = deferred<IntakeConfiguration>();
-  mocks.configuration
-    .mockResolvedValueOnce(configuration(1))
-    .mockReturnValueOnce(refresh.promise)
-    .mockResolvedValue(configuration(2));
-  mocks.configure.mockResolvedValue({
-    ...receipt,
-    request_id: null,
-    applied_version: 2,
-  });
-  render(<IntakeTeamModal orgId="org-a" onClose={() => {}} />);
-  fireEvent.click(await screen.findByRole("checkbox", { name: /Lawyer B/ }));
-  fireEvent.click(screen.getByRole("button", { name: "Save" }));
-  await waitFor(() => expect(mocks.configuration).toHaveBeenCalledTimes(2));
-  fireEvent.click(screen.getByRole("checkbox", { name: /Lawyer A/ }));
-  await act(async () => refresh.resolve(configuration(2)));
-  fireEvent.click(screen.getByRole("button", { name: "Save" }));
-  await waitFor(() => expect(mocks.configure).toHaveBeenCalledTimes(2));
-  expect(mocks.configure.mock.calls[1][1]).toMatchObject({
-    expected_revision: 2,
-    reviewer_ids: ["lawyer-b"],
+    render(detail("org-a"));
+    expect(await screen.findByLabelText("Add a note")).toHaveValue("");
   });
 });

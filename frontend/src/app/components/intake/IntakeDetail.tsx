@@ -10,20 +10,25 @@ import { useRouter } from "next/navigation";
 import { useIntakeMemory, useIntakeDraft } from "./useIntakeMemory";
 import type {
   IntakeAction,
+  IntakeCommand,
+  IntakeDocument,
   IntakeEvent,
+  IntakeMember,
   IntakeMessage,
   IntakeRequest,
-  IntakeReviewer,
 } from "@mike/contracts";
 import { useWorkspace } from "@/app/contexts/WorkspaceContext";
 import { useItemWorkspace } from "@/app/hooks/useItemWorkspace";
 import {
   commandIntakeRequest,
+  getIntakeDocuments,
   getIntakeEvents,
+  getIntakeMembers,
   getIntakeMessages,
   getIntakeRequest,
-  getIntakeReviewers,
 } from "@/app/lib/mikeApi";
+import { notifyError } from "@/app/lib/userFacingError";
+import { notifySuccess } from "@/shared/lib/errorNotifier";
 import { PageHeader } from "@/app/components/shared/PageHeader";
 import {
   SkeletonLine,
@@ -34,17 +39,31 @@ import { ModalTextarea } from "@/app/components/modals/ModalTextarea";
 import { EmptyState } from "@/app/components/ui/empty-state";
 import { FieldLabel } from "@/app/components/ui/form-field";
 import { UserAvatar } from "@/app/components/ui/user-avatar";
-import { ConfirmPopup } from "@/app/components/popups/ConfirmPopup";
 import { IntakeSkeuoIcon } from "@/app/components/shared/AppSidebarSkeuoIcons";
 import { GlassCardUI } from "@/shared/ui/GlassCardUI";
 import { PillButtonUI } from "@/shared/ui/PillButtonUI";
 import { TextSlabUI } from "@/shared/ui/TextSlabUI";
-import { INTAKE_STATE_LABELS } from "./IntakeInbox";
 import {
   intakeError,
   useIntakeDraftWarning,
   useIntakeOperation,
 } from "./useIntakeOperation";
+import { IntakeDocuments } from "./IntakeDocuments";
+import { IntakeReasonModal } from "./IntakeReasonModal";
+import { IntakeRequestModal } from "./IntakeRequestModal";
+import {
+  INTAKE_CATEGORY_LABELS,
+  INTAKE_MESSAGE_LABELS,
+  INTAKE_STATE_LABELS,
+  formatIntakeDate,
+  formatIntakeDateTime,
+  intakeMemberName,
+  isIntakeOverdue,
+} from "./intakeLabels";
+
+/** Quiet refreshes when the window regains focus are at most this frequent. */
+const FOCUS_REFRESH_MS = 30_000;
+
 /** Scope a deep-linked request to its organization before mounting retained drafts. */
 export function IntakeDetail({
   orgId,
@@ -72,10 +91,11 @@ export function IntakeDetail({
       key={`${accountId}:${orgId}:${requestId}`}
       orgId={orgId}
       requestId={requestId}
+      accountId={accountId}
     />
   );
 }
-/** Read the complete message or event history using the API's 100-row pages. */
+/** Read the complete note or event history using the API's 100-row pages. */
 async function allPages<T>(read: (offset: number) => Promise<T[]>) {
   const rows: T[] = [];
   for (let offset = 0; ; offset += 100) {
@@ -84,59 +104,68 @@ async function allPages<T>(read: (offset: number) => Promise<T[]>) {
     if (page.length < 100) return rows;
   }
 }
+type Closing = "resolve" | "cancel";
+/** Which retained draft a successful command has consumed. */
+type Consumed = "note" | "reason" | null;
 /** Show the current request and gate commands on its server-provided capabilities. */
 export function Detail({
   orgId,
   requestId,
+  accountId,
 }: {
   orgId: string;
   requestId: string;
+  accountId: string;
 }) {
   const router = useRouter();
   const memory = useIntakeMemory(orgId, requestId);
   const [request, setRequest] = useState<IntakeRequest | null>(null);
   const [messages, setMessages] = useState<IntakeMessage[]>([]);
   const [events, setEvents] = useState<IntakeEvent[]>([]);
-  const [reviewers, setReviewers] = useState<IntakeReviewer[]>([]);
+  const [documents, setDocuments] = useState<IntakeDocument[]>([]);
+  const [members, setMembers] = useState<IntakeMember[]>([]);
   const [error, setError] = useState<string | null>(null);
-  const [draft, setDraft] = useIntakeDraft(memory, "body", "");
-  const [preview, setPreview] = useState<{
-    body: string;
-    version: number;
-  } | null>(null);
-  const [cancel, setCancel] = useState(false);
+  const [note, setNote] = useIntakeDraft(memory, "note", "");
+  const [reason, setReason] = useIntakeDraft(memory, "reason", "");
+  const [closing, setClosing] = useIntakeDraft<Closing | null>(
+    memory,
+    "closing",
+    null,
+  );
+  const [consumes, setConsumes] = useIntakeDraft<Consumed>(
+    memory,
+    "consumes",
+    null,
+  );
+  const [editing, setEditing] = useState(false);
   const [assignee, setAssignee] = useState("");
   const epoch = useRef(0);
-  const [pendingMessage, setPendingMessage] = useIntakeDraft(
-    memory,
-    "pendingMessage",
-    false,
-  );
   const refresh = useCallback(async () => {
     const generation = ++epoch.current;
     try {
       const r = await getIntakeRequest(orgId, requestId);
-      const [m, e, roster] = await Promise.all([
+      const [m, e, d, roster] = await Promise.all([
         allPages((offset) => getIntakeMessages(orgId, requestId, offset)),
         allPages((offset) => getIntakeEvents(orgId, requestId, offset)),
-        r.capabilities.assign ? getIntakeReviewers(orgId) : Promise.resolve([]),
+        getIntakeDocuments(orgId, requestId),
+        r.capabilities.assign ? getIntakeMembers(orgId) : Promise.resolve([]),
       ]);
       if (generation !== epoch.current) return;
       setRequest(r);
       setMessages(m);
       setEvents(e);
-      setReviewers(roster.filter((x) => x.is_reviewer));
+      setDocuments(d);
+      setMembers(roster);
       setAssignee(r.assignee_id ?? "");
       setError(null);
-      setPreview((old) => (old?.version === r.version ? old : null));
     } catch (e) {
       if (generation === epoch.current) {
         setRequest(null);
         setMessages([]);
         setEvents([]);
-        setReviewers([]);
-        setPreview(null);
-        setError(intakeError(e));
+        setDocuments([]);
+        setMembers([]);
+        setError(intakeError(e, "load the request"));
       }
     }
   }, [orgId, requestId]);
@@ -144,13 +173,17 @@ export function Detail({
     epoch.current++;
   }, []);
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- refresh sets state only after its first request resolves
     void refresh();
     return invalidate;
   }, [refresh, invalidate]);
+  // Coming back to the window refreshes in place: the request stays on
+  // screen and drafts are untouched.
+  const lastFocusRefresh = useRef(0);
   useEffect(() => {
     const focus = () => {
-      setRequest(null);
-      setPreview(null);
+      if (Date.now() - lastFocusRefresh.current < FOCUS_REFRESH_MS) return;
+      lastFocusRefresh.current = Date.now();
       void refresh();
     };
     window.addEventListener("focus", focus);
@@ -158,37 +191,48 @@ export function Detail({
   }, [refresh]);
   const operation = useIntakeOperation(
     () => {
-      if (pendingMessage) setDraft("");
-      setPreview(null);
-      setCancel(false);
+      if (consumes === "note") setNote("");
+      if (consumes === "reason") {
+        setReason("");
+        setClosing(null);
+      }
+      setConsumes(null);
       void refresh();
     },
-    () => {
-      setRequest(null);
-      setMessages([]);
-      setEvents([]);
-      setReviewers([]);
-      setPreview(null);
-      setCancel(false);
+    (rejection) => {
+      const status =
+        rejection && typeof rejection === "object" && "status" in rejection
+          ? Number(rejection.status)
+          : 0;
+      // Hide what this account may no longer read until the reload decides.
+      // Other failures refresh in place, keeping any open dialog and draft.
+      if ([401, 403, 404].includes(status)) {
+        setRequest(null);
+        setMessages([]);
+        setEvents([]);
+        setDocuments([]);
+        setMembers([]);
+      }
       void refresh();
     },
     memory,
   );
-  useIntakeDraftWarning(!!draft || operation.locked);
-  /** Capture the displayed request version and reuse one command when recovering a save. */
+  useIntakeDraftWarning(!!note || !!reason || operation.locked);
+  /** Capture the displayed request version; recovery reuses the same command. */
   function command(
     action: IntakeAction,
-    body?: string,
-    version = request?.version,
+    label: string,
+    fields: Pick<IntakeCommand, "body" | "assignee_id"> = {},
+    consumed: Consumed = null,
   ) {
-    if (!version) return;
-    const input = {
+    if (!request) return;
+    const input: IntakeCommand = {
       command_id: crypto.randomUUID(),
-      expected_version: version,
-      ...(body !== undefined ? { body } : {}),
-      ...(action === "assignment" ? { assignee_id: assignee || null } : {}),
+      // Notes leave the request unchanged, so they carry no version.
+      ...(action === "notes" ? {} : { expected_version: request.version }),
+      ...fields,
     };
-    setPendingMessage(body !== undefined);
+    setConsumes(consumed);
     void operation.execute(async () => {
       const receipt = await commandIntakeRequest(
         orgId,
@@ -199,13 +243,25 @@ export function Detail({
       if (receipt.request_id !== requestId)
         throw new Error("Mismatched intake receipt");
       return receipt;
-    });
+    }, label);
   }
-  const canWrite =
-    !!request &&
-    (request.capabilities.ask ||
-      request.capabilities.reply ||
-      request.capabilities.publish);
+  const caps = request?.capabilities;
+  const pinned = request
+    ? [...messages]
+        .reverse()
+        .find((m) =>
+          request.state === "resolved"
+            ? m.kind === "resolution"
+            : request.state === "cancelled" && m.kind === "cancel_reason",
+        )
+    : undefined;
+  const memberOptions = [
+    { value: "", label: "Unassigned" },
+    ...members.map((m) => ({
+      value: m.user_id,
+      label: m.user_id === accountId ? `${intakeMemberName(m)} (you)` : intakeMemberName(m),
+    })),
+  ];
   return (
     <div className="flex h-full min-h-0 flex-col">
       <PageHeader
@@ -242,7 +298,7 @@ export function Detail({
                 }
               />
             </TableEmptyState>
-          ) : !request ? (
+          ) : !request || !caps ? (
             <DetailSkeleton />
           ) : (
             <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_18rem]">
@@ -253,8 +309,8 @@ export function Detail({
                       {request.subject}
                     </h1>
                     <p className="text-xs text-gray-500">
-                      {request.requester_name} ·{" "}
-                      {formatDateTime(request.created_at)}
+                      Recorded by {request.created_by_name} ·{" "}
+                      {formatIntakeDateTime(request.created_at)}
                     </p>
                     <p className="whitespace-pre-wrap text-sm leading-relaxed text-gray-700">
                       {request.description}
@@ -262,18 +318,61 @@ export function Detail({
                   </div>
                 </GlassCardUI>
 
-                <section
-                  aria-labelledby="intake-conversation"
-                  className="space-y-2"
-                >
+                {pinned && (
+                  <GlassCardUI>
+                    <section
+                      aria-labelledby="intake-outcome"
+                      className="space-y-3 p-4"
+                    >
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <h2
+                          id="intake-outcome"
+                          className="text-sm font-medium text-gray-900"
+                        >
+                          {request.state === "resolved"
+                            ? "Resolution"
+                            : "Cancellation reason"}
+                        </h2>
+                        <PillButtonUI
+                          tone="white"
+                          size="sm"
+                          onClick={() =>
+                            navigator.clipboard.writeText(pinned.body).then(
+                              () => notifySuccess("Copied"),
+                              (e) => notifyError(e, { action: "copy the text" }),
+                            )
+                          }
+                        >
+                          Copy
+                        </PillButtonUI>
+                      </div>
+                      <TextSlabUI className="whitespace-pre-wrap text-sm leading-relaxed text-gray-700">
+                        {pinned.body}
+                      </TextSlabUI>
+                      <p className="text-xs text-gray-500">
+                        {pinned.author_name} ·{" "}
+                        {formatIntakeDateTime(pinned.created_at)}
+                      </p>
+                    </section>
+                  </GlassCardUI>
+                )}
+
+                <IntakeDocuments
+                  orgId={orgId}
+                  requestId={requestId}
+                  documents={documents}
+                  onChanged={() => void refresh()}
+                />
+
+                <section aria-labelledby="intake-activity" className="space-y-2">
                   <h2
-                    id="intake-conversation"
+                    id="intake-activity"
                     className="text-sm font-medium text-gray-900"
                   >
-                    Conversation
+                    Notes
                   </h2>
                   {messages.length === 0 ? (
-                    <p className="text-sm text-gray-500">No messages yet.</p>
+                    <p className="text-sm text-gray-500">No notes yet.</p>
                   ) : (
                     messages.map((m) => (
                       <GlassCardUI key={m.id}>
@@ -283,9 +382,9 @@ export function Detail({
                             <span className="font-medium text-gray-700">
                               {m.author_name}
                             </span>
-                            <span>{MESSAGE_KIND_LABELS[m.kind]}</span>
+                            <span>{INTAKE_MESSAGE_LABELS[m.kind]}</span>
                             <time dateTime={m.created_at}>
-                              {formatDateTime(m.created_at)}
+                              {formatIntakeDateTime(m.created_at)}
                             </time>
                           </div>
                           <p className="whitespace-pre-wrap text-sm leading-relaxed text-gray-700">
@@ -297,104 +396,34 @@ export function Detail({
                   )}
                 </section>
 
-                {canWrite && (
+                {caps.note && (
                   <GlassCardUI>
                     <div className="space-y-3 p-4">
-                      <FieldLabel htmlFor="intake-message">
-                        Message to{" "}
-                        {request.capabilities.reply ? "Legal" : "the requester"}
-                      </FieldLabel>
+                      <FieldLabel htmlFor="intake-note">Add a note</FieldLabel>
                       <ModalTextarea
-                        id="intake-message"
-                        className="min-h-32"
+                        id="intake-note"
+                        className="min-h-24"
                         maxLength={20000}
-                        value={draft}
+                        placeholder="What happened, what the requester said, what was sent"
+                        value={note}
                         disabled={operation.locked}
-                        onChange={(e) => {
-                          setDraft(e.target.value);
-                          setPreview(null);
-                        }}
+                        onChange={(e) => setNote(e.target.value)}
                       />
                       <div className="flex flex-wrap items-center justify-between gap-2">
                         <p className="text-xs text-gray-500">
-                          Shared with the requester and the Legal team.
+                          Notes are visible to everyone in your organization.
                         </p>
-                        <div className="flex flex-wrap gap-2">
-                          {request.capabilities.ask && (
-                            <PillButtonUI
-                              tone={
-                                request.capabilities.publish ? "white" : "black"
-                              }
-                              size="sm"
-                              disabled={!draft.trim() || operation.locked}
-                              onClick={() => command("questions", draft)}
-                            >
-                              Ask for information
-                            </PillButtonUI>
-                          )}
-                          {request.capabilities.reply && (
-                            <PillButtonUI
-                              tone="black"
-                              size="sm"
-                              disabled={!draft.trim() || operation.locked}
-                              onClick={() => command("replies", draft)}
-                            >
-                              Send reply
-                            </PillButtonUI>
-                          )}
-                          {request.capabilities.publish && (
-                            <PillButtonUI
-                              tone="black"
-                              size="sm"
-                              disabled={!draft.trim() || operation.locked}
-                              onClick={() =>
-                                setPreview({
-                                  body: draft,
-                                  version: request.version,
-                                })
-                              }
-                            >
-                              Preview answer
-                            </PillButtonUI>
-                          )}
-                        </div>
+                        <PillButtonUI
+                          tone="black"
+                          size="sm"
+                          disabled={!note.trim() || operation.locked}
+                          onClick={() =>
+                            command("notes", "add the note", { body: note }, "note")
+                          }
+                        >
+                          Add note
+                        </PillButtonUI>
                       </div>
-                    </div>
-                  </GlassCardUI>
-                )}
-
-                {preview && request.capabilities.publish && (
-                  <GlassCardUI>
-                    <div className="p-4">
-                      <section
-                        aria-label="Answer preview"
-                        className="space-y-3"
-                      >
-                        <div className="space-y-1">
-                          <p className="text-sm font-medium text-gray-900">
-                            Answer preview
-                          </p>
-                          <p className="text-xs text-gray-500">
-                            The requester will see exactly this text, and the
-                            request will be resolved.
-                          </p>
-                        </div>
-                        <TextSlabUI className="whitespace-pre-wrap text-sm leading-relaxed text-gray-700">
-                          {preview.body}
-                        </TextSlabUI>
-                        <div className="flex justify-end">
-                          <PillButtonUI
-                            tone="black"
-                            size="sm"
-                            disabled={operation.locked}
-                            onClick={() =>
-                              command("answer", preview.body, preview.version)
-                            }
-                          >
-                            Share answer and resolve
-                          </PillButtonUI>
-                        </div>
-                      </section>
                     </div>
                   </GlassCardUI>
                 )}
@@ -407,25 +436,31 @@ export function Detail({
                       {INTAKE_STATE_LABELS[request.state]}
                     </DetailRow>
                     <DetailRow label="Type">
-                      {request.category === "nda"
-                        ? "NDA request"
-                        : "Legal question"}
+                      {INTAKE_CATEGORY_LABELS[request.category]}
                     </DetailRow>
-                    <DetailRow label="Requested by">
-                      {request.requester_name}
+                    <DetailRow label="Requester">
+                      <span className="block">{request.requester_name}</span>
+                      {request.requester_email && (
+                        <span className="block text-xs text-gray-500">
+                          {request.requester_email}
+                        </span>
+                      )}
+                      {request.requester_team && (
+                        <span className="block text-xs text-gray-500">
+                          {request.requester_team}
+                        </span>
+                      )}
                     </DetailRow>
                     <DetailRow
                       label={
-                        request.capabilities.assign ? (
-                          <label htmlFor="intake-assignee">
-                            Assigned lawyer
-                          </label>
+                        caps.assign ? (
+                          <label htmlFor="intake-assignee">Assigned lawyer</label>
                         ) : (
                           "Assigned lawyer"
                         )
                       }
                     >
-                      {request.capabilities.assign ? (
+                      {caps.assign ? (
                         <div className="space-y-2">
                           <ModalSelect
                             id="intake-assignee"
@@ -433,25 +468,40 @@ export function Detail({
                             value={assignee}
                             placeholder="Unassigned"
                             disabled={operation.locked}
-                            options={[
-                              { value: "", label: "Unassigned" },
-                              ...reviewers.map((r) => ({
-                                value: r.user_id,
-                                label: r.display_name ?? r.email ?? "Member",
-                              })),
-                            ]}
+                            options={memberOptions}
                             onChange={setAssignee}
                           />
-                          {assignee !== (request.assignee_id ?? "") && (
-                            <PillButtonUI
-                              tone="black"
-                              size="sm"
-                              disabled={operation.locked}
-                              onClick={() => command("assignment")}
-                            >
-                              Save assignment
-                            </PillButtonUI>
-                          )}
+                          <div className="flex flex-wrap gap-2">
+                            {assignee !== (request.assignee_id ?? "") && (
+                              <PillButtonUI
+                                tone="black"
+                                size="sm"
+                                disabled={operation.locked}
+                                onClick={() =>
+                                  command("assignment", "assign the request", {
+                                    assignee_id: assignee || null,
+                                  })
+                                }
+                              >
+                                Save assignment
+                              </PillButtonUI>
+                            )}
+                            {request.assignee_id !== accountId &&
+                              assignee === (request.assignee_id ?? "") && (
+                                <PillButtonUI
+                                  tone="white"
+                                  size="sm"
+                                  disabled={operation.locked}
+                                  onClick={() =>
+                                    command("assignment", "assign the request", {
+                                      assignee_id: accountId,
+                                    })
+                                  }
+                                >
+                                  Assign to me
+                                </PillButtonUI>
+                              )}
+                          </div>
                         </div>
                       ) : (
                         (request.assignee_name ?? (
@@ -461,7 +511,14 @@ export function Detail({
                     </DetailRow>
                     {request.requested_by_date && (
                       <DetailRow label="Target date">
-                        {request.requested_by_date}
+                        <span className="block">
+                          {formatIntakeDate(request.requested_by_date)}
+                        </span>
+                        {isIntakeOverdue(request) && (
+                          <span className="block text-xs text-red-600">
+                            Overdue
+                          </span>
+                        )}
                         {request.timezone && (
                           <span className="block text-xs text-gray-500">
                             {request.timezone} · not a legal deadline
@@ -470,28 +527,84 @@ export function Detail({
                       </DetailRow>
                     )}
                     <DetailRow label="Updated">
-                      {formatDateTime(request.updated_at)}
+                      {formatIntakeDateTime(request.updated_at)}
                     </DetailRow>
                   </dl>
-                  {request.capabilities.cancel && (
-                    <div className="border-t border-gray-100 p-4">
-                      <PillButtonUI
-                        tone="danger"
-                        size="sm"
-                        disabled={operation.locked}
-                        onClick={() => setCancel(true)}
-                      >
-                        Cancel request
-                      </PillButtonUI>
+                  {(caps.edit ||
+                    caps.wait ||
+                    caps.resume ||
+                    caps.resolve ||
+                    caps.cancel ||
+                    caps.reopen) && (
+                    <div className="flex flex-wrap gap-2 border-t border-gray-100 p-4">
+                      {caps.resolve && (
+                        <PillButtonUI
+                          tone="black"
+                          size="sm"
+                          disabled={operation.locked}
+                          onClick={() => setClosing("resolve")}
+                        >
+                          Resolve
+                        </PillButtonUI>
+                      )}
+                      {caps.wait && (
+                        <PillButtonUI
+                          tone="white"
+                          size="sm"
+                          disabled={operation.locked}
+                          onClick={() =>
+                            command("wait", "mark the request as waiting")
+                          }
+                        >
+                          Mark waiting on requester
+                        </PillButtonUI>
+                      )}
+                      {caps.resume && (
+                        <PillButtonUI
+                          tone="white"
+                          size="sm"
+                          disabled={operation.locked}
+                          onClick={() => command("resume", "resume the request")}
+                        >
+                          Resume
+                        </PillButtonUI>
+                      )}
+                      {caps.reopen && (
+                        <PillButtonUI
+                          tone="white"
+                          size="sm"
+                          disabled={operation.locked}
+                          onClick={() => command("reopen", "reopen the request")}
+                        >
+                          Reopen
+                        </PillButtonUI>
+                      )}
+                      {caps.edit && (
+                        <PillButtonUI
+                          tone="white"
+                          size="sm"
+                          disabled={operation.locked}
+                          onClick={() => setEditing(true)}
+                        >
+                          Edit details
+                        </PillButtonUI>
+                      )}
+                      {caps.cancel && (
+                        <PillButtonUI
+                          tone="danger"
+                          size="sm"
+                          disabled={operation.locked}
+                          onClick={() => setClosing("cancel")}
+                        >
+                          Cancel request
+                        </PillButtonUI>
+                      )}
                     </div>
                   )}
                 </GlassCardUI>
 
                 {events.length > 0 && (
-                  <section
-                    aria-labelledby="intake-history"
-                    className="space-y-2"
-                  >
+                  <section aria-labelledby="intake-history" className="space-y-2">
                     <h2
                       id="intake-history"
                       className="text-sm font-medium text-gray-900"
@@ -506,13 +619,12 @@ export function Detail({
                             className="border-t border-gray-100 px-4 py-2.5 first:border-t-0"
                           >
                             <p className="text-sm text-gray-700">
-                              {EVENT_LABELS[e.kind] ??
-                                e.kind.replaceAll("_", " ")}
+                              {describeEvent(e)}
                             </p>
                             <p className="text-xs text-gray-500">
-                              {e.actor_name} ·{" "}
+                              {e.actor_name ?? "Automatically"} ·{" "}
                               <time dateTime={e.created_at}>
-                                {formatDateTime(e.created_at)}
+                                {formatIntakeDateTime(e.created_at)}
                               </time>
                             </p>
                           </li>
@@ -524,7 +636,7 @@ export function Detail({
               </aside>
             </div>
           )}
-          {operation.uncertain && (
+          {operation.uncertain && !closing && (
             <div
               className="mt-4 flex flex-wrap items-center gap-3"
               role="status"
@@ -544,43 +656,105 @@ export function Detail({
           )}
         </div>
       </div>
-      <ConfirmPopup
-        open={cancel}
-        title="Cancel this request?"
-        message="The conversation will stay available, but the request will become read-only."
-        confirmLabel="Cancel request"
-        onCancel={() => setCancel(false)}
-        onConfirm={() => command("cancel")}
-        confirmDisabled={operation.locked}
-      />
+      {closing && request && (
+        <IntakeReasonModal
+          title={closing === "resolve" ? "Resolve request" : "Cancel request"}
+          label={
+            closing === "resolve"
+              ? "Resolution"
+              : "Why is this being cancelled?"
+          }
+          hint={
+            closing === "resolve"
+              ? "Record the advice given or the outcome. It is pinned to the request."
+              : "The reason is recorded on the request. Anyone can reopen it later."
+          }
+          confirmLabel={closing === "resolve" ? "Resolve" : "Cancel request"}
+          confirmVariant={closing === "resolve" ? "primary" : "danger"}
+          value={reason}
+          onChange={setReason}
+          busy={operation.busy}
+          locked={operation.locked}
+          status={
+            operation.uncertain ? (
+              <span role="status">Checking whether it was saved.</span>
+            ) : undefined
+          }
+          secondaryAction={
+            operation.uncertain
+              ? {
+                  label: "Check again",
+                  onClick: () => void operation.execute(),
+                  disabled: operation.busy,
+                }
+              : undefined
+          }
+          onConfirm={() =>
+            command(
+              closing,
+              closing === "resolve" ? "resolve the request" : "cancel the request",
+              { body: reason },
+              "reason",
+            )
+          }
+          onClose={() => setClosing(null)}
+        />
+      )}
+      {editing && request && (
+        <IntakeRequestModal
+          mode="edit"
+          orgId={orgId}
+          requestId={request.id}
+          version={request.version}
+          initial={request}
+          onClose={() => setEditing(false)}
+          onSaved={() => {
+            setEditing(false);
+            void refresh();
+          }}
+        />
+      )}
     </div>
   );
 }
 
-const MESSAGE_KIND_LABELS: Record<IntakeMessage["kind"], string> = {
-  question: "Asked for information",
-  reply: "Replied",
-  answer: "Answered",
-};
-
-const EVENT_LABELS: Record<string, string> = {
-  submitted: "Submitted",
-  assign: "Assignment changed",
-  ask: "Asked for information",
-  reply: "Replied",
-  publish: "Answered and resolved",
-  cancel: "Cancelled",
-  reviewer_removed: "Unassigned when the lawyer left the Legal team",
-};
-
-function formatDateTime(iso: string) {
-  return new Date(iso).toLocaleString(undefined, {
-    day: "numeric",
-    month: "short",
-    year: "numeric",
-    hour: "numeric",
-    minute: "2-digit",
-  });
+/** One line of history; automatic changes name who left rather than an actor. */
+function describeEvent(e: IntakeEvent): string {
+  switch (e.kind) {
+    case "submitted":
+      return e.assignee_name
+        ? `Recorded and assigned to ${e.assignee_name}`
+        : "Recorded";
+    case "assign":
+      return e.assignee_name ? `Assigned to ${e.assignee_name}` : "Unassigned";
+    case "wait":
+      return "Marked waiting on requester";
+    case "resume":
+      return "Resumed";
+    case "resolve":
+      return "Resolved";
+    case "cancel":
+      return "Cancelled";
+    case "reopen":
+      return "Reopened";
+    case "edited":
+      return "Details edited";
+    case "document_added":
+      return "Document added";
+    case "assignee_left":
+      return `Unassigned because ${e.assignee_name ?? "the assigned lawyer"} left the organization`;
+    // Events recorded before intake became an internal tracker.
+    case "ask":
+      return "Asked for information";
+    case "reply":
+      return "Requester replied";
+    case "publish":
+      return "Answered and resolved";
+    case "reviewer_removed":
+      return "Unassigned when the lawyer left the Legal team";
+    default:
+      return e.kind.replaceAll("_", " ");
+  }
 }
 
 function DetailRow({
@@ -617,7 +791,7 @@ function DetailSkeleton() {
           </div>
         </GlassCardUI>
         <GlassCardUI>
-          {["w-20", "w-24", "w-28", "w-24"].map((width, row) => (
+          {["w-20", "w-24", "w-28", "w-24", "w-20"].map((width, row) => (
             <div
               key={row}
               className="space-y-2 border-t border-gray-100 px-4 py-3 first:border-t-0"
@@ -626,6 +800,10 @@ function DetailSkeleton() {
               <SkeletonLine className={width} />
             </div>
           ))}
+          <div className="flex gap-2 border-t border-gray-100 p-4">
+            <SkeletonLine className="h-7 w-20" />
+            <SkeletonLine className="h-7 w-24" />
+          </div>
         </GlassCardUI>
       </div>
     </>

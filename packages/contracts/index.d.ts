@@ -708,32 +708,53 @@ export interface AuditActorPage {
   nextOffset: number | null;
 }
 
-/** Organization-owned, text-only legal intake. Dates are business targets. */
+/**
+ * The Legal team's internal request tracker, always on in every team
+ * organization. Every member is Legal; requesters are named business
+ * contacts, not accounts. Dates are business targets, not legal deadlines.
+ */
 export type IntakeState = "submitted" | "in_review" | "needs_information" | "resolved" | "cancelled";
-export type IntakeAction = "assignment" | "questions" | "replies" | "answer" | "cancel";
-export interface IntakeConfiguration {
-  configured: boolean; enabled: boolean; can_configure: boolean; is_reviewer: boolean;
-  /** False until an owner chooses the Legal team; requests cannot be sent before then. */
-  has_team: boolean;
-  revision?: number; reviewer_ids?: string[];
+export type IntakeCategory = "nda" | "general";
+export type IntakeAction = "assignment" | "notes" | "wait" | "resume" | "resolve" | "cancel" | "reopen";
+export interface IntakeMember { user_id: string; display_name: string | null; email: string | null }
+/** The editable description of a request. */
+export interface IntakeDetails {
+  category: IntakeCategory; subject: string; description: string;
+  requester_name: string; requester_email: string | null; requester_team: string | null;
+  requested_by_date: string | null; timezone: string | null;
 }
-export interface IntakeReviewer { user_id: string; display_name: string | null; email: string | null; is_reviewer: boolean }
-export interface IntakeRequest {
-  incarnation_id: string;
-  /** Advances when contributor erasure invalidates serialized identity. */
-  export_revision: number;
-  id: string; org_id: string; requester_id: string | null; assignee_id: string | null;
-  category: "nda" | "general"; subject: string; description: string;
-  requested_by_date: string | null; timezone: string | null; state: IntakeState; version: number;
-  created_at: string; updated_at: string; requester_name: string; assignee_name: string | null;
-  capabilities: { assign: boolean; ask: boolean; reply: boolean; publish: boolean; cancel: boolean };
+/** A queue row. It omits the description, which the queue never shows. */
+export interface IntakeRequestSummary extends Omit<IntakeDetails, "description"> {
+  id: string; state: IntakeState; version: number;
+  assignee_id: string | null; assignee_name: string | null;
+  created_at: string; updated_at: string;
+  capabilities: { assign: boolean; cancel: boolean };
 }
-export interface IntakeMessage { id: string; kind: "question" | "reply" | "answer"; body: string; author_name: string; created_at: string }
-export interface IntakeEvent { id: number; kind: string; from_state: IntakeState | null; to_state: IntakeState | null; actor_name: string; created_at: string }
+export interface IntakeRequestPage { requests: IntakeRequestSummary[]; next_cursor: string | null }
+export interface IntakeRequest extends Omit<IntakeRequestSummary, "capabilities">, IntakeDetails {
+  org_id: string; created_by_name: string;
+  capabilities: {
+    edit: boolean; assign: boolean; note: boolean; wait: boolean;
+    resume: boolean; resolve: boolean; cancel: boolean; reopen: boolean;
+  };
+}
+/** Legacy question, reply and answer messages are shown as notes. */
+export interface IntakeMessage {
+  id: string; kind: "note" | "resolution" | "cancel_reason" | "question" | "reply" | "answer";
+  body: string; author_name: string; created_at: string;
+}
+export interface IntakeEvent {
+  id: number; kind: string; from_state: IntakeState | null; to_state: IntakeState | null;
+  /** Null for automatic changes, such as unassignment when a member leaves. */
+  actor_name: string | null; assignee_name: string | null; created_at: string;
+}
+/** A document attached to a request, readable by every organization member. */
+export interface IntakeDocument {
+  document_id: string; filename: string; file_type: string | null; size_bytes: number | null;
+  status: string; added_by_name: string; created_at: string;
+}
 export interface IntakeReceipt { request_id: string | null; applied_version: number; message_id: string | null; replayed: boolean }
-export interface IntakeSubmission {
-  id: string; command_id: string; category: "nda" | "general"; subject: string; description: string;
-  requested_by_date?: string | null; timezone?: string | null;
-}
-export interface IntakeCommand { command_id: string; expected_version: number; body?: string; assignee_id?: string | null }
-export interface IntakeConfigurationCommand { command_id: string; expected_revision: number; enabled: boolean; reviewer_ids: string[] }
+export interface IntakeSubmission extends IntakeDetails { id: string; command_id: string; assignee_id: string | null }
+export interface IntakeEdit extends IntakeDetails { command_id: string; expected_version: number }
+/** Notes carry no version: they never change the request itself. */
+export interface IntakeCommand { command_id: string; expected_version?: number; body?: string; assignee_id?: string | null }

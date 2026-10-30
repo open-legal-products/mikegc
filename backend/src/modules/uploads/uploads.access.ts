@@ -18,6 +18,7 @@ import {
   resolveStandaloneOrgId,
 } from "../../lib/access";
 import type { Db } from "../../lib/supabase";
+import { canAttachIntakeDocuments } from "../intake/intake.service";
 import type { ParsedUploadSessionRequest } from "./uploads.manifest";
 import {
   failure,
@@ -53,6 +54,19 @@ export async function validateDestinationAccess(
       workspaceOrgId = workspace.orgId;
     }
     if (destination.scope === "standalone") return { ok: true };
+    if (destination.scope === "intake") {
+      // Any current member of the request's organization may add documents.
+      const allowed = await canAttachIntakeDocuments(
+        db,
+        { orgId: destination.org_id as string, actorId: userId },
+        destination.request_id as string,
+      );
+      if (!allowed.ok && allowed.kind === "error")
+        return internalFailure(allowed.error);
+      if (!allowed.ok || allowed.data !== true)
+        return failure(404, { detail: "Request not found" });
+      return { ok: true };
+    }
     if (destination.scope === "workflow") {
       const workflowId = destination.workflow_id as string;
       const { data: workflow, error } = await db
