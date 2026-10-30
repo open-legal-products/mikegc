@@ -674,6 +674,10 @@ describe("queue", () => {
   });
 });
 
+const contractFile = () =>
+  new File(["contract"], "Supplier NDA.docx", {
+    type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  });
 const message = (overrides: Partial<IntakeMessage>): IntakeMessage => ({
   id: "message-a",
   kind: "note",
@@ -809,9 +813,12 @@ describe("contract review documents", () => {
       <Detail orgId="org-a" requestId="request-a" accountId="account-a" />,
     );
     const documents = await screen.findByRole("region", { name: "Documents" });
-    expect(within(documents).getByText("Processing…")).toBeInTheDocument();
+    expect(within(documents).getByTitle("Schedule.pdf · Processing")).toBeInTheDocument();
+    expect(
+      within(documents).queryByRole("button", { name: "Open Schedule.pdf" }),
+    ).not.toBeInTheDocument();
     fireEvent.click(
-      within(documents).getByRole("button", { name: "Supplier NDA.docx" }),
+      within(documents).getByRole("button", { name: "Open Supplier NDA.docx" }),
     );
     expect(
       await screen.findByRole("dialog", { name: "Document viewer" }),
@@ -925,9 +932,15 @@ describe("request detail", () => {
 
   it("keeps an unsent note when saving an assignment, and assigns to me in one click", async () => {
     render(detail());
+    const user = userEvent.setup();
     const editor = await screen.findByLabelText("Add a note");
     fireEvent.change(editor, { target: { value: "Unsent note" } });
-    fireEvent.click(screen.getByRole("button", { name: "Assign to me" }));
+    await user.click(screen.getByRole("button", { name: "Assigned to Lawyer B" }));
+    // The current assignee is not offered again; the signed-in member comes first.
+    expect(
+      screen.getAllByRole("menuitem").map((item) => item.textContent),
+    ).toEqual(["Assign to me", "Unassign"]);
+    await user.click(screen.getByRole("menuitem", { name: "Assign to me" }));
     await waitFor(() => expect(mocks.request).toHaveBeenCalledTimes(2));
     expect(screen.getByLabelText("Add a note")).toHaveValue("Unsent note");
     expect(mocks.command.mock.calls[0]).toEqual([
@@ -984,12 +997,82 @@ describe("request detail", () => {
     ).not.toBeInTheDocument();
   });
 
+  it("keeps less common actions in one menu behind a single primary action", async () => {
+    const user = userEvent.setup();
+    render(detail());
+    const summary = await screen.findByRole("region", { name: "Request summary" });
+    expect(within(summary).getByText("In progress")).toBeInTheDocument();
+    expect(within(summary).getByText("Jane Business")).toBeInTheDocument();
+    expect(within(summary).getByText("jane@business.test")).toBeInTheDocument();
+    expect(
+      within(summary)
+        .getAllByRole("button")
+        .map((button) => button.getAttribute("aria-label") ?? button.textContent),
+    ).toEqual(["Resolve", "More actions", "Assigned to Lawyer B"]);
+    await user.click(within(summary).getByRole("button", { name: "More actions" }));
+    expect(
+      screen.getAllByRole("menuitem").map((item) => item.textContent),
+    ).toEqual([
+      "Mark waiting on requester",
+      "Edit details",
+      "Copy link",
+      "Cancel request",
+    ]);
+    await user.click(
+      screen.getByRole("menuitem", { name: "Mark waiting on requester" }),
+    );
+    await waitFor(() =>
+      expect(mocks.command).toHaveBeenCalledWith(
+        "org-a",
+        "request-a",
+        "wait",
+        expect.objectContaining({ expected_version: 1 }),
+      ),
+    );
+  });
+
+  it("reads notes and changes as one timeline, oldest first", async () => {
+    mocks.messages.mockResolvedValue([
+      message({ id: "m1", body: "Called the supplier", created_at: "2026-10-27T10:00:00Z" }),
+    ]);
+    mocks.events.mockResolvedValue([
+      event({ id: 1, created_at: "2026-10-26T10:00:00Z" }),
+      event({ id: 2, kind: "wait", created_at: "2026-10-28T10:00:00Z" }),
+    ]);
+    render(detail());
+    const activity = await screen.findByRole("region", { name: "Activity" });
+    const entries = within(activity).getAllByRole("listitem");
+    expect(entries.map((entry) => entry.textContent)).toEqual([
+      expect.stringContaining("Recorded"),
+      expect.stringContaining("Called the supplier"),
+      expect.stringContaining("Marked waiting on requester"),
+    ]);
+  });
+
+  it("adds files dropped anywhere on the page", async () => {
+    render(detail());
+    const activity = await screen.findByRole("region", { name: "Activity" });
+    const file = contractFile();
+    const dataTransfer = { types: ["Files"], files: [file], dropEffect: "none" };
+    fireEvent.dragEnter(activity, { dataTransfer });
+    expect(
+      screen.getByText("Drop documents to add them to this request"),
+    ).toBeInTheDocument();
+    fireEvent.drop(activity, { dataTransfer });
+    await waitFor(() =>
+      expect(mocks.upload).toHaveBeenCalledWith("org-a", "request-a", [{ file }]),
+    );
+    expect(
+      screen.queryByText("Drop documents to add them to this request"),
+    ).not.toBeInTheDocument();
+  });
+
   it("edits details at the loaded version", async () => {
     mocks.edit.mockResolvedValue(receipt);
+    const user = userEvent.setup();
     render(detail());
-    fireEvent.click(
-      await screen.findByRole("button", { name: "Edit details" }),
-    );
+    await user.click(await screen.findByRole("button", { name: "More actions" }));
+    await user.click(screen.getByRole("menuitem", { name: "Edit details" }));
     expect(screen.getByLabelText("Requester")).toHaveValue("Jane Business");
     fireEvent.change(screen.getByLabelText("Requester"), {
       target: { value: "Sam Business" },

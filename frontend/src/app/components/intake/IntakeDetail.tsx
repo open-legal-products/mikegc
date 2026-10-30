@@ -1,12 +1,7 @@
 "use client";
-import {
-  useCallback,
-  useEffect,
-  useRef,
-  useState,
-  type ReactNode,
-} from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
+import { ChevronDown } from "lucide-react";
 import { useIntakeMemory, useIntakeDraft } from "./useIntakeMemory";
 import type {
   IntakeAction,
@@ -34,13 +29,18 @@ import {
   SkeletonLine,
   TableEmptyState,
 } from "@/app/components/shared/TablePrimitive";
-import { ModalSelect } from "@/app/components/modals/ModalSelect";
 import { ModalTextarea } from "@/app/components/modals/ModalTextarea";
 import { EmptyState } from "@/app/components/ui/empty-state";
-import { FieldLabel } from "@/app/components/ui/form-field";
 import { UserAvatar } from "@/app/components/ui/user-avatar";
 import { IntakeSkeuoIcon } from "@/app/components/shared/AppSidebarSkeuoIcons";
-import { GlassCardUI } from "@/shared/ui/GlassCardUI";
+import { RowActions } from "@/app/components/shared/RowActions";
+import {
+  Dropdown,
+  DropdownContent,
+  DropdownItem,
+  DropdownSeparator,
+  DropdownTrigger,
+} from "@/shared/ui/dropdown";
 import { PillButtonUI } from "@/shared/ui/PillButtonUI";
 import { TextSlabUI } from "@/shared/ui/TextSlabUI";
 import {
@@ -48,7 +48,7 @@ import {
   useIntakeDraftWarning,
   useIntakeOperation,
 } from "./useIntakeOperation";
-import { IntakeDocuments } from "./IntakeDocuments";
+import { IntakeDocuments, useIntakeDocumentUpload } from "./IntakeDocuments";
 import { IntakeReasonModal } from "./IntakeReasonModal";
 import { IntakeRequestModal } from "./IntakeRequestModal";
 import {
@@ -138,7 +138,6 @@ export function Detail({
     null,
   );
   const [editing, setEditing] = useState(false);
-  const [assignee, setAssignee] = useState("");
   const epoch = useRef(0);
   const refresh = useCallback(async () => {
     const generation = ++epoch.current;
@@ -156,7 +155,6 @@ export function Detail({
       setEvents(e);
       setDocuments(d);
       setMembers(roster);
-      setAssignee(r.assignee_id ?? "");
       setError(null);
     } catch (e) {
       if (generation === epoch.current) {
@@ -246,6 +244,10 @@ export function Detail({
     }, label);
   }
   const caps = request?.capabilities;
+  const upload = useIntakeDocumentUpload(orgId, requestId, () => void refresh());
+  // Files dropped anywhere on the page are added to the request.
+  const dragDepth = useRef(0);
+  const [dragging, setDragging] = useState(false);
   const pinned = request
     ? [...messages]
         .reverse()
@@ -255,13 +257,17 @@ export function Detail({
             : request.state === "cancelled" && m.kind === "cancel_reason",
         )
     : undefined;
-  const memberOptions = [
-    { value: "", label: "Unassigned" },
-    ...members.map((m) => ({
-      value: m.user_id,
-      label: m.user_id === accountId ? `${intakeMemberName(m)} (you)` : intakeMemberName(m),
-    })),
-  ];
+  // Notes and changes read as one story, oldest first.
+  const timeline = [
+    ...events.map((event) => ({ key: `e${event.id}`, at: event.created_at, event })),
+    ...messages.map((message) => ({ key: `m${message.id}`, at: message.created_at, message })),
+  ].sort((a, b) => Date.parse(a.at) - Date.parse(b.at));
+  const assign = (assigneeId: string | null) =>
+    command("assignment", "assign the request", { assignee_id: assigneeId });
+  const others = members.filter(
+    (m) => m.user_id !== accountId && m.user_id !== request?.assignee_id,
+  );
+  const hasMenu = !!caps && (caps.wait || caps.resume || caps.edit || caps.cancel);
   return (
     <div className="flex h-full min-h-0 flex-col">
       <PageHeader
@@ -279,8 +285,40 @@ export function Detail({
           },
         ]}
       />
-      <div className="min-h-0 flex-1 overflow-y-auto">
-        <div className="mx-3 pb-6 md:mx-6.5 [overflow-wrap:anywhere]">
+      <div
+        className="relative min-h-0 flex-1 overflow-y-auto"
+        onDragEnter={(event) => {
+          if (!request || !event.dataTransfer.types.includes("Files")) return;
+          event.preventDefault();
+          dragDepth.current += 1;
+          setDragging(true);
+        }}
+        onDragOver={(event) => {
+          if (!request || !event.dataTransfer.types.includes("Files")) return;
+          event.preventDefault();
+          event.dataTransfer.dropEffect = "copy";
+        }}
+        onDragLeave={() => {
+          dragDepth.current = Math.max(0, dragDepth.current - 1);
+          if (!dragDepth.current) setDragging(false);
+        }}
+        onDrop={(event) => {
+          if (!request) return;
+          event.preventDefault();
+          dragDepth.current = 0;
+          setDragging(false);
+          void upload.add(Array.from(event.dataTransfer.files));
+        }}
+      >
+        {dragging && (
+          <div
+            aria-hidden="true"
+            className="pointer-events-none absolute inset-2 z-10 flex items-center justify-center rounded-xl bg-white/70 text-sm text-gray-700 ring-2 ring-inset ring-blue-500/40"
+          >
+            Drop documents to add them to this request
+          </div>
+        )}
+        <div className="mx-3 max-w-3xl pb-8 md:mx-6.5 [overflow-wrap:anywhere]">
           {error ? (
             <TableEmptyState>
               <EmptyState
@@ -301,339 +339,295 @@ export function Detail({
           ) : !request || !caps ? (
             <DetailSkeleton />
           ) : (
-            <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_18rem]">
-              <div className="min-w-0 space-y-4">
-                <GlassCardUI>
-                  <div className="space-y-3 p-5">
-                    <h1 className="font-serif text-2xl text-gray-900">
-                      {request.subject}
-                    </h1>
-                    <p className="text-xs text-gray-500">
-                      Recorded by {request.created_by_name} ·{" "}
-                      {formatIntakeDateTime(request.created_at)}
-                    </p>
-                    <p className="whitespace-pre-wrap text-sm leading-relaxed text-gray-700">
-                      {request.description}
-                    </p>
-                  </div>
-                </GlassCardUI>
-
-                {pinned && (
-                  <GlassCardUI>
-                    <section
-                      aria-labelledby="intake-outcome"
-                      className="space-y-3 p-4"
-                    >
-                      <div className="flex flex-wrap items-center justify-between gap-2">
-                        <h2
-                          id="intake-outcome"
-                          className="text-sm font-medium text-gray-900"
-                        >
-                          {request.state === "resolved"
-                            ? "Resolution"
-                            : "Cancellation reason"}
-                        </h2>
-                        <PillButtonUI
-                          tone="white"
-                          size="sm"
-                          onClick={() =>
-                            navigator.clipboard.writeText(pinned.body).then(
-                              () => notifySuccess("Copied"),
-                              (e) => notifyError(e, { action: "copy the text" }),
-                            )
-                          }
-                        >
-                          Copy
-                        </PillButtonUI>
-                      </div>
-                      <TextSlabUI className="whitespace-pre-wrap text-sm leading-relaxed text-gray-700">
-                        {pinned.body}
-                      </TextSlabUI>
-                      <p className="text-xs text-gray-500">
-                        {pinned.author_name} ·{" "}
-                        {formatIntakeDateTime(pinned.created_at)}
-                      </p>
-                    </section>
-                  </GlassCardUI>
-                )}
-
-                <IntakeDocuments
-                  orgId={orgId}
-                  requestId={requestId}
-                  documents={documents}
-                  onChanged={() => void refresh()}
-                />
-
-                <section aria-labelledby="intake-activity" className="space-y-2">
-                  <h2
-                    id="intake-activity"
-                    className="text-sm font-medium text-gray-900"
-                  >
-                    Notes
-                  </h2>
-                  {messages.length === 0 ? (
-                    <p className="text-sm text-gray-500">No notes yet.</p>
-                  ) : (
-                    messages.map((m) => (
-                      <GlassCardUI key={m.id}>
-                        <div className="space-y-2 p-4">
-                          <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-gray-500">
-                            <UserAvatar size="sm" name={m.author_name} />
-                            <span className="font-medium text-gray-700">
-                              {m.author_name}
-                            </span>
-                            <span>{INTAKE_MESSAGE_LABELS[m.kind]}</span>
-                            <time dateTime={m.created_at}>
-                              {formatIntakeDateTime(m.created_at)}
-                            </time>
-                          </div>
-                          <p className="whitespace-pre-wrap text-sm leading-relaxed text-gray-700">
-                            {m.body}
-                          </p>
-                        </div>
-                      </GlassCardUI>
-                    ))
-                  )}
-                </section>
-
-                {caps.note && (
-                  <GlassCardUI>
-                    <div className="space-y-3 p-4">
-                      <FieldLabel htmlFor="intake-note">Add a note</FieldLabel>
-                      <ModalTextarea
-                        id="intake-note"
-                        className="min-h-24"
-                        maxLength={20000}
-                        placeholder="What happened, what the requester said, what was sent"
-                        value={note}
+            <div className="space-y-6 pt-2">
+              <section aria-label="Request summary" className="space-y-2">
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <h1 className="min-w-0 font-serif text-2xl text-gray-900">
+                    {request.subject}
+                  </h1>
+                  <div className="flex shrink-0 items-center gap-1.5">
+                    {caps.resolve ? (
+                      <PillButtonUI
+                        tone="black"
+                        size="sm"
                         disabled={operation.locked}
-                        onChange={(e) => setNote(e.target.value)}
-                      />
-                      <div className="flex flex-wrap items-center justify-between gap-2">
-                        <p className="text-xs text-gray-500">
-                          Notes are visible to everyone in your organization.
-                        </p>
-                        <PillButtonUI
-                          tone="black"
-                          size="sm"
-                          disabled={!note.trim() || operation.locked}
-                          onClick={() =>
-                            command("notes", "add the note", { body: note }, "note")
-                          }
-                        >
-                          Add note
-                        </PillButtonUI>
-                      </div>
-                    </div>
-                  </GlassCardUI>
-                )}
-              </div>
-
-              <aside className="min-w-0 space-y-4" aria-label="Request details">
-                <GlassCardUI>
-                  <dl>
-                    <DetailRow label="Status">
-                      {INTAKE_STATE_LABELS[request.state]}
-                    </DetailRow>
-                    <DetailRow label="Type">
-                      {INTAKE_CATEGORY_LABELS[request.category]}
-                    </DetailRow>
-                    <DetailRow label="Requester">
-                      <span className="block">{request.requester_name}</span>
-                      {request.requester_email && (
-                        <span className="block text-xs text-gray-500">
-                          {request.requester_email}
-                        </span>
-                      )}
-                      {request.requester_team && (
-                        <span className="block text-xs text-gray-500">
-                          {request.requester_team}
-                        </span>
-                      )}
-                    </DetailRow>
-                    <DetailRow
-                      label={
-                        caps.assign ? (
-                          <label htmlFor="intake-assignee">Assigned lawyer</label>
-                        ) : (
-                          "Assigned lawyer"
-                        )
-                      }
-                    >
-                      {caps.assign ? (
-                        <div className="space-y-2">
-                          <ModalSelect
-                            id="intake-assignee"
-                            variant="flat"
-                            value={assignee}
-                            placeholder="Unassigned"
-                            disabled={operation.locked}
-                            options={memberOptions}
-                            onChange={setAssignee}
-                          />
-                          <div className="flex flex-wrap gap-2">
-                            {assignee !== (request.assignee_id ?? "") && (
-                              <PillButtonUI
-                                tone="black"
-                                size="sm"
-                                disabled={operation.locked}
-                                onClick={() =>
-                                  command("assignment", "assign the request", {
-                                    assignee_id: assignee || null,
-                                  })
-                                }
+                        onClick={() => setClosing("resolve")}
+                      >
+                        Resolve
+                      </PillButtonUI>
+                    ) : caps.reopen ? (
+                      <PillButtonUI
+                        tone="black"
+                        size="sm"
+                        disabled={operation.locked}
+                        onClick={() => command("reopen", "reopen the request")}
+                      >
+                        Reopen
+                      </PillButtonUI>
+                    ) : null}
+                    {hasMenu && !operation.locked && (
+                      <RowActions
+                        ariaLabel="More actions"
+                        renderItems={(close) => (
+                          <>
+                            {caps.wait && (
+                              <DropdownItem
+                                onSelect={() => {
+                                  close();
+                                  command("wait", "mark the request as waiting");
+                                }}
                               >
-                                Save assignment
-                              </PillButtonUI>
+                                Mark waiting on requester
+                              </DropdownItem>
                             )}
-                            {request.assignee_id !== accountId &&
-                              assignee === (request.assignee_id ?? "") && (
-                                <PillButtonUI
-                                  tone="white"
-                                  size="sm"
-                                  disabled={operation.locked}
-                                  onClick={() =>
-                                    command("assignment", "assign the request", {
-                                      assignee_id: accountId,
-                                    })
-                                  }
+                            {caps.resume && (
+                              <DropdownItem
+                                onSelect={() => {
+                                  close();
+                                  command("resume", "resume the request");
+                                }}
+                              >
+                                Resume
+                              </DropdownItem>
+                            )}
+                            {caps.edit && (
+                              <DropdownItem
+                                onSelect={() => {
+                                  close();
+                                  setEditing(true);
+                                }}
+                              >
+                                Edit details
+                              </DropdownItem>
+                            )}
+                            <DropdownItem
+                              onSelect={() => {
+                                close();
+                                const link = new URL(
+                                  `/intake/${requestId}?org=${orgId}`,
+                                  window.location.origin,
+                                ).href;
+                                navigator.clipboard.writeText(link).then(
+                                  () => notifySuccess("Link copied"),
+                                  (e) => notifyError(e, { action: "copy the link" }),
+                                );
+                              }}
+                            >
+                              Copy link
+                            </DropdownItem>
+                            {caps.cancel && (
+                              <>
+                                <DropdownSeparator />
+                                <DropdownItem
+                                  variant="destructive"
+                                  onSelect={() => {
+                                    close();
+                                    setClosing("cancel");
+                                  }}
                                 >
-                                  Assign to me
-                                </PillButtonUI>
-                              )}
-                          </div>
-                        </div>
-                      ) : (
-                        (request.assignee_name ?? (
-                          <span className="text-gray-400">Unassigned</span>
-                        ))
-                      )}
-                    </DetailRow>
-                    {request.requested_by_date && (
-                      <DetailRow label="Target date">
-                        <span className="block">
-                          {formatIntakeDate(request.requested_by_date)}
-                        </span>
-                        {isIntakeOverdue(request) && (
-                          <span className="block text-xs text-red-600">
-                            Overdue
-                          </span>
+                                  Cancel request
+                                </DropdownItem>
+                              </>
+                            )}
+                          </>
                         )}
-                        {request.timezone && (
-                          <span className="block text-xs text-gray-500">
-                            {request.timezone} · not a legal deadline
-                          </span>
-                        )}
-                      </DetailRow>
+                      />
                     )}
-                    <DetailRow label="Updated">
-                      {formatIntakeDateTime(request.updated_at)}
-                    </DetailRow>
-                  </dl>
-                  {(caps.edit ||
-                    caps.wait ||
-                    caps.resume ||
-                    caps.resolve ||
-                    caps.cancel ||
-                    caps.reopen) && (
-                    <div className="flex flex-wrap gap-2 border-t border-gray-100 p-4">
-                      {caps.resolve && (
-                        <PillButtonUI
-                          tone="black"
-                          size="sm"
-                          disabled={operation.locked}
-                          onClick={() => setClosing("resolve")}
-                        >
-                          Resolve
-                        </PillButtonUI>
-                      )}
-                      {caps.wait && (
-                        <PillButtonUI
-                          tone="white"
-                          size="sm"
-                          disabled={operation.locked}
-                          onClick={() =>
-                            command("wait", "mark the request as waiting")
-                          }
-                        >
-                          Mark waiting on requester
-                        </PillButtonUI>
-                      )}
-                      {caps.resume && (
-                        <PillButtonUI
-                          tone="white"
-                          size="sm"
-                          disabled={operation.locked}
-                          onClick={() => command("resume", "resume the request")}
-                        >
-                          Resume
-                        </PillButtonUI>
-                      )}
-                      {caps.reopen && (
-                        <PillButtonUI
-                          tone="white"
-                          size="sm"
-                          disabled={operation.locked}
-                          onClick={() => command("reopen", "reopen the request")}
-                        >
-                          Reopen
-                        </PillButtonUI>
-                      )}
-                      {caps.edit && (
-                        <PillButtonUI
-                          tone="white"
-                          size="sm"
-                          disabled={operation.locked}
-                          onClick={() => setEditing(true)}
-                        >
-                          Edit details
-                        </PillButtonUI>
-                      )}
-                      {caps.cancel && (
-                        <PillButtonUI
-                          tone="danger"
-                          size="sm"
-                          disabled={operation.locked}
-                          onClick={() => setClosing("cancel")}
-                        >
-                          Cancel request
-                        </PillButtonUI>
-                      )}
-                    </div>
+                  </div>
+                </div>
+                <ul className="flex flex-wrap gap-x-1.5 gap-y-0.5 text-sm text-gray-600 [&>li:not(:last-child)]:after:ml-1.5 [&>li:not(:last-child)]:after:text-gray-400 [&>li:not(:last-child)]:after:content-['·']">
+                  <li className="font-medium text-gray-900">
+                    {request.requester_name}
+                  </li>
+                  {request.requester_team && <li>{request.requester_team}</li>}
+                  {request.requester_email && <li>{request.requester_email}</li>}
+                  <li>{INTAKE_CATEGORY_LABELS[request.category]}</li>
+                  {request.requested_by_date && (
+                    <li
+                      title={
+                        request.timezone
+                          ? `${request.timezone} · not a legal deadline`
+                          : "Not a legal deadline"
+                      }
+                      className={isIntakeOverdue(request) ? "text-red-600" : undefined}
+                    >
+                      Due {formatIntakeDate(request.requested_by_date)}
+                      {isIntakeOverdue(request) && ", overdue"}
+                    </li>
                   )}
-                </GlassCardUI>
+                </ul>
+                <div className="flex flex-wrap items-center gap-x-1.5 text-sm text-gray-600">
+                  <span className="font-medium text-gray-900">
+                    {INTAKE_STATE_LABELS[request.state]}
+                  </span>
+                  <span aria-hidden="true" className="text-gray-400">
+                    ·
+                  </span>
+                  {caps.assign ? (
+                    <Dropdown>
+                      <DropdownTrigger asChild>
+                        <button
+                          type="button"
+                          disabled={operation.locked}
+                          className="inline-flex items-center gap-1 rounded-md text-gray-600 transition-colors hover:text-gray-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40 disabled:cursor-not-allowed"
+                        >
+                          {request.assignee_name
+                            ? `Assigned to ${request.assignee_name}`
+                            : "Unassigned"}
+                          <ChevronDown aria-hidden="true" className="h-3 w-3" />
+                        </button>
+                      </DropdownTrigger>
+                      <DropdownContent align="start" className="w-56">
+                        {request.assignee_id !== accountId && (
+                          <DropdownItem onSelect={() => assign(accountId)}>
+                            Assign to me
+                          </DropdownItem>
+                        )}
+                        {request.assignee_id && (
+                          <DropdownItem onSelect={() => assign(null)}>
+                            Unassign
+                          </DropdownItem>
+                        )}
+                        {others.length > 0 && <DropdownSeparator />}
+                        {others.map((m) => (
+                          <DropdownItem
+                            key={m.user_id}
+                            onSelect={() => assign(m.user_id)}
+                          >
+                            {intakeMemberName(m)}
+                          </DropdownItem>
+                        ))}
+                      </DropdownContent>
+                    </Dropdown>
+                  ) : (
+                    <span>
+                      {request.assignee_name
+                        ? `Assigned to ${request.assignee_name}`
+                        : "Unassigned"}
+                    </span>
+                  )}
+                </div>
+              </section>
 
-                {events.length > 0 && (
-                  <section aria-labelledby="intake-history" className="space-y-2">
+              {pinned && (
+                <section aria-labelledby="intake-outcome" className="space-y-2">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
                     <h2
-                      id="intake-history"
+                      id="intake-outcome"
                       className="text-sm font-medium text-gray-900"
                     >
-                      History
+                      {request.state === "resolved"
+                        ? "Resolution"
+                        : "Cancellation reason"}
                     </h2>
-                    <GlassCardUI>
-                      <ol>
-                        {events.map((e) => (
-                          <li
-                            key={e.id}
-                            className="border-t border-gray-100 px-4 py-2.5 first:border-t-0"
-                          >
-                            <p className="text-sm text-gray-700">
-                              {describeEvent(e)}
-                            </p>
-                            <p className="text-xs text-gray-500">
-                              {e.actor_name ?? "Automatically"} ·{" "}
-                              <time dateTime={e.created_at}>
-                                {formatIntakeDateTime(e.created_at)}
-                              </time>
-                            </p>
-                          </li>
-                        ))}
-                      </ol>
-                    </GlassCardUI>
-                  </section>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        navigator.clipboard.writeText(pinned.body).then(
+                          () => notifySuccess("Copied"),
+                          (e) => notifyError(e, { action: "copy the text" }),
+                        )
+                      }
+                      className="rounded-md text-xs text-gray-500 transition-colors hover:text-gray-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40"
+                    >
+                      Copy
+                    </button>
+                  </div>
+                  <TextSlabUI className="whitespace-pre-wrap text-sm leading-relaxed text-gray-700">
+                    {pinned.body}
+                  </TextSlabUI>
+                  <p className="text-xs text-gray-500">
+                    {pinned.author_name} · {formatIntakeDateTime(pinned.created_at)}
+                  </p>
+                </section>
+              )}
+
+              <p className="whitespace-pre-wrap text-sm leading-relaxed text-gray-700">
+                {request.description}
+              </p>
+
+              <IntakeDocuments
+                documents={documents}
+                uploading={upload.uploading}
+                warning={upload.warning}
+                onAdd={(files) => void upload.add(files)}
+              />
+
+              <section aria-labelledby="intake-activity" className="space-y-3">
+                <h2
+                  id="intake-activity"
+                  className="text-sm font-medium text-gray-900"
+                >
+                  Activity
+                </h2>
+                <ol className="space-y-3">
+                  {timeline.map((entry) =>
+                    "event" in entry ? (
+                      <li
+                        key={entry.key}
+                        className="flex flex-wrap gap-x-1.5 text-xs text-gray-500"
+                      >
+                        <span className="text-gray-700">
+                          {describeEvent(entry.event)}
+                        </span>
+                        <span>
+                          {entry.event.actor_name ?? "Automatically"} ·{" "}
+                          <time dateTime={entry.at}>
+                            {formatIntakeDateTime(entry.at)}
+                          </time>
+                        </span>
+                      </li>
+                    ) : (
+                      <li key={entry.key} className="space-y-1">
+                        <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-gray-500">
+                          <UserAvatar size="sm" name={entry.message.author_name} />
+                          <span className="font-medium text-gray-700">
+                            {entry.message.author_name}
+                          </span>
+                          <span>{INTAKE_MESSAGE_LABELS[entry.message.kind]}</span>
+                          <time dateTime={entry.at}>
+                            {formatIntakeDateTime(entry.at)}
+                          </time>
+                        </div>
+                        <p className="whitespace-pre-wrap pl-7 text-sm leading-relaxed text-gray-700">
+                          {entry.message.body}
+                        </p>
+                      </li>
+                    ),
+                  )}
+                </ol>
+                {caps.note && (
+                  <div className="space-y-2 pt-1">
+                    <label htmlFor="intake-note" className="sr-only">
+                      Add a note
+                    </label>
+                    <ModalTextarea
+                      id="intake-note"
+                      className="min-h-20"
+                      maxLength={20000}
+                      placeholder="Add a note: what happened, what the requester said, what was sent"
+                      value={note}
+                      disabled={operation.locked}
+                      onChange={(e) => setNote(e.target.value)}
+                    />
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <p className="text-xs text-gray-500">
+                        Visible to everyone in your organization.
+                      </p>
+                      <PillButtonUI
+                        tone="black"
+                        size="sm"
+                        disabled={!note.trim() || operation.locked}
+                        onClick={() =>
+                          command("notes", "add the note", { body: note }, "note")
+                        }
+                      >
+                        Add note
+                      </PillButtonUI>
+                    </div>
+                  </div>
                 )}
-              </aside>
+              </section>
             </div>
           )}
           {operation.uncertain && !closing && (
@@ -757,54 +751,36 @@ function describeEvent(e: IntakeEvent): string {
   }
 }
 
-function DetailRow({
-  label,
-  children,
-}: {
-  label: ReactNode;
-  children: ReactNode;
-}) {
-  return (
-    <div className="space-y-1 border-t border-gray-100 px-4 py-3 first:border-t-0">
-      <dt className="text-xs font-medium text-gray-500">{label}</dt>
-      <dd className="text-sm text-gray-900">{children}</dd>
-    </div>
-  );
-}
-
+/** Matches the loaded page: header, facts, description, documents, activity. */
 function DetailSkeleton() {
   return (
     <>
       <span role="status" className="sr-only">
         Loading request…
       </span>
-      <div
-        className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_18rem]"
-        aria-hidden="true"
-      >
-        <GlassCardUI>
-          <div className="space-y-3 p-5">
-            <SkeletonLine className="h-5 w-64" />
-            <SkeletonLine className="w-32" />
-            <SkeletonLine className="w-full" />
-            <SkeletonLine className="w-5/6" />
-          </div>
-        </GlassCardUI>
-        <GlassCardUI>
-          {["w-20", "w-24", "w-28", "w-24", "w-20"].map((width, row) => (
-            <div
-              key={row}
-              className="space-y-2 border-t border-gray-100 px-4 py-3 first:border-t-0"
-            >
-              <SkeletonLine className="w-16" />
-              <SkeletonLine className={width} />
-            </div>
-          ))}
-          <div className="flex gap-2 border-t border-gray-100 p-4">
+      <div className="space-y-6 pt-2" aria-hidden="true">
+        <div className="space-y-2">
+          <div className="flex items-start justify-between gap-3">
+            <SkeletonLine className="h-6 w-72" />
             <SkeletonLine className="h-7 w-20" />
-            <SkeletonLine className="h-7 w-24" />
           </div>
-        </GlassCardUI>
+          <SkeletonLine className="w-80" />
+          <SkeletonLine className="w-48" />
+        </div>
+        <div className="space-y-2">
+          <SkeletonLine className="w-full" />
+          <SkeletonLine className="w-5/6" />
+        </div>
+        <div className="flex gap-1.5">
+          <SkeletonLine className="w-20" />
+          <SkeletonLine className="h-5 w-32" />
+        </div>
+        <div className="space-y-3">
+          <SkeletonLine className="w-16" />
+          <SkeletonLine className="w-64" />
+          <SkeletonLine className="w-3/4" />
+          <SkeletonLine className="h-20 w-full" />
+        </div>
       </div>
     </>
   );

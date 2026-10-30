@@ -178,7 +178,7 @@ test("Legal records a business request, works it and resolves it exactly once", 
     await expect(async () => {
       await lawyerA.reload();
       await expect(
-        documents.getByRole("button", { name: "test.pdf" }),
+        documents.getByRole("button", { name: "Open test.pdf" }),
       ).toBeVisible({ timeout: 2000 });
     }).toPass({ timeout: 60000 });
 
@@ -213,26 +213,32 @@ test("Legal records a business request, works it and resolves it exactly once", 
     );
     await lawyerB
       .getByRole("region", { name: "Documents" })
-      .getByRole("button", { name: "test.pdf" })
+      .getByRole("button", { name: "Open test.pdf" })
       .click();
     expect((await opened).status()).toBe(200);
     await lawyerB.reload();
-    await lawyerB.getByRole("button", { name: "Assign to me" }).click();
-    await expect(
-      lawyerB.getByText("Assigned to Intake Lawyer B", { exact: true }),
-    ).toBeVisible();
-    await lawyerB
-      .getByRole("button", { name: "Mark waiting on requester" })
+    // The header holds the facts, the assignee and one primary action; the
+    // rest is in the More actions menu.
+    const summaryB = lawyerB.getByRole("region", { name: "Request summary" });
+    await summaryB
+      .getByRole("button", { name: "Assigned to Intake Lawyer A" })
       .click();
+    await lawyerB.getByRole("menuitem", { name: "Assign to me" }).click();
     await expect(
       lawyerB
-        .getByRole("definition")
-        .getByText("Waiting on requester", { exact: true }),
+        .getByRole("region", { name: "Activity" })
+        .getByText("Assigned to Intake Lawyer B", { exact: true }),
     ).toBeVisible();
-    await lawyerB.getByRole("button", { name: "Resume" }).click();
+    await summaryB.getByRole("button", { name: "More actions" }).click();
+    await lawyerB
+      .getByRole("menuitem", { name: "Mark waiting on requester" })
+      .click();
     await expect(
-      lawyerB.getByRole("definition").getByText("In progress", { exact: true }),
+      summaryB.getByText("Waiting on requester", { exact: true }),
     ).toBeVisible();
+    await summaryB.getByRole("button", { name: "More actions" }).click();
+    await lawyerB.getByRole("menuitem", { name: "Resume" }).click();
+    await expect(summaryB.getByText("In progress", { exact: true })).toBeVisible();
 
     // A lost resolve response is reconciled, not resent as a second change.
     const resolution =
@@ -253,9 +259,7 @@ test("Legal records a business request, works it and resolves it exactly once", 
     const dialog = lawyerB.getByRole("dialog");
     await dialog.getByLabel("Resolution").fill(resolution);
     await dialog.getByRole("button", { name: "Resolve", exact: true }).click();
-    await expect(
-      lawyerB.getByRole("definition").getByText("Resolved", { exact: true }),
-    ).toBeVisible();
+    await expect(summaryB.getByText("Resolved", { exact: true })).toBeVisible();
     expect(commands).toHaveLength(2);
     expect(commands[0]).toEqual(commands[1]);
     const outcome = lawyerB.getByRole("region", { name: "Resolution" });
@@ -293,11 +297,11 @@ test("Legal records a business request, works it and resolves it exactly once", 
     }
 
     // Closed requests can be reopened, and cancelling records a reason.
-    await lawyerA.getByRole("button", { name: "Reopen" }).click();
-    await expect(
-      lawyerA.getByRole("definition").getByText("In progress", { exact: true }),
-    ).toBeVisible();
-    await lawyerA.getByRole("button", { name: "Cancel request" }).click();
+    const summaryA = lawyerA.getByRole("region", { name: "Request summary" });
+    await summaryA.getByRole("button", { name: "Reopen" }).click();
+    await expect(summaryA.getByText("In progress", { exact: true })).toBeVisible();
+    await summaryA.getByRole("button", { name: "More actions" }).click();
+    await lawyerA.getByRole("menuitem", { name: "Cancel request" }).click();
     await lawyerA
       .getByRole("dialog")
       .getByLabel("Why is this being cancelled?")

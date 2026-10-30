@@ -1,6 +1,7 @@
 "use client";
 
-import { useId, useState } from "react";
+import { useId, useRef, useState } from "react";
+import { Loader2, Plus } from "lucide-react";
 import type { IntakeDocument } from "@mike/contracts";
 import type { Document } from "@/app/components/shared/types";
 import {
@@ -9,47 +10,46 @@ import {
   uploadIntakeDocuments,
 } from "@/app/lib/mikeApi";
 import { notifyError, notifyPartialFailure } from "@/app/lib/userFacingError";
+import {
+  SUPPORTED_DOCUMENT_ACCEPT,
+  formatUnsupportedDocumentWarning,
+  partitionSupportedDocumentFiles,
+} from "@/app/lib/documentUploadValidation";
+import { DocumentPill } from "@/app/components/shared/DocumentPill";
 import { DocumentSidePanel } from "@/app/components/shared/DocumentSidePanel";
-import { GlassCardUI } from "@/shared/ui/GlassCardUI";
-import { IntakeDocumentDropZone } from "./IntakeDocumentDropZone";
-import { formatIntakeDateTime } from "./intakeLabels";
 
 const noop = () => {};
 
 /**
- * A request's documents. Every member of the organization can open them in
- * the document viewer and add more; uploads are linked to the request by the
- * upload worker, so the list is simply reloaded afterwards.
+ * Uploads files to a request. The upload worker links each document to the
+ * request, so the caller only reloads the list afterwards.
  */
-export function IntakeDocuments({
-  orgId,
-  requestId,
-  documents,
-  onChanged,
-}: {
-  orgId: string;
-  requestId: string;
-  documents: IntakeDocument[];
-  onChanged: () => void;
-}) {
+export function useIntakeDocumentUpload(
+  orgId: string,
+  requestId: string,
+  onChanged: () => void,
+) {
   const [uploading, setUploading] = useState<File[]>([]);
-  const [viewing, setViewing] = useState<Document | null>(null);
-  const addLabel = useId();
+  const [warning, setWarning] = useState<string | null>(null);
 
-  async function add(files: File[]) {
-    setUploading(files);
+  async function add(candidates: File[]) {
+    const { supported, unsupported } =
+      partitionSupportedDocumentFiles(candidates);
+    setWarning(formatUnsupportedDocumentWarning(unsupported));
+    if (!supported.length || uploading.length) return;
+    setUploading(supported);
     try {
       const outcomes = await uploadIntakeDocuments(
         orgId,
         requestId,
-        files.map((file) => ({ file })),
+        supported.map((file) => ({ file })),
       );
       const failed = outcomes.filter(
         (outcome) => outcome.status !== "completed",
       ).length;
       if (failed)
         notifyPartialFailure(
-          `${failed} of ${files.length} documents couldn't be uploaded. Try adding them again.`,
+          `${failed} of ${supported.length} documents couldn't be uploaded. Try adding them again.`,
           { action: "upload the documents" },
         );
     } catch (error) {
@@ -59,6 +59,28 @@ export function IntakeDocuments({
       onChanged();
     }
   }
+
+  return { uploading, warning, add };
+}
+
+/**
+ * A request's documents as one row of file chips. Every member of the
+ * organization can open them in the document viewer and add more.
+ */
+export function IntakeDocuments({
+  documents,
+  uploading,
+  warning,
+  onAdd,
+}: {
+  documents: IntakeDocument[];
+  uploading: File[];
+  warning: string | null;
+  onAdd: (files: File[]) => void;
+}) {
+  const heading = useId();
+  const input = useRef<HTMLInputElement>(null);
+  const [viewing, setViewing] = useState<Document | null>(null);
 
   async function open(documentId: string) {
     try {
@@ -80,55 +102,81 @@ export function IntakeDocuments({
     }
   }
 
+  const spinner = (
+    <Loader2
+      aria-hidden="true"
+      className="h-2.5 w-2.5 animate-spin motion-reduce:animate-none"
+    />
+  );
+
   return (
-    <section aria-labelledby="intake-documents" className="space-y-2">
-      <h2 id="intake-documents" className="text-sm font-medium text-gray-900">
-        Documents
-      </h2>
-      {documents.length > 0 && (
-        <GlassCardUI>
-          <ul>
-            {documents.map((document) => (
-              <li
-                key={document.document_id}
-                className="space-y-0.5 border-t border-gray-100 px-4 py-2.5 first:border-t-0"
-              >
-                {document.status === "ready" ? (
-                  <button
-                    type="button"
-                    onClick={() => void open(document.document_id)}
-                    className="rounded-md text-left text-sm font-medium text-gray-900 [overflow-wrap:anywhere] hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40"
-                  >
-                    {document.filename}
-                  </button>
-                ) : (
-                  <p className="text-sm text-gray-700 [overflow-wrap:anywhere]">
-                    {document.filename}
-                  </p>
-                )}
-                <p className="text-xs text-gray-500">
-                  {document.status === "ready"
-                    ? `${document.added_by_name} · ${formatIntakeDateTime(document.created_at)}`
-                    : document.status === "error"
-                      ? "Couldn't process this file. Upload it again."
-                      : "Processing…"}
-                </p>
-              </li>
-            ))}
-          </ul>
-        </GlassCardUI>
+    <section aria-labelledby={heading} className="space-y-1.5">
+      <div className="flex flex-wrap items-center gap-1.5">
+        <h2 id={heading} className="mr-1 text-sm font-medium text-gray-900">
+          Documents
+        </h2>
+        {documents.map((document) => (
+          <DocumentPill
+            key={document.document_id}
+            filename={document.filename}
+            fileType={document.file_type}
+            icon={document.status === "ready" ? undefined : spinner}
+            status={
+              document.status === "ready"
+                ? undefined
+                : document.status === "error"
+                  ? "Couldn't process"
+                  : "Processing"
+            }
+            tone={document.status === "error" ? "error" : "default"}
+            onOpen={
+              document.status === "ready"
+                ? () => void open(document.document_id)
+                : undefined
+            }
+          />
+        ))}
+        {uploading.map((file, index) => (
+          <DocumentPill
+            key={`${file.name}:${index}`}
+            filename={file.name}
+            icon={spinner}
+            status="Uploading"
+          />
+        ))}
+        <button
+          type="button"
+          onClick={() => input.current?.click()}
+          disabled={uploading.length > 0}
+          className="inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-xs text-gray-500 transition-colors hover:text-gray-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40 disabled:cursor-not-allowed disabled:opacity-60"
+        >
+          <Plus aria-hidden="true" className="h-3 w-3" />
+          Add
+        </button>
+        <input
+          ref={input}
+          type="file"
+          multiple
+          hidden
+          accept={SUPPORTED_DOCUMENT_ACCEPT}
+          aria-hidden="true"
+          tabIndex={-1}
+          onChange={(event) => {
+            onAdd(Array.from(event.target.files ?? []));
+            event.target.value = "";
+          }}
+        />
+      </div>
+      {!documents.length && !uploading.length && (
+        <p className="text-xs text-gray-500">
+          None yet. Drop files anywhere on this page, or choose Add.
+        </p>
       )}
-      <p id={addLabel} className="sr-only">
-        Add documents
-      </p>
-      <IntakeDocumentDropZone
-        files={uploading}
-        disabled={uploading.length > 0}
-        labelledBy={addLabel}
-        emptyPrompt="Drag and drop documents here, or click to browse."
-        onAdd={(files) => void add(files)}
-        onRemove={noop}
-      />
+      {warning && (
+        <p role="alert" className="text-xs text-red-600">
+          {warning}
+        </p>
+      )}
       <DocumentSidePanel
         doc={viewing}
         readOnly

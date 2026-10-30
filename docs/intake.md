@@ -28,6 +28,14 @@ off. Personal workspaces do not have an intake queue.
    reason, and reopen it. The resolution or cancellation reason is pinned to
    the request.
 
+The request page is one column. Its header shows the subject, the requester
+and the request's facts, the status, an assignee menu that saves as soon as a
+person is chosen (with **Assign to me** first), one primary action
+(**Resolve** while the request is open, **Reopen** once it is closed) and a
+**More actions** menu for marking waiting, resuming, editing details, copying
+a link and cancelling. Notes and every change appear together in one
+**Activity** timeline, oldest first, with the note box at its end.
+
 Statuses are **New**, **In progress**, **Waiting on requester**, **Resolved**
 and **Cancelled** (stored as `submitted`, `in_review`, `needs_information`,
 `resolved` and `cancelled`). Assigning a new request moves it to In progress;
@@ -42,8 +50,9 @@ Every request can carry documents, whether it is a **Contract review**
 form shows a drop zone: drag files onto it or click it to browse. PDF, Word, Excel and PowerPoint files are accepted. The
 files upload after the request is saved. If an upload fails, the request is
 still saved and a notice says which documents to add again from the request.
-Any request's **Documents** section lists its attachments, opens them in the
-document viewer, and accepts more by drag and drop or browsing.
+On the request page, **Documents** is a row of file chips that open in the
+document viewer, with **Add** to browse for more. Files dropped anywhere on the
+page are added to the request.
 
 Attachments are documents of library kind `intake_attachment`, owned by the
 request's organization and linked to the request in `intake_request_documents`.
