@@ -318,7 +318,7 @@ export function Detail({
             Drop documents to add them to this request
           </div>
         )}
-        <div className="mx-3 max-w-3xl pb-8 md:mx-6.5 [overflow-wrap:anywhere]">
+        <div className="mx-auto w-full max-w-3xl px-3 pb-8 md:px-6.5 [overflow-wrap:anywhere]">
           {error ? (
             <TableEmptyState>
               <EmptyState
