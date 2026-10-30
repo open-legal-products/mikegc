@@ -416,6 +416,64 @@ describe("upload processing", () => {
     expect(mocks.copyFile).toHaveBeenCalledOnce();
   });
 
+  it("links an intake attachment to its request before copying any bytes", async () => {
+    const db = fakeDb({
+      documents: [{ data: { id: baseFile.resource_id }, error: null }],
+    });
+    const destination = {
+      scope: "intake",
+      org_id: "66666666-6666-4666-8666-666666666666",
+      request_id: "77777777-7777-4777-8777-777777777777",
+    };
+    let linkedBeforeCopy = false;
+    mocks.copyFile.mockImplementation(async () => {
+      linkedBeforeCopy = db.rpc.mock.calls.some(
+        ([name]) => name === "intake_attach_document",
+      );
+    });
+    await processUploadFile(
+      db as never,
+      { ...baseSession, purpose: "document_create", destination },
+      baseFile,
+    );
+    expect(db.rpc).toHaveBeenCalledWith("intake_attach_document", {
+      p_org: destination.org_id,
+      p_actor: baseSession.user_id,
+      p_request: destination.request_id,
+      p_document: baseFile.resource_id,
+    });
+    expect(linkedBeforeCopy).toBe(true);
+  });
+
+  it("drops an intake attachment whose request disappeared before it was linked", async () => {
+    const db = fakeDb();
+    db.rpc.mockImplementation(async (name: string) =>
+      name === "intake_attach_document"
+        ? { data: null, error: { code: "P0002" } }
+        : { data: null, error: null },
+    );
+    await expect(
+      processUploadFile(
+        db as never,
+        {
+          ...baseSession,
+          purpose: "document_create",
+          destination: {
+            scope: "intake",
+            org_id: "66666666-6666-4666-8666-666666666666",
+            request_id: "77777777-7777-4777-8777-777777777777",
+          },
+        },
+        baseFile,
+      ),
+    ).rejects.toThrow(/document_deleted/);
+    expect(mocks.copyFile).not.toHaveBeenCalled();
+    expect(db.rpc).not.toHaveBeenCalledWith(
+      "create_document_version",
+      expect.anything(),
+    );
+  });
+
   it("creates a new document version from the sealed object", async () => {
     const createdVersion = {
       id: baseFile.resource_id,

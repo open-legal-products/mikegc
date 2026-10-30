@@ -5,7 +5,7 @@ import { ModalUI, type ModalUISize } from "@/shared/ui/ModalUI";
 import { PillButtonUI } from "@/shared/ui/PillButtonUI";
 import { cn } from "@/app/lib/utils";
 
-type ModalAction = Omit<
+export type ModalAction = Omit<
   ButtonHTMLAttributes<HTMLButtonElement>,
   "className"
 > & {

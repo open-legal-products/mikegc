@@ -1,74 +1,28 @@
 import { describe, expect, it, vi } from "vitest";
 import type { Db } from "../../../lib/supabase";
-import { buildIntakeExport, validateIntakeExport } from "../intake.lifecycle";
-import { intakeRpc } from "../intake.requests";
+import { validateIntakeExport } from "../intake.lifecycle";
+import { intakeRpc } from "../intake.shared";
 const id = "00000000-0000-4000-8000-000000000001";
 const export_revision = 1;
 const incarnation_id = "00000000-0000-4000-8000-000000000002";
-describe("intake export consistency", () => {
-  it("refuses a request whose version changed between history reads", async () => {
-    const rpc = vi.fn(async (name: string) => ({
-      error: null,
-      data:
-        name === "intake_export_requests"
-          ? [{ id, incarnation_id, export_revision, org_id: id, version: 1 }]
-          : name === "intake_get_request"
-            ? { id, incarnation_id, export_revision, version: 2 }
-            : [],
+describe("older intake export manifests", () => {
+  it("validates precisely the serialized requests in pages of 100", async () => {
+    const rpc = vi.fn(async () => ({ error: null, data: true }));
+    const requests = Array.from({ length: 101 }, () => ({
+      id,
+      incarnation_id,
+      export_revision,
     }));
-    await expect(
-      buildIntakeExport({ rpc } as unknown as Db, id),
-    ).rejects.toThrow("changed during export");
-  });
-  it("rejects contributor erasure during history collection even without a content-version change", async () => {
-    const rpc = vi.fn(async (name: string) => ({
-      error: null,
-      data: name === "intake_export_requests"
-        ? [{ id, incarnation_id, export_revision, org_id: id, version: 1 }]
-        : name === "intake_get_request"
-          ? { id, incarnation_id, export_revision: 2, version: 1 }
-          : [],
-    }));
-    await expect(buildIntakeExport({ rpc } as unknown as Db, id))
-      .rejects.toThrow("changed during export");
-  });
-  it("rejects contributor erasure after the last snapshot read", async () => {
-    const row = { id, incarnation_id, export_revision, org_id: id, version: 1 };
-    const rpc = vi.fn(async (name: string) => ({
-      error: null,
-      data: name === "intake_export_requests" ? [row]
-        : name === "intake_get_request" ? row
-          : name === "intake_validate_export" ? false : [],
-    }));
-    await expect(buildIntakeExport({ rpc } as unknown as Db, id))
-      .rejects.toThrow("scope changed during generation");
-    expect(rpc).toHaveBeenLastCalledWith("intake_validate_export", {
-      p_actor: id, p_requests: [{ id, incarnation_id, export_revision }],
-    });
-  });
-  it("pages both child histories and validates precisely the serialized requests", async () => {
-    const row = { id, incarnation_id, export_revision, org_id: id, version: 1 };
-    const rpc = vi.fn(async (name: string, args: Record<string, unknown>) => ({
-      error: null,
-      data:
-        name === "intake_export_requests"
-          ? [row]
-          : name === "intake_get_request"
-            ? row
-            : name === "intake_validate_export"
-              ? true
-              : Array.from(
-                  { length: args.p_offset === 0 ? 100 : 1 },
-                  (_, i) => ({ id: i + Number(args.p_offset) }),
-                ),
-    }));
-    const result = await buildIntakeExport({ rpc } as unknown as Db, id);
-    expect(result.requests[0].messages).toHaveLength(101);
-    expect(result.requests[0].events).toHaveLength(101);
-    expect(rpc).toHaveBeenCalledWith("intake_validate_export", {
-      p_actor: id,
-      p_requests: [{ id, incarnation_id, export_revision }],
-    });
+    expect(
+      await validateIntakeExport({ rpc } as unknown as Db, id, {
+        version: 1,
+        requests,
+      }),
+    ).toBe(true);
+    expect(rpc.mock.calls).toEqual([
+      ["intake_validate_export", { p_actor: id, p_requests: requests.slice(0, 100) }],
+      ["intake_validate_export", { p_actor: id, p_requests: requests.slice(100) }],
+    ]);
   });
   it.each([
     null,
@@ -117,8 +71,8 @@ describe("intake RPC failures", () => {
     "42501",
     "P0001",
     "23505",
-    "P0003",
     "P0004",
+    "P0007",
     "22023",
     "23514",
     "22P02",
@@ -140,8 +94,14 @@ describe("intake RPC failures", () => {
       {},
     );
     expect(result.ok).toBe(false);
-    if (code === "P0004")
-      expect(result).toMatchObject({ ok: false, kind: "conflict", code: "intake_purged" });
+    const codes: Record<string, string> = {
+      P0001: "intake_conflict",
+      P0004: "intake_purged",
+      P0007: "intake_command_reused",
+      "23505": "intake_command_reused",
+    };
+    if (codes[code])
+      expect(result).toMatchObject({ ok: false, kind: "conflict", code: codes[code] });
     expect(JSON.stringify(result)).not.toContain("CONFIDENTIAL INPUT");
     expect(rpc).toHaveBeenCalledTimes(code === "40P01" ? 3 : 1);
   });

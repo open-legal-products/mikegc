@@ -1,5 +1,7 @@
 "use client";
-import { useEffect, useState } from "react";
+import { createElement, useEffect, useState } from "react";
+import { ConfirmPopup } from "@/app/components/popups/ConfirmPopup";
+import { notifyInfo } from "@/shared/lib/errorNotifier";
 import {
   createIntakeMemory,
   notifyIntakeMemory,
@@ -22,23 +24,31 @@ export function useIntakeOperation(
     if (!view.valid || !snapshot.outcome || view.outcome !== snapshot.outcome)
       return;
     const outcome = snapshot.outcome;
+    const action = view.action ?? "save the change";
     view.outcome = null;
     notifyIntakeMemory(view);
     if ("receipt" in outcome) onSaved(outcome.receipt);
     else {
       onRejected?.(outcome.error);
       notifyError(outcome.error, {
-        action: view.uncertain
-          ? "confirm whether the request was saved"
-          : "save the request",
+        action: view.uncertain ? `confirm whether we could ${action}` : action,
       });
     }
   }, [view, snapshot.outcome, onSaved, onRejected]);
-  /** Run or reconcile the retained command without replacing an unresolved operation. */
-  async function execute(operation?: () => Promise<IntakeReceipt>) {
+  /**
+   * Run or reconcile the retained command without replacing an unresolved
+   * operation. `action` names it in the imperative ("resolve the request").
+   */
+  async function execute(
+    operation?: () => Promise<IntakeReceipt>,
+    action?: string,
+  ) {
     if (!view.valid || view.busy || view.outcome || (view.pending && operation))
       return;
-    if (operation) view.pending = operation;
+    if (operation) {
+      view.pending = operation;
+      view.action = action ?? null;
+    }
     const command = view.pending;
     if (!command) return;
     view.busy = true;
@@ -74,9 +84,11 @@ export function useIntakeOperation(
             const definitive =
               !view.uncertain ||
               (status === 409 &&
-                ["intake_conflict", "intake_paused", "intake_purged"].includes(
-                  String(code),
-                ));
+                [
+                  "intake_conflict",
+                  "intake_command_reused",
+                  "intake_purged",
+                ].includes(String(code)));
             if (definitive) {
               view.pending = null;
               view.uncertain = false;
@@ -104,65 +116,48 @@ export function useIntakeOperation(
   };
 }
 
-/** Warn before leaving a draft; in-tab navigation retains it, explicit discard does not. */
+/**
+ * Guard an unsent draft without browser dialogs. In-app navigation keeps the
+ * draft in tab memory, so it only shows a toast; an explicit discard asks
+ * through `discardPopup`, which the caller renders.
+ */
 export function useIntakeDraftWarning(dirty: boolean) {
-  const confirmDiscard = () =>
-    !dirty || window.confirm("Leave this draft? Unsaved text will be lost.");
+  const [pending, setPending] = useState<(() => void) | null>(null);
+  /** Run `discard` at once when clean, otherwise after the person confirms. */
+  const requestDiscard = (discard: () => void) => {
+    if (!dirty) discard();
+    else setPending(() => discard);
+  };
   useEffect(() => {
     if (!dirty) return;
-    const warn = (event: BeforeUnloadEvent) => {
-      event.preventDefault();
-      event.returnValue = "";
-    };
-    const navigation = (event: Event) => {
-      if (
-        !window.confirm("Leave this page? Your draft will remain in this tab.")
-      )
-        event.preventDefault();
-    };
-    const click = (event: MouseEvent) => {
-      const link =
-        event.target instanceof Element
-          ? event.target.closest("a[href]")
-          : null;
-      if (
-        !(link instanceof HTMLAnchorElement) ||
-        event.defaultPrevented ||
-        event.button !== 0 ||
-        event.metaKey ||
-        event.ctrlKey ||
-        event.shiftKey ||
-        event.altKey ||
-        link.target === "_blank" ||
-        link.download
-      )
-        return;
-      if (
-        link.href === window.location.href ||
-        link.getAttribute("href")?.startsWith("#")
-      )
-        return;
-      if (
-        !window.confirm("Leave this page? Your draft will remain in this tab.")
-      ) {
-        event.preventDefault();
-        event.stopPropagation();
-      }
-    };
-    window.addEventListener("beforeunload", warn);
-    window.addEventListener("mike:before-workspace-change", navigation);
-    window.addEventListener("mike:before-navigation", navigation);
-    document.addEventListener("click", click, true);
+    const kept = () =>
+      notifyInfo(
+        "Your draft is kept in this tab until you send or discard it.",
+      );
+    window.addEventListener("mike:before-workspace-change", kept);
+    window.addEventListener("mike:before-navigation", kept);
     return () => {
-      window.removeEventListener("beforeunload", warn);
-      window.removeEventListener("mike:before-workspace-change", navigation);
-      window.removeEventListener("mike:before-navigation", navigation);
-      document.removeEventListener("click", click, true);
+      window.removeEventListener("mike:before-workspace-change", kept);
+      window.removeEventListener("mike:before-navigation", kept);
     };
   }, [dirty]);
-  return confirmDiscard;
+  const discardPopup = createElement(ConfirmPopup, {
+    open: !!pending,
+    title: "Discard this draft?",
+    message: "Unsaved text will be lost.",
+    confirmLabel: "Discard",
+    confirmVariant: "danger",
+    cancelLabel: "Keep editing",
+    onCancel: () => setPending(null),
+    onConfirm: () => {
+      const discard = pending;
+      setPending(null);
+      discard?.();
+    },
+  });
+  return { requestDiscard, discardPopup };
 }
 /** Describe an intake load failure without exposing raw service errors. */
-export function intakeError(error: unknown) {
-  return describeError(error, { action: "load intake requests" }).message;
+export function intakeError(error: unknown, action = "load intake requests") {
+  return describeError(error, { action }).message;
 }

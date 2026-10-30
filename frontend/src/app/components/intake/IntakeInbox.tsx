@@ -1,12 +1,12 @@
 "use client";
-import { useCallback, useEffect, useState } from "react";
+import { AlertCircle } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { Settings2 } from "lucide-react";
 import type {
-  IntakeConfiguration,
-  IntakeRequest,
-  IntakeReviewer,
+  IntakeMember,
+  IntakeRequestSummary,
+  IntakeCategory,
   IntakeState,
 } from "@mike/contracts";
 import { useWorkspace } from "@/app/contexts/WorkspaceContext";
@@ -14,18 +14,22 @@ import { notifyPartialFailure, notifyError } from "@/app/lib/userFacingError";
 import { notifySuccess } from "@/shared/lib/errorNotifier";
 import { useDebouncedValue } from "@/app/hooks/useDebouncedValue";
 import {
-  getIntakeConfiguration,
   commandIntakeRequest,
-  getIntakeReviewers,
+  getIntakeMembers,
   listIntakeRequests,
+  type IntakeListQuery,
 } from "@/app/lib/mikeApi";
 import { PageHeader } from "@/app/components/shared/PageHeader";
 import { PAGE_HEADER_TITLE_CLASS } from "@/app/components/shared/pageHeaderStyles";
 import { TableToolbar } from "@/app/components/shared/TableToolbar";
+import {
+  PersonFilter,
+  localPeople,
+  type PersonOption,
+} from "@/app/components/shared/PersonFilter";
 import { TableLoadMoreRow } from "@/app/components/shared/TableLoadMoreRow";
 import { RowActions } from "@/app/components/shared/RowActions";
 import { SelectionActionsMenu } from "@/app/components/shared/SelectionActionsMenu";
-import { ConfirmPopup } from "@/app/components/popups/ConfirmPopup";
 import {
   rowActionSelectionIds,
   SkeletonCheckbox,
@@ -47,38 +51,34 @@ import { formatDate } from "@/app/components/projects/ProjectPageParts";
 import { EmptyState } from "@/app/components/ui/empty-state";
 import { PillButtonUI } from "@/shared/ui/PillButtonUI";
 import { DropdownItem, DropdownSeparator } from "@/shared/ui/dropdown";
-import { NewIntakeRequestModal } from "./NewIntakeRequestModal";
-import { IntakeTeamModal } from "./IntakeSettings";
+import { IntakeRequestModal } from "./IntakeRequestModal";
+import { IntakeReasonModal } from "./IntakeReasonModal";
 import { useIntakeDraft, useIntakeMemory } from "./useIntakeMemory";
 import { intakeError } from "./useIntakeOperation";
+import {
+  INTAKE_CATEGORY_LABELS,
+  INTAKE_STATE_LABELS,
+  formatIntakeDate,
+  isIntakeOverdue,
+} from "./intakeLabels";
 
-const PAGE_SIZE = 50;
-
-type IntakeView = "mine" | "queue";
+type IntakeView = "all" | "mine";
 
 const VIEWS: { id: IntakeView; label: string }[] = [
-  { id: "mine", label: "My requests" },
-  { id: "queue", label: "Legal queue" },
+  { id: "all", label: "All" },
+  { id: "mine", label: "Assigned to me" },
 ];
-
-export const INTAKE_STATE_LABELS: Record<IntakeState, string> = {
-  submitted: "Submitted",
-  in_review: "In review",
-  needs_information: "Needs information",
-  resolved: "Resolved",
-  cancelled: "Cancelled",
-};
 
 const STATE_OPTIONS = (Object.keys(INTAKE_STATE_LABELS) as IntakeState[]).map(
   (value) => ({ value, label: INTAKE_STATE_LABELS[value] }),
 );
+const CATEGORY_OPTIONS = (["nda", "general"] as IntakeCategory[]).map(
+  (value) => ({ value, label: INTAKE_CATEGORY_LABELS[value] }),
+);
+/** Quiet refreshes when the window regains focus are at most this frequent. */
+const FOCUS_REFRESH_MS = 30_000;
 
-const CATEGORY_LABELS: Record<IntakeRequest["category"], string> = {
-  general: "Legal question",
-  nda: "NDA request",
-};
-
-/** Mount the inbox only for the signed-in account and its active organization. */
+/** Mount the queue only for the signed-in account and its active organization. */
 export function IntakeInbox() {
   const { accountId, activeOrganization } = useWorkspace();
   if (!accountId || !activeOrganization)
@@ -88,7 +88,7 @@ export function IntakeInbox() {
           <EmptyState
             icon={<IntakeSkeuoIcon />}
             title="Intake"
-            description="Switch to an organization workspace to send or handle requests."
+            description="Switch to an organization workspace to track requests."
           />
         </TableEmptyState>
       </div>
@@ -97,57 +97,67 @@ export function IntakeInbox() {
     <Inbox
       key={`${accountId}:${activeOrganization.id}`}
       orgId={activeOrganization.id}
+      accountId={accountId}
     />
   );
 }
 
-/** Load personal requests or the Legal queue with organization-scoped filters. */
-export function Inbox({ orgId }: { orgId: string }) {
+type Page = {
+  key: string;
+  rows: IntakeRequestSummary[];
+  next: string | null;
+  /** How many pages are on screen; quiet refreshes only replace the first. */
+  pages: number;
+};
+
+/** The Legal team's queue, with filters, keyset paging and row actions. */
+export function Inbox({
+  orgId,
+  accountId,
+}: {
+  orgId: string;
+  accountId: string;
+}) {
   const router = useRouter();
   const memory = useIntakeMemory(orgId, "new-request");
-  const [config, setConfig] = useState<IntakeConfiguration | null>(null);
-  const [configError, setConfigError] = useState<string | null>(null);
-  const [reviewers, setReviewers] = useState<IntakeReviewer[]>([]);
-  const [view, setView] = useState<IntakeView>("mine");
+  const [members, setMembers] = useState<IntakeMember[]>([]);
   const [search, setSearch] = useState("");
   const debouncedSearch = useDebouncedValue(search, 250);
   const [state, setState] = useState<IntakeState | null>(null);
-  const [assignee, setAssignee] = useState<string | null>(null);
+  const [category, setCategory] = useState<IntakeCategory | null>(null);
+  const [view, setView] = useState<IntakeView>("all");
+  const [assignee, setAssignee] = useState<PersonOption | null>(null);
+  const [sortByTarget, setSortByTarget] = useState(false);
   const [reload, setReload] = useState(0);
   const [creating, setCreating] = useIntakeDraft(memory, "creating", false);
-  const [teamOpen, setTeamOpen] = useState(false);
-  const [cancelTargets, setCancelTargets] = useState<IntakeRequest[] | null>(
-    null,
-  );
+  const [cancelTargets, setCancelTargets] = useState<
+    IntakeRequestSummary[] | null
+  >(null);
+  const [cancelReason, setCancelReason] = useState("");
   const [cancelling, setCancelling] = useState(false);
-  const queue = view === "queue" && !!config?.is_reviewer;
-  // Everything that selects a list. Rows, errors and the next page offset are
-  // stored against it, so a change shows the loading state at once and a late
-  // response for an earlier query is never drawn.
-  const queryKey = [
-    queue ? "queue" : "mine",
-    debouncedSearch,
-    state ?? "",
-    queue ? (assignee ?? "") : "",
-  ].join("\n");
-  const [page, setPage] = useState<{
-    key: string;
-    rows: IntakeRequest[];
-    hasMore: boolean;
-  } | null>(null);
+  const query = useMemo<IntakeListQuery>(
+    () => ({
+      search: debouncedSearch,
+      state: state ?? undefined,
+      category: category ?? undefined,
+      assignee: view === "mine" ? "me" : assignee?.user_id,
+      sort: sortByTarget ? "target" : "updated",
+    }),
+    [debouncedSearch, state, category, view, assignee, sortByTarget],
+  );
+  // Rows, errors and selection are stored against the query that produced
+  // them, so a change shows the loading state at once and a late response
+  // for an earlier query is never drawn.
+  const queryKey = JSON.stringify(query);
+  const [page, setPage] = useState<Page | null>(null);
   const [listError, setListError] = useState<{
     key: string;
     message: string;
   } | null>(null);
-  const [next, setNext] = useState({ key: queryKey, offset: 0, attempt: 0 });
+  const [loadingMore, setLoadingMore] = useState(false);
   const [loadMoreError, setLoadMoreError] = useState(false);
-  const offset = next.key === queryKey ? next.offset : 0;
-  const attempt = next.key === queryKey ? next.attempt : 0;
   const rows = page?.key === queryKey ? page.rows : null;
   const error = listError?.key === queryKey ? listError.message : null;
-  const loadingMore =
-    rows !== null && offset > 0 && rows.length <= offset && !loadMoreError;
-  // Selection belongs to the list it was made in.
   const [selection, setSelection] = useState({
     key: queryKey,
     ids: [] as string[],
@@ -163,25 +173,14 @@ export function Inbox({ orgId }: { orgId: string }) {
 
   useEffect(() => {
     let active = true;
-    getIntakeConfiguration(orgId)
-      .then(async (c) => {
-        const roster = c.is_reviewer
-          ? (await getIntakeReviewers(orgId)).filter(
-              (reviewer) => reviewer.is_reviewer,
-            )
-          : [];
-        if (active) {
-          setReviewers(roster);
-          setConfig(c);
-          setConfigError(null);
-        }
+    getIntakeMembers(orgId)
+      .then((m) => {
+        if (active) setMembers(m);
       })
-      .catch((e) => {
-        if (active) {
-          setReviewers([]);
-          setConfig(null);
-          setConfigError(intakeError(e));
-        }
+      .catch(() => {
+        // The queue still works without names: the lawyer filter falls back
+        // to Unassigned and Assigned to me, and a failed list shows its own error.
+        if (active) setMembers([]);
       });
     return () => {
       active = false;
@@ -190,77 +189,105 @@ export function Inbox({ orgId }: { orgId: string }) {
 
   useEffect(() => {
     let active = true;
-    const [listView, listSearch, listState, listAssignee] =
-      queryKey.split("\n");
-    listIntakeRequests(orgId, {
-      view: listView as IntakeView,
-      offset,
-      search: listSearch,
-      ...(listState ? { state: listState } : {}),
-      ...(listAssignee ? { assignee: listAssignee } : {}),
-    })
-      .then((r) => {
+    // `reload` refetches the first page in place: the rows on screen stay
+    // until the fresh ones arrive.
+    listIntakeRequests(orgId, JSON.parse(queryKey) as IntakeListQuery)
+      .then((result) => {
         if (!active) return;
-        setPage((current) => ({
+        setPage({
           key: queryKey,
-          rows:
-            offset > 0 && current?.key === queryKey
-              ? [...current.rows, ...r]
-              : r,
-          hasMore: r.length === PAGE_SIZE,
-        }));
+          rows: result.requests,
+          next: result.next_cursor,
+          pages: 1,
+        });
         setListError(null);
         setLoadMoreError(false);
       })
       .catch((e) => {
-        if (!active) return;
-        if (offset > 0) setLoadMoreError(true);
-        else setListError({ key: queryKey, message: intakeError(e) });
+        if (active) setListError({ key: queryKey, message: intakeError(e) });
       });
     return () => {
       active = false;
     };
-    // `reload` refetches the first page in place: the rows on screen stay
-    // until the fresh ones arrive.
-  }, [orgId, queryKey, offset, attempt, reload]);
+  }, [orgId, queryKey, reload]);
 
-  // Refetch the configuration and the first page of the current list.
-  const refresh = useCallback(() => {
-    setNext((current) => ({ ...current, offset: 0 }));
-    setReload((x) => x + 1);
-  }, []);
+  const refresh = useCallback(() => setReload((x) => x + 1), []);
+  // Coming back to the window refreshes quietly, but never drops rows the
+  // user scrolled to: with several pages loaded it waits for an explicit action.
+  const lastFocusRefresh = useRef(0);
+  const pagesOnScreen = page?.key === queryKey ? page.pages : 0;
   useEffect(() => {
-    window.addEventListener("focus", refresh);
-    return () => window.removeEventListener("focus", refresh);
-  }, [refresh]);
+    const focus = () => {
+      if (pagesOnScreen > 1) return;
+      if (Date.now() - lastFocusRefresh.current < FOCUS_REFRESH_MS) return;
+      lastFocusRefresh.current = Date.now();
+      refresh();
+    };
+    window.addEventListener("focus", focus);
+    return () => window.removeEventListener("focus", focus);
+  }, [refresh, pagesOnScreen]);
 
-  const loadMore = () => {
-    if (!rows || !page?.hasMore || loadingMore) return;
+  async function loadMore() {
+    if (!page || page.key !== queryKey || !page.next || loadingMore) return;
+    const key = queryKey;
+    setLoadingMore(true);
     setLoadMoreError(false);
-    setNext({ key: queryKey, offset: rows.length, attempt: attempt + 1 });
-  };
-  const retry = () => {
-    setListError(null);
-    refresh();
-  };
-  const filtered = !!debouncedSearch || !!state || (queue && !!assignee);
-  const failure = error || configError;
-  const canSubmit = !!config?.enabled && !!config.has_team;
-  const notice = !config
-    ? null
-    : !config.enabled
-      ? "Intake is switched off. Existing requests are read-only."
-      : !config.has_team
-        ? config.can_configure
-          ? "Choose a Legal team in Intake settings before requests can be sent."
-          : "Intake has no Legal team yet. An organization owner can choose one."
-        : null;
+    try {
+      const result = await listIntakeRequests(orgId, {
+        ...query,
+        cursor: page.next,
+      });
+      setPage((current) => {
+        if (current?.key !== key) return current;
+        const seen = new Set(current.rows.map((r) => r.id));
+        return {
+          key,
+          rows: [
+            ...current.rows,
+            ...result.requests.filter((r) => !seen.has(r.id)),
+          ],
+          next: result.next_cursor,
+          pages: current.pages + 1,
+        };
+      });
+    } catch {
+      // The load-more row shows the failure and offers a retry.
+      setLoadMoreError(true);
+    } finally {
+      setLoadingMore(false);
+    }
+  }
 
-  const hrefFor = (request: IntakeRequest) =>
+  const filtered =
+    !!debouncedSearch ||
+    !!state ||
+    !!category ||
+    view === "mine" ||
+    !!assignee;
+  const failure = error;
+  const hrefFor = (request: IntakeRequestSummary) =>
     `/intake/${request.id}?org=${orgId}`;
+  const people: PersonOption[] = members.map((m) => ({
+    ...m,
+    profile_photo: null,
+  }));
+
+  async function assignToMe(request: IntakeRequestSummary) {
+    try {
+      await commandIntakeRequest(orgId, request.id, "assignment", {
+        command_id: crypto.randomUUID(),
+        expected_version: request.version,
+        assignee_id: accountId,
+      });
+      notifySuccess("Assigned to you");
+    } catch (e) {
+      notifyError(e, { action: "assign the request" });
+    }
+    refresh();
+  }
 
   function renderActions(
-    request: IntakeRequest | undefined,
+    request: IntakeRequestSummary | undefined,
     close: () => void,
   ) {
     const ids = request
@@ -279,6 +306,16 @@ export function Inbox({ orgId }: { orgId: string }) {
             }}
           >
             Open
+          </DropdownItem>
+        )}
+        {single?.capabilities.assign && single.assignee_id !== accountId && (
+          <DropdownItem
+            onSelect={() => {
+              close();
+              void assignToMe(single);
+            }}
+          >
+            Assign to me
           </DropdownItem>
         )}
         <DropdownItem
@@ -305,6 +342,7 @@ export function Inbox({ orgId }: { orgId: string }) {
               variant="destructive"
               onSelect={() => {
                 close();
+                setCancelReason("");
                 setCancelTargets(cancellable);
               }}
             >
@@ -318,15 +356,16 @@ export function Inbox({ orgId }: { orgId: string }) {
     );
   }
 
-  async function cancelRequests(targets: IntakeRequest[]) {
+  async function cancelRequests(targets: IntakeRequestSummary[]) {
     setCancelling(true);
-    const failed: IntakeRequest[] = [];
+    const failed: IntakeRequestSummary[] = [];
     let lastError: unknown = null;
     for (const request of targets) {
       try {
         await commandIntakeRequest(orgId, request.id, "cancel", {
           command_id: crypto.randomUUID(),
           expected_version: request.version,
+          body: cancelReason,
         });
       } catch (e) {
         failed.push(request);
@@ -357,17 +396,11 @@ export function Inbox({ orgId }: { orgId: string }) {
             type: "search",
             value: search,
             onChange: setSearch,
-            placeholder: "Search requests…",
-          },
-          config?.can_configure && {
-            icon: <Settings2 className="h-4 w-4" />,
-            label: "Intake settings",
-            onClick: () => setTeamOpen(true),
+            placeholder: "Search requests or requesters…",
           },
           {
             type: "new",
             onClick: () => setCreating(true),
-            disabled: !canSubmit,
             title: "New request",
           },
         ]}
@@ -375,25 +408,18 @@ export function Inbox({ orgId }: { orgId: string }) {
         <h1 className={`${PAGE_HEADER_TITLE_CLASS} text-gray-900`}>Intake</h1>
       </PageHeader>
 
-      {config && (config.is_reviewer || notice || selectedIds.length > 0) && (
-        <TableToolbar
-          items={config.is_reviewer ? VIEWS : []}
-          active={queue ? "queue" : "mine"}
-          onChange={(id) => {
-            setView(id);
-            setAssignee(null);
-          }}
-          actions={
-            selectedIds.length > 0 ? (
-              <SelectionActionsMenu
-                renderItems={(close) => renderActions(undefined, close)}
-              />
-            ) : notice ? (
-              <p className="text-xs text-gray-500">{notice}</p>
-            ) : undefined
-          }
-        />
-      )}
+      <TableToolbar
+        items={VIEWS}
+        active={view}
+        onChange={setView}
+        actions={
+          selectedIds.length > 0 ? (
+            <SelectionActionsMenu
+              renderItems={(close) => renderActions(undefined, close)}
+            />
+          ) : undefined
+        }
+      />
 
       <TableScrollArea
         onScroll={(event) => {
@@ -402,7 +428,7 @@ export function Inbox({ orgId }: { orgId: string }) {
             element.scrollHeight - element.scrollTop - element.clientHeight <
             200
           )
-            loadMore();
+            void loadMore();
         }}
         header={
           <TableHeaderRow>
@@ -430,8 +456,22 @@ export function Inbox({ orgId }: { orgId: string }) {
               )}
               <span>Request</span>
             </TableStickyCell>
-            <TableHeaderCell className="ml-auto w-32">Type</TableHeaderCell>
-            <TableHeaderCell className="w-40">
+            <TableHeaderCell className="ml-auto w-44">
+              Requester
+            </TableHeaderCell>
+            <TableHeaderCell className="w-32">
+              <div className="flex items-center gap-1">
+                <span>Type</span>
+                <TableFilters
+                  label="Filter by type"
+                  value={category}
+                  allLabel="All types"
+                  options={CATEGORY_OPTIONS}
+                  onChange={setCategory}
+                />
+              </div>
+            </TableHeaderCell>
+            <TableHeaderCell className="w-44">
               <div className="flex items-center gap-1">
                 <span>Status</span>
                 <TableFilters
@@ -443,51 +483,59 @@ export function Inbox({ orgId }: { orgId: string }) {
                 />
               </div>
             </TableHeaderCell>
-            {queue && (
-              <TableHeaderCell className="w-40">Requester</TableHeaderCell>
-            )}
             <TableHeaderCell className="w-44">
               <div className="flex items-center gap-1">
                 <span>Assigned lawyer</span>
-                {queue && (
-                  <TableFilters
+                {view === "all" && (
+                  <PersonFilter
                     label="Filter by assigned lawyer"
+                    selectedTitle={(name) => `Assigned to ${name}`}
                     value={assignee}
-                    allLabel="All assigned lawyers"
-                    options={reviewers.map((reviewer) => ({
-                      value: reviewer.user_id,
-                      label:
-                        reviewer.display_name ?? reviewer.email ?? "Member",
-                    }))}
                     onChange={setAssignee}
+                    loadPeople={localPeople(people)}
                   />
                 )}
               </div>
             </TableHeaderCell>
-            <TableHeaderCell className="w-32">Updated</TableHeaderCell>
+            <TableHeaderCell className="w-32">
+              <div className="flex items-center gap-1">
+                <span>Target date</span>
+                <TableFilters
+                  label="Sort by target date"
+                  value={sortByTarget ? "target" : null}
+                  allLabel="Recently updated first"
+                  options={[{ value: "target", label: "Soonest target first" }]}
+                  onChange={(value) => setSortByTarget(value === "target")}
+                />
+              </div>
+            </TableHeaderCell>
+            <TableHeaderCell className="w-28">Updated</TableHeaderCell>
             <TableHeaderCell className="w-8" />
           </TableHeaderRow>
         }
       >
         {failure ? (
           <TableEmptyState>
-            <p className="font-serif text-lg font-medium text-gray-900">
-              Unable to load requests
-            </p>
-            <p className="mt-1 text-xs text-gray-400" role="alert">
-              {failure}
-            </p>
-            <PillButtonUI
-              tone="black"
-              size="sm"
-              className="mt-4"
-              onClick={retry}
-            >
-              Try again
-            </PillButtonUI>
+            <EmptyState
+              tone="error"
+              title="Unable to load requests"
+              description={<span role="alert">{failure}</span>}
+              action={
+                <PillButtonUI
+                  tone="black"
+                  size="sm"
+                  onClick={() => {
+                    setListError(null);
+                    refresh();
+                  }}
+                >
+                  Try again
+                </PillButtonUI>
+              }
+            />
           </TableEmptyState>
         ) : rows === null ? (
-          <IntakeLoadingRows queue={queue} />
+          <IntakeLoadingRows />
         ) : rows.length === 0 ? (
           <TableEmptyState>
             {filtered ? (
@@ -495,22 +543,16 @@ export function Inbox({ orgId }: { orgId: string }) {
             ) : (
               <EmptyState
                 icon={<IntakeSkeuoIcon />}
-                title={queue ? "The queue is empty" : "Intake"}
-                description={
-                  queue
-                    ? "New requests from your organization appear here."
-                    : "Ask the Legal team for help with an NDA or a legal question."
-                }
+                title="No requests yet"
+                description="Record an NDA request or legal question from the business to start tracking it."
                 action={
-                  !queue && canSubmit ? (
-                    <PillButtonUI
-                      tone="black"
-                      size="sm"
-                      onClick={() => setCreating(true)}
-                    >
-                      Create
-                    </PillButtonUI>
-                  ) : undefined
+                  <PillButtonUI
+                    tone="black"
+                    size="sm"
+                    onClick={() => setCreating(true)}
+                  >
+                    Record a request
+                  </PillButtonUI>
                 }
               />
             )}
@@ -520,6 +562,7 @@ export function Inbox({ orgId }: { orgId: string }) {
             {rows.map((request) => {
               const href = hrefFor(request);
               const selected = selectedIds.includes(request.id);
+              const overdue = isIntakeOverdue(request);
               return (
                 <TableRow
                   key={request.id}
@@ -548,23 +591,40 @@ export function Inbox({ orgId }: { orgId: string }) {
                       </Link>
                     }
                   />
-                  <TableCell className="ml-auto w-32">
-                    {CATEGORY_LABELS[request.category]}
+                  <TableCell className="ml-auto w-44 [overflow-wrap:anywhere]">
+                    {request.requester_name}
                   </TableCell>
-                  <TableCell className="w-40">
+                  <TableCell className="w-32">
+                    {INTAKE_CATEGORY_LABELS[request.category]}
+                  </TableCell>
+                  <TableCell className="w-44">
                     {INTAKE_STATE_LABELS[request.state]}
                   </TableCell>
-                  {queue && (
-                    <TableCell className="w-40 [overflow-wrap:anywhere]">
-                      {request.requester_name}
-                    </TableCell>
-                  )}
                   <TableCell className="w-44 [overflow-wrap:anywhere]">
                     {request.assignee_name ?? (
                       <span className="text-gray-400">Unassigned</span>
                     )}
                   </TableCell>
                   <TableCell className="w-32">
+                    {request.requested_by_date ? (
+                      <span
+                        className={`inline-flex items-center gap-1 whitespace-nowrap ${overdue ? "text-red-600" : ""}`}
+                        title={overdue ? "Target date passed" : undefined}
+                      >
+                        {formatIntakeDate(request.requested_by_date)}
+                        {overdue && (
+                          <AlertCircle
+                            className="h-3.5 w-3.5 shrink-0"
+                            aria-hidden="true"
+                          />
+                        )}
+                        {overdue && <span className="sr-only">, overdue</span>}
+                      </span>
+                    ) : (
+                      <span className="text-gray-400">None</span>
+                    )}
+                  </TableCell>
+                  <TableCell className="w-28">
                     {formatDate(request.updated_at)}
                   </TableCell>
                   <div
@@ -583,45 +643,39 @@ export function Inbox({ orgId }: { orgId: string }) {
         )}
         <TableLoadMoreRow
           loading={rows === null}
-          hasMore={!failure && !!page?.hasMore && rows !== null}
+          hasMore={!failure && !!rows && !!page?.next}
           itemCount={rows?.length ?? 0}
           loadingMore={loadingMore}
           hasError={loadMoreError}
-          onLoadMore={loadMore}
+          onLoadMore={() => void loadMore()}
         />
       </TableScrollArea>
 
-      {teamOpen && (
-        <IntakeTeamModal
-          orgId={orgId}
-          onClose={() => {
-            setTeamOpen(false);
-            refresh();
-          }}
+      {cancelTargets && (
+        <IntakeReasonModal
+          title={
+            cancelTargets.length > 1
+              ? `Cancel ${cancelTargets.length} requests`
+              : "Cancel request"
+          }
+          label="Why is this being cancelled?"
+          hint="The reason is recorded on each request, which then becomes read-only until someone reopens it."
+          confirmLabel={
+            cancelTargets.length > 1 ? "Cancel requests" : "Cancel request"
+          }
+          confirmVariant="danger"
+          value={cancelReason}
+          onChange={setCancelReason}
+          busy={cancelling}
+          locked={cancelling}
+          onConfirm={() => void cancelRequests(cancelTargets)}
+          onClose={() => setCancelTargets(null)}
         />
       )}
-      <ConfirmPopup
-        open={!!cancelTargets}
-        title={
-          cancelTargets && cancelTargets.length > 1
-            ? `Cancel ${cancelTargets.length} requests?`
-            : "Cancel this request?"
-        }
-        message="Conversations stay available, but cancelled requests become read-only."
-        confirmLabel={
-          cancelTargets && cancelTargets.length > 1
-            ? "Cancel requests"
-            : "Cancel request"
-        }
-        confirmVariant="danger"
-        confirmDisabled={cancelling}
-        onCancel={() => setCancelTargets(null)}
-        onConfirm={() => cancelTargets && void cancelRequests(cancelTargets)}
-      />
       {creating && (
-        <NewIntakeRequestModal
+        <IntakeRequestModal
+          mode="create"
           orgId={orgId}
-          enabled={!!config?.enabled}
           onClose={() => setCreating(false)}
           onSaved={(id) => router.push(`/intake/${id}?org=${orgId}`)}
         />
@@ -630,7 +684,7 @@ export function Inbox({ orgId }: { orgId: string }) {
   );
 }
 
-function IntakeLoadingRows({ queue }: { queue: boolean }) {
+function IntakeLoadingRows() {
   const widths = ["w-44", "w-36", "w-52", "w-40", "w-48"];
   return (
     <TableBody>
@@ -645,22 +699,23 @@ function IntakeLoadingRows({ queue }: { queue: boolean }) {
               <SkeletonLine className={`h-3.5 ${width}`} />
             </div>
           </TableStickyCell>
-          <TableCell className="ml-auto w-32">
+          <TableCell className="ml-auto w-44">
+            <SkeletonLine className="w-24" />
+          </TableCell>
+          <TableCell className="w-32">
             <SkeletonLine className="w-20" />
           </TableCell>
-          <TableCell className="w-40">
+          <TableCell className="w-44">
             <SkeletonLine className="w-16" />
           </TableCell>
-          {queue && (
-            <TableCell className="w-40">
-              <SkeletonLine className="w-20" />
-            </TableCell>
-          )}
           <TableCell className="w-44">
             <SkeletonLine className="w-24" />
           </TableCell>
           <TableCell className="w-32">
             <SkeletonLine className="w-20" />
+          </TableCell>
+          <TableCell className="w-28">
+            <SkeletonLine className="w-16" />
           </TableCell>
           <TableCell className="w-8" />
         </TableRow>

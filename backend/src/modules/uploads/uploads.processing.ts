@@ -22,6 +22,7 @@ import { pipeline } from "node:stream/promises";
 import { pathToFileURL } from "node:url";
 
 import { resolveContentOrgId } from "../../lib/access";
+import { attachIntakeDocument } from "../intake/intake.service";
 import { recordAudit } from "../../lib/audit";
 import { enqueueStorageCleanup } from "../../lib/dbq/enqueue";
 import { convertedPdfKey, officeFileToPdf } from "../../lib/convert";
@@ -337,7 +338,8 @@ async function processCreatedDocument(
     | "standalone"
     | "project"
     | "library"
-    | "workflow";
+    | "workflow"
+    | "intake";
   const projectId =
     scope === "project" ? (destination.project_id as string) : null;
   const folderId =
@@ -355,7 +357,9 @@ async function processCreatedDocument(
   const libraryKind =
     scope === "workflow"
       ? "workflow_asset"
-      : scope === "library"
+      : scope === "intake"
+        ? "intake_attachment"
+        : scope === "library"
         ? (destination.library_kind as "file" | "template")
         : "file";
   const workflowId =
@@ -380,6 +384,11 @@ async function processCreatedDocument(
       .maybeSingle();
     if (workflowError) throw new Error(workflowError.message);
     orgId = (workflowRow as { org_id?: string | null } | null)?.org_id ?? null;
+  }
+  if (!orgId && scope === "intake") {
+    // An intake attachment belongs to its request's organization, which the
+    // session's access check confirmed the uploader belongs to.
+    orgId = destination.org_id as string;
   }
   if (!orgId && (scope === "standalone" || scope === "library")) {
     // Uploaded on its own: the workspace the session named, which was
@@ -436,6 +445,26 @@ async function processCreatedDocument(
       .eq("id", file.id)
       .eq("session_id", session.id);
     if (markerError) throw markerError;
+  }
+
+  if (scope === "intake") {
+    // Link before any bytes are copied, so the file is never ownerless. A
+    // request deleted (or access lost) meanwhile takes this document with it.
+    const attached = await attachIntakeDocument(
+      db,
+      { orgId: orgId as string, actorId: session.user_id },
+      destination.request_id as string,
+      documentId,
+    );
+    if (!attached.ok) {
+      if (attached.kind === "error") throw attached.error;
+      const { error: removeError } = await db
+        .from("documents")
+        .delete()
+        .eq("id", documentId);
+      if (removeError) throw removeError;
+      throw new DeletedDocumentError(documentId);
+    }
   }
 
   const sourcePath = storageKey(session.user_id, documentId, file.filename);

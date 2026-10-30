@@ -18,11 +18,16 @@ import {
   setIntakeMemoryAccount,
 } from "@/app/lib/intakeMemory";
 
+const mocks = vi.hoisted(() => ({ notifyInfo: vi.fn() }));
+vi.mock("@/shared/lib/errorNotifier", () => ({ notifyInfo: mocks.notifyInfo }));
 vi.mock("@/app/lib/userFacingError", () => ({
   notifyError: vi.fn(),
   describeError: vi.fn(),
 }));
-afterEach(() => vi.restoreAllMocks());
+afterEach(() => {
+  vi.restoreAllMocks();
+  mocks.notifyInfo.mockClear();
+});
 const receipt = {
   request_id: "request-a",
   applied_version: 2,
@@ -112,71 +117,68 @@ describe("intake operation lifecycle", () => {
   });
 });
 
-function Draft({ dirty = true }: { dirty?: boolean }) {
-  useIntakeDraftWarning(dirty);
+function Draft({
+  dirty = true,
+  onDiscard = () => {},
+}: {
+  dirty?: boolean;
+  onDiscard?: () => void;
+}) {
+  const guard = useIntakeDraftWarning(dirty);
   return (
     <>
-      <a href="/another-page">Another page</a>
-      <a href="/another-page" target="_blank">
-        New tab
-      </a>
+      <button type="button" onClick={() => guard.requestDiscard(onDiscard)}>
+        Close draft
+      </button>
+      {guard.discardPopup}
     </>
   );
 }
 
-describe("unsent draft navigation", () => {
-  it("cancels internal link navigation when discard is declined", () => {
-    const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
-    render(<Draft />);
-    const event = new MouseEvent("click", {
-      bubbles: true,
-      cancelable: true,
-      button: 0,
-    });
-    fireEvent(screen.getByRole("link", { name: "Another page" }), event);
-    expect(event.defaultPrevented).toBe(true);
-    expect(confirm).toHaveBeenCalledTimes(1);
+describe("unsent draft guard", () => {
+  it("confirms an explicit discard in a popup, never a browser dialog", () => {
+    const confirm = vi.spyOn(window, "confirm");
+    const onDiscard = vi.fn();
+    render(<Draft onDiscard={onDiscard} />);
+    fireEvent.click(screen.getByRole("button", { name: "Close draft" }));
+    fireEvent.click(screen.getByRole("button", { name: "Keep editing" }));
+    expect(onDiscard).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Close draft" }));
+    fireEvent.click(screen.getByRole("button", { name: "Discard" }));
+    expect(onDiscard).toHaveBeenCalledTimes(1);
+    expect(confirm).not.toHaveBeenCalled();
   });
 
-  it("cancels workspace changes and removes the guard after the draft is clean", () => {
-    const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
-    const view = render(<Draft />);
-    const event = new Event("mike:before-workspace-change", {
-      cancelable: true,
-    });
-    expect(window.dispatchEvent(event)).toBe(false);
-    expect(confirm).toHaveBeenCalledTimes(1);
-    view.rerender(<Draft dirty={false} />);
-    expect(
-      window.dispatchEvent(
-        new Event("mike:before-workspace-change", { cancelable: true }),
-      ),
-    ).toBe(true);
-    expect(confirm).toHaveBeenCalledTimes(1);
+  it("discards a clean draft without asking", () => {
+    const onDiscard = vi.fn();
+    render(<Draft dirty={false} onDiscard={onDiscard} />);
+    fireEvent.click(screen.getByRole("button", { name: "Close draft" }));
+    expect(onDiscard).toHaveBeenCalledTimes(1);
+    expect(screen.queryByText("Discard this draft?")).not.toBeInTheDocument();
   });
 
-  it("allows a confirmed workspace departure and unregisters on unmount", () => {
-    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+  it("lets navigation proceed with a toast while the draft stays in the tab", () => {
     const view = render(<Draft />);
-    expect(
-      window.dispatchEvent(
-        new Event("mike:before-workspace-change", { cancelable: true }),
-      ),
-    ).toBe(true);
-    expect(confirm).toHaveBeenCalledTimes(1);
+    for (const name of [
+      "mike:before-workspace-change",
+      "mike:before-navigation",
+    ])
+      expect(window.dispatchEvent(new Event(name, { cancelable: true }))).toBe(
+        true,
+      );
+    expect(mocks.notifyInfo).toHaveBeenCalledTimes(2);
     view.unmount();
-    expect(
-      window.dispatchEvent(
-        new Event("mike:before-workspace-change", { cancelable: true }),
-      ),
-    ).toBe(true);
-    expect(confirm).toHaveBeenCalledTimes(1);
+    window.dispatchEvent(
+      new Event("mike:before-navigation", { cancelable: true }),
+    );
+    expect(mocks.notifyInfo).toHaveBeenCalledTimes(2);
   });
 
-  it("warns before unloading the document", () => {
+  it("does not ask the browser to confirm unloading", () => {
     render(<Draft />);
-    const event = new Event("beforeunload", { cancelable: true });
-    expect(window.dispatchEvent(event)).toBe(false);
+    expect(
+      window.dispatchEvent(new Event("beforeunload", { cancelable: true })),
+    ).toBe(true);
   });
 });
 

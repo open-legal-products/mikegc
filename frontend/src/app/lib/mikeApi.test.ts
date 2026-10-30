@@ -1,4 +1,4 @@
-import {getIntakeConfiguration,getIntakeReviewers,configureIntake,listIntakeRequests,submitIntakeRequest,getIntakeRequest,getIntakeMessages,getIntakeEvents,commandIntakeRequest} from "./mikeApi";
+import {getIntakeMembers,getIntakeDocuments,listIntakeRequests,submitIntakeRequest,getIntakeRequest,editIntakeRequest,getIntakeMessages,getIntakeEvents,commandIntakeRequest} from "./mikeApi";
 import { listOrgPrivateContent, setOrgPrivateContentPermission, openOrgPrivateContent, closeOrgPrivateContent } from "./mikeApi";
 import { setUserProfilePhoto, listDeletedOrganizations, restoreOrganization } from "./mikeApi";
 import { listOrgDepartures, reassignOrgDepartureArchives, deleteOrgDepartureArchives } from "./mikeApi";
@@ -3673,21 +3673,29 @@ describe("intake API boundary", () => {
         fetchMock.mockImplementation(async () => jsonResponse({}));
         const scope = "org/id";
         const id = "request/id";
-        const config = { command_id: "command", expected_revision: 1, enabled: true, reviewer_ids: ["reviewer"] };
-        const submission = { id, command_id: "create", category: "general" as const, subject: "Subject", description: "Exact  text." };
-        const command = { command_id: "answer", expected_version: 2, body: "Exact answer.\n" };
+        const details = {
+            category: "general" as const, subject: "Subject", description: "Exact  text.",
+            requester_name: "Jane", requester_email: null, requester_team: null,
+            requested_by_date: null, timezone: null,
+        };
+        const submission = { ...details, id, command_id: "create", assignee_id: null };
+        const edit = { ...details, command_id: "edit", expected_version: 3 };
+        const command = { command_id: "resolve", expected_version: 2, body: "Exact resolution.\n" };
+        const note = { command_id: "note", body: "Called Jane." };
         const cases: [() => Promise<unknown>, string, string, unknown?][] = [
-            [()=>getIntakeConfiguration(scope),"configuration","GET"],
-            [()=>getIntakeReviewers(scope),"reviewers","GET"],
-            [()=>configureIntake(scope,config),"configuration","PUT",config],
-            [()=>listIntakeRequests(scope,{view:"queue",offset:50,search:"a & b",state:"in_review",assignee:"person"}),"requests?view=queue&offset=50&search=a+%26+b&state=in_review&assignee=person","GET"],
+            [()=>getIntakeMembers(scope),"members","GET"],
+            [()=>listIntakeRequests(scope),"requests","GET"],
+            [()=>listIntakeRequests(scope,{search:"a & b",state:"in_review",assignee:"unassigned",sort:"target",cursor:"abc"}),"requests?search=a+%26+b&state=in_review&assignee=unassigned&sort=target&cursor=abc","GET"],
             [()=>submitIntakeRequest(scope,submission),"requests","POST",submission],
             [()=>getIntakeRequest(scope,id),"requests/request%2Fid","GET"],
+            [()=>editIntakeRequest(scope,id,edit),"requests/request%2Fid","PATCH",edit],
             [()=>getIntakeMessages(scope,id),"requests/request%2Fid/messages?offset=0&limit=100","GET"],
             [()=>getIntakeMessages(scope,id,100),"requests/request%2Fid/messages?offset=100&limit=100","GET"],
             [()=>getIntakeEvents(scope,id),"requests/request%2Fid/events?offset=0&limit=100","GET"],
+            [()=>getIntakeDocuments(scope,id),"requests/request%2Fid/documents","GET"],
             [()=>getIntakeEvents(scope,id,100),"requests/request%2Fid/events?offset=100&limit=100","GET"],
-            [()=>commandIntakeRequest(scope,id,"answer",command),"requests/request%2Fid/answer","POST",command],
+            [()=>commandIntakeRequest(scope,id,"resolve",command),"requests/request%2Fid/resolve","POST",command],
+            [()=>commandIntakeRequest(scope,id,"notes",note),"requests/request%2Fid/notes","POST",note],
         ];
         for(const [run,path,method,body] of cases) {
             await run(); const call=lastFetchCall();

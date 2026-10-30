@@ -8,6 +8,8 @@ const accessMocks = vi.hoisted(() => ({
 }));
 
 vi.mock("../../../lib/access", () => accessMocks);
+const intakeMocks = vi.hoisted(() => ({ canAttachIntakeDocuments: vi.fn() }));
+vi.mock("../../intake/intake.service", () => intakeMocks);
 
 import { validateDestinationAccess } from "../uploads.access";
 
@@ -68,6 +70,43 @@ describe("upload destination authorization", () => {
       orgId: null,
     });
   });
+
+  it.each([
+    [{ ok: true, data: true }, true],
+    [{ ok: true, data: false }, false],
+    [{ ok: false, kind: "not_found", detail: "Request not found." }, false],
+  ])(
+    "lets current organization members attach documents to an intake request (%j)",
+    async (verdict, allowed) => {
+      intakeMocks.canAttachIntakeDocuments.mockResolvedValue(verdict);
+      const destination = {
+        scope: "intake" as const,
+        org_id: "66666666-6666-4666-8666-666666666666",
+        request_id: "77777777-7777-4777-8777-777777777777",
+      };
+      const outcome = await validateDestinationAccess(
+        {
+          purpose: "document_create",
+          destination,
+          expected_total_bytes: 4,
+          files: [file],
+        },
+        "11111111-1111-4111-8111-111111111111",
+        "user@example.com",
+        dbWith({}) as never,
+      );
+      expect(intakeMocks.canAttachIntakeDocuments).toHaveBeenCalledWith(
+        expect.anything(),
+        {
+          orgId: destination.org_id,
+          actorId: "11111111-1111-4111-8111-111111111111",
+        },
+        destination.request_id,
+      );
+      if (allowed) expect(outcome).toEqual({ ok: true });
+      else expect(rejection(outcome).status).toBe(404);
+    },
+  );
 
   it("rejects a project the user cannot access", async () => {
     accessMocks.checkProjectAccess.mockResolvedValue({ ok: false });

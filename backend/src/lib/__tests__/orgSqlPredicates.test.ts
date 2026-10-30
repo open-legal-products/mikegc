@@ -161,10 +161,17 @@ describe("standalone chats and reviews in an organization", () => {
         "utf8",
     );
 
+    // Intake attachments stay with their request on departure.
+    const attachments = readFileSync(
+        resolve(ROOT, "migrations/20261030_03_intake_attachments.sql"),
+        "utf8",
+    );
+
     it.each([
         ["standalone_org_access_role", handover],
         ["chat_access_role", retention],
         ["review_access_role", retention],
+        ["org_members_departure_items", attachments],
     ])(
         "a fresh install defines %s exactly as its latest migration does",
         (name, latest) => {
@@ -175,7 +182,6 @@ describe("standalone chats and reviews in an organization", () => {
     );
 
     it.each([
-        "org_members_departure_items",
         "org_member_sole_owned_items",
         "assign_org_member_items",
         "cleanup_removed_org_member_overrides",

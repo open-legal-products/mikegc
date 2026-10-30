@@ -65,7 +65,6 @@ export function makeExportDb(
         return builder;
     }
     return { db: { from: (t: string) => query(t), rpc: async (name: string) => {
-        if (name === "intake_export_requests") return { data: [], error: null };
         throw new Error(`Unexpected RPC in export fixture: ${name}`);
     } } as any, reads };
 }

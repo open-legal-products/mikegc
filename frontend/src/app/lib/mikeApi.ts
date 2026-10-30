@@ -5,6 +5,17 @@ import type {
     OrgMemberHandover,
     OrgDepartureList,
     OrgDepartureResolution,
+    IntakeAction,
+    IntakeCommand,
+    IntakeDocument,
+    IntakeEdit,
+    IntakeEvent,
+    IntakeMember,
+    IntakeMessage,
+    IntakeReceipt,
+    IntakeRequest,
+    IntakeRequestPage,
+    IntakeSubmission,
 } from "@mike/contracts";
 export type {
     AuditActor,
@@ -4497,40 +4508,81 @@ export async function deletePlaybook(playbookId: string): Promise<void> {
 }
 
 // Legal intake uses explicit organization scope, including detail deep links.
-/** Read intake availability and the caller's permissions for an explicit organization. */
-export function getIntakeConfiguration(orgId: string) {
-    return apiRequest<import("@mike/contracts").IntakeConfiguration>(`/intake/${encodeURIComponent(orgId)}/configuration`);
+const intakePath = (orgId: string, suffix = "") =>
+    `/intake/${encodeURIComponent(orgId)}${suffix}`;
+const intakeRequestPath = (orgId: string, id: string, suffix = "") =>
+    intakePath(orgId, `/requests/${encodeURIComponent(id)}${suffix}`);
+const jsonBody = (method: string, body: unknown): RequestInit => ({
+    method,
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+});
+
+/** List the organization members a request can be assigned to. */
+export function getIntakeMembers(orgId: string) {
+    return apiRequest<IntakeMember[]>(intakePath(orgId, "/members"));
 }
-/** Read the roster; owners also receive eligible members whose is_reviewer is false. */
-export function getIntakeReviewers(orgId: string) {
-    return apiRequest<import("@mike/contracts").IntakeReviewer[]>(`/intake/${encodeURIComponent(orgId)}/reviewers`);
-}
-/** Submit a revision-checked configuration command and return its immutable receipt. */
-export function configureIntake(orgId: string, body: import("@mike/contracts").IntakeConfigurationCommand) {
-    return apiRequest<import("@mike/contracts").IntakeReceipt>(`/intake/${encodeURIComponent(orgId)}/configuration`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
-}
-/** Fetch one filtered page of personal requests or the authorized Legal queue. */
-export function listIntakeRequests(orgId: string, query: { view: "mine" | "queue"; offset?: number; search?: string; state?: string; assignee?: string }) {
-    const params = new URLSearchParams(Object.entries(query).map(([k,v]) => [k, String(v)]));
-    return apiRequest<import("@mike/contracts").IntakeRequest[]>(`/intake/${encodeURIComponent(orgId)}/requests?${params}`);
+export type IntakeListQuery = {
+    state?: string;
+    /** "nda" (contract review) or "general" (legal question). */
+    category?: string;
+    /** "unassigned", "me" or a member's user ID. */
+    assignee?: string;
+    search?: string;
+    sort?: "updated" | "target";
+    cursor?: string;
+};
+/** Fetch one keyset page of the queue; pass the previous page's cursor for the next. */
+export function listIntakeRequests(orgId: string, query: IntakeListQuery = {}) {
+    const params = new URLSearchParams(
+        Object.entries(query).filter((entry): entry is [string, string] => !!entry[1]),
+    );
+    const suffix = params.size ? `?${params}` : "";
+    return apiRequest<IntakeRequestPage>(intakePath(orgId, `/requests${suffix}`));
 }
 /** Submit caller-generated request and command IDs so a lost response can be replayed. */
-export function submitIntakeRequest(orgId: string, body: import("@mike/contracts").IntakeSubmission) {
-    return apiRequest<import("@mike/contracts").IntakeReceipt>(`/intake/${encodeURIComponent(orgId)}/requests`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+export function submitIntakeRequest(orgId: string, body: IntakeSubmission) {
+    return apiRequest<IntakeReceipt>(intakePath(orgId, "/requests"), jsonBody("POST", body));
 }
 /** Fetch an organization-scoped request with its current command capabilities. */
 export function getIntakeRequest(orgId: string, id: string) {
-    return apiRequest<import("@mike/contracts").IntakeRequest>(`/intake/${encodeURIComponent(orgId)}/requests/${encodeURIComponent(id)}`);
+    return apiRequest<IntakeRequest>(intakeRequestPath(orgId, id));
 }
-/** Read one 100-message page visible to the caller within the request. */
+/** Replace a request's details at the version the editor loaded. */
+export function editIntakeRequest(orgId: string, id: string, body: IntakeEdit) {
+    return apiRequest<IntakeReceipt>(intakeRequestPath(orgId, id), jsonBody("PATCH", body));
+}
+/** Read one 100-note page of the request's activity. */
 export function getIntakeMessages(orgId: string, id: string, offset = 0) {
-    return apiRequest<import("@mike/contracts").IntakeMessage[]>(`/intake/${encodeURIComponent(orgId)}/requests/${encodeURIComponent(id)}/messages?offset=${offset}&limit=100`);
+    return apiRequest<IntakeMessage[]>(intakeRequestPath(orgId, id, `/messages?offset=${offset}&limit=100`));
 }
-/** Read one 100-event history page visible to the caller within the request. */
+/** Read one 100-event page of the request's history. */
 export function getIntakeEvents(orgId: string, id: string, offset = 0) {
-    return apiRequest<import("@mike/contracts").IntakeEvent[]>(`/intake/${encodeURIComponent(orgId)}/requests/${encodeURIComponent(id)}/events?offset=${offset}&limit=100`);
+    return apiRequest<IntakeEvent[]>(intakeRequestPath(orgId, id, `/events?offset=${offset}&limit=100`));
 }
-/** Apply a version-checked request action; retries must reuse the original command body. */
-export function commandIntakeRequest(orgId: string, id: string, action: import("@mike/contracts").IntakeAction, body: import("@mike/contracts").IntakeCommand) {
-    return apiRequest<import("@mike/contracts").IntakeReceipt>(`/intake/${encodeURIComponent(orgId)}/requests/${encodeURIComponent(id)}/${action}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+/** List the documents attached to a request; every member can open them. */
+export function getIntakeDocuments(orgId: string, id: string) {
+    return apiRequest<IntakeDocument[]>(intakeRequestPath(orgId, id, "/documents"));
+}
+/**
+ * Upload files to a request. The upload worker links each document to the
+ * request as it is created, so a closed tab never leaves an unlinked file.
+ */
+export function uploadIntakeDocuments(
+    orgId: string,
+    requestId: string,
+    files: UploadSessionInput[],
+    options?: UploadRequestOptions<Document>,
+): Promise<UploadOutcome<Document>[]> {
+    return uploadFilesWithSession<Document>({
+        purpose: "document_create",
+        destination: { scope: "intake", org_id: orgId, request_id: requestId },
+        files,
+        onProgress: options?.onProgress,
+        signal: options?.signal,
+    });
+}
+/** Apply a request command; retries must reuse the original command body. */
+export function commandIntakeRequest(orgId: string, id: string, action: IntakeAction, body: IntakeCommand) {
+    return apiRequest<IntakeReceipt>(intakeRequestPath(orgId, id, `/${action}`), jsonBody("POST", body));
 }

@@ -22,7 +22,6 @@ describe.skipIf(!url || !key || !anon)(
     const other = randomUUID();
     const users: { id: string; token: string; email: string }[] = [];
     let storageRoot = "";
-    let exportId = "";
     const path = `/intake/${org}`;
     const post = (actor: number, suffix: string, body: object) =>
       request(app)
@@ -33,22 +32,15 @@ describe.skipIf(!url || !key || !anon)(
       request(app)
         .get(path + suffix)
         .auth(users[actor].token, { type: "bearer" });
-    const configure = (revision: number, enabled = true) =>
-      request(app)
-        .put(path + "/configuration")
-        .auth(users[0].token, { type: "bearer" })
-        .send({
-          command_id: randomUUID(),
-          expected_revision: revision,
-          enabled,
-          reviewer_ids: [users[2].id, users[3].id],
-        });
     const input = () => ({
       id: randomUUID(),
       command_id: randomUUID(),
       category: "nda",
       subject: "Synthetic NDA",
       description: "Please review this request.",
+      requester_name: "Jane Business",
+      requester_email: "jane@business.test",
+      requester_team: "Procurement",
     });
     beforeAll(async () => {
       vi.stubEnv("SUPABASE_URL", url!);
@@ -105,13 +97,10 @@ describe.skipIf(!url || !key || !anon)(
       );
       app.use(express.json());
       app.use("/intake", intakeRouter);
-      expect((await configure(0)).status).toBe(200);
-      expect((await get(0, "/reviewers")).body).toHaveLength(5);
-      expect((await get(2, "/reviewers")).body).toHaveLength(2);
+      expect((await get(2, "/members")).body).toHaveLength(5);
     }, 60000);
     afterAll(async () => {
       if (db) {
-        if (exportId) await db.from("db_jobs").delete().eq("id", exportId);
         expect(
           (await db.from("organizations").delete().in("id", [org, other]))
             .error,
@@ -127,29 +116,32 @@ describe.skipIf(!url || !key || !anon)(
       expect((await get(5, "/requests")).status).toBe(404);
       for (const extra of [
         { subject: " " },
+        { requester_name: "" },
+        { requester_email: "not-an-email" },
         { requested_by_date: "2026-02-30", timezone: "Europe/Stockholm" },
         { requested_by_date: "2026-10-26", timezone: "invalid" },
         { requester_id: users[0].id },
+        { assignee_id: users[5].id },
       ]) {
-        expect(
-          (await post(1, "/requests", { ...input(), ...extra })).status,
-        ).toBe(400);
+        const response = await post(1, "/requests", { ...input(), ...extra });
+        expect(response.status, JSON.stringify(extra)).toBe(400);
       }
       const body = input();
       expect((await post(1, "/requests", body)).status).toBe(201);
-      for (const actor of [0, 4, 5]) {
-        const hidden = await get(actor, `/requests/${body.id}`);
-        expect([403, 404]).toContain(hidden.status);
-        expect(hidden.body).not.toHaveProperty("description");
-      }
-      expect((await get(4, "/requests?view=queue")).status).toBe(403);
-      expect((await get(1, "/reviewers")).status).toBe(403);
+      const hidden = await get(5, `/requests/${body.id}`);
+      expect(hidden.status).toBe(404);
+      expect(hidden.body).not.toHaveProperty("description");
+      // Every member is Legal, including admins and owners.
+      for (const member of [0, 2, 4])
+        expect((await get(member, `/requests/${body.id}`)).body).toMatchObject({
+          requester_name: "Jane Business",
+          requester_email: "jane@business.test",
+        });
       const direct = createClient(url!, anon!, {
         global: { headers: { Authorization: `Bearer ${users[1].token}` } },
       });
       for (const table of [
         "settings",
-        "reviewers",
         "requests",
         "messages",
         "events",
@@ -169,63 +161,75 @@ describe.skipIf(!url || !key || !anon)(
         ).error,
       ).not.toBeNull();
     });
-    it("reconciles a lost response without duplication and publishes exact reviewed text", async () => {
+    it("reconciles a lost response and works a request through every command once", async () => {
       const body = input();
       await post(1, "/requests", body); // deliberately ignore the successful receipt
       const replay = await post(1, "/requests", body);
       expect(replay.status).toBe(200);
       expect(replay.body.replayed).toBe(true);
-      expect(
-        (await post(1, "/requests", { ...body, subject: "Changed" })).status,
-      ).toBe(409);
+      const changed = await post(1, "/requests", { ...body, subject: "Changed" });
+      expect(changed.status).toBe(409);
+      expect(changed.body.code).toBe("intake_command_reused");
       const action = (
         actor: number,
         name: string,
-        version: number,
-        fields = {},
+        fields: object = {},
       ) =>
         post(actor, `/requests/${body.id}/${name}`, {
           command_id: randomUUID(),
-          expected_version: version,
           ...fields,
         });
       expect(
-        (await action(2, "assignment", 1, { assignee_id: users[2].id })).status,
-      ).toBe(200);
-      expect(
-        (await action(3, "answer", 2, { body: "Not assigned" })).status,
-      ).toBe(403);
-      expect(
-        (await action(2, "questions", 2, { body: "Who is the supplier?" }))
+        (await action(2, "assignment", { expected_version: 1, assignee_id: users[2].id }))
           .status,
       ).toBe(200);
+      expect((await action(3, "notes", { body: "Called the supplier." })).status).toBe(200);
       expect(
-        (await action(1, "replies", 3, { body: "Synthetic Ltd" })).status,
+        (await action(2, "wait", { expected_version: 2, body: "Asked Jane for the draft." }))
+          .status,
       ).toBe(200);
-      const answer = {
+      expect((await action(3, "resume", { expected_version: 3 })).status).toBe(200);
+      const resolution = {
         command_id: randomUUID(),
         expected_version: 4,
-        body: "Exact answer.\nKeep this spacing.  ",
+        body: "Approved with edits.\nKeep this spacing.  ",
       };
       expect(
-        (await post(2, `/requests/${body.id}/answer`, answer)).status,
+        (await post(4, `/requests/${body.id}/resolve`, resolution)).status,
       ).toBe(200);
       expect(
-        (await post(2, `/requests/${body.id}/answer`, answer)).body.replayed,
+        (await post(4, `/requests/${body.id}/resolve`, resolution)).body.replayed,
       ).toBe(true);
       const messages = (await get(1, `/requests/${body.id}/messages`)).body;
-      expect(messages.map((x: { body: string }) => x.body)).toEqual([
-        "Who is the supplier?",
-        "Synthetic Ltd",
-        answer.body,
+      expect(messages.map((x: { kind: string; body: string }) => [x.kind, x.body])).toEqual([
+        ["note", "Called the supplier."],
+        ["note", "Asked Jane for the draft."],
+        ["resolution", resolution.body],
       ]);
       expect((await get(1, `/requests/${body.id}`)).body).toMatchObject({
         state: "resolved",
         version: 5,
       });
-      expect((await action(1, "cancel", 5)).status).toBe(409);
+      const stale = await action(1, "cancel", { expected_version: 5, body: "Too late" });
+      expect(stale.status).toBe(409);
+      expect(stale.body.code).toBe("intake_conflict");
+      expect((await action(1, "reopen", { expected_version: 5 })).status).toBe(200);
+      expect((await get(1, `/requests/${body.id}`)).body).toMatchObject({
+        state: "in_review",
+        version: 6,
+        assignee_name: users[2].email,
+      });
+      const events = (await get(1, `/requests/${body.id}/events`)).body;
+      expect(events.map((x: { kind: string }) => x.kind)).toEqual([
+        "submitted",
+        "assign",
+        "wait",
+        "resume",
+        "resolve",
+        "reopen",
+      ]);
     });
-    it("paginates scoped lists and pauses writes while preserving reads", async () => {
+    it("pages the queue by cursor", async () => {
       const ids: string[] = [];
       for (let i = 0; i < 3; i++) {
         const body = { ...input(), subject: `Pagination ${i}` };
@@ -233,24 +237,22 @@ describe.skipIf(!url || !key || !anon)(
         expect((await post(1, "/requests", body)).status).toBe(201);
       }
       const rows: { id: string }[] = [];
-      for (let offset = 0; offset < 3; offset++)
-        rows.push(
-          ...(
-            await get(
-              2,
-              `/requests?view=queue&search=Pagination&limit=1&offset=${offset}`,
-            )
-          ).body,
+      let cursor: string | null = null;
+      do {
+        const page: request.Response = await get(
+          2,
+          `/requests?search=Pagination&limit=1${cursor ? `&cursor=${cursor}` : ""}`,
         );
-      expect(rows.map((x) => x.id).sort()).toEqual(ids.sort());
-      expect((await configure(1, false)).status).toBe(200);
-      expect((await post(1, "/requests", input())).status).toBe(409);
-      const detail = await get(1, `/requests/${ids[0]}`);
-      expect(detail.status).toBe(200);
-      expect(Object.values(detail.body.capabilities)).not.toContain(true);
-      expect((await configure(2, true)).status).toBe(200);
+        expect(page.status).toBe(200);
+        rows.push(...page.body.requests);
+        cursor = page.body.next_cursor;
+      } while (cursor);
+      expect(rows.map((x) => x.id)).toEqual([...ids].reverse());
+      expect(rows[0]).not.toHaveProperty("description");
+      // Intake is always on: there is no switch to turn it off.
+      expect((await get(0, "/configuration")).status).toBe(404);
     });
-    it("detaches a reviewer deleted through the real Auth role while the organization is suspended", async () => {
+    it("unassigns a member deleted through the real Auth role while the organization is suspended", async () => {
       const created = await db.auth.admin.createUser({
         email: `intake-erasure-${randomUUID()}@test.local`,
         email_confirm: true,
@@ -279,18 +281,6 @@ describe.skipIf(!url || !key || !anon)(
         ).toBeNull();
         expect(
           (
-            await db.rpc("intake_configure", {
-              p_org: isolated,
-              p_actor: users[0].id,
-              p_command: randomUUID(),
-              p_revision: 0,
-              p_enabled: true,
-              p_reviewers: [id],
-            })
-          ).error,
-        ).toBeNull();
-        expect(
-          (
             await db.rpc("intake_submit_request", {
               p_org: isolated,
               p_actor: users[0].id,
@@ -299,17 +289,7 @@ describe.skipIf(!url || !key || !anon)(
               p_category: "general",
               p_subject: "Retained",
               p_description: "Synthetic retained text",
-            })
-          ).error,
-        ).toBeNull();
-        expect(
-          (
-            await db.rpc("intake_assign_request", {
-              p_org: isolated,
-              p_actor: id,
-              p_command: randomUUID(),
-              p_request: requestId,
-              p_version: 1,
+              p_requester_name: "Sam Business",
               p_assignee: id,
             })
           ).error,
@@ -322,223 +302,220 @@ describe.skipIf(!url || !key || !anon)(
             })
           ).error,
         ).toBeNull();
+        // GoTrue runs the membership cascade as supabase_auth_admin.
         expect((await db.auth.admin.deleteUser(id)).error).toBeNull();
-        // Losing the last reviewer leaves intake on; submissions wait for a new team.
-        expect(
-          (
-            await db
-              .from("intake_settings")
-              .select("enabled")
-              .eq("org_id", isolated)
-              .single()
-          ).data?.enabled,
-        ).toBe(true);
-        expect(
-          (
-            await db
-              .from("intake_reviewers")
-              .select("user_id")
-              .eq("org_id", isolated)
-          ).data,
-        ).toEqual([]);
         expect(
           (
             await db
               .from("intake_requests")
-              .select("assignee_id,description")
+              .select("assignee_id,state,description,requester_name")
               .eq("id", requestId)
               .single()
           ).data,
         ).toEqual({
           assignee_id: null,
+          state: "submitted",
           description: "Synthetic retained text",
+          requester_name: "Sam Business",
         });
       } finally {
         await db.from("organizations").delete().eq("id", isolated);
         await db.auth.admin.deleteUser(id);
       }
     });
-    it("retains requester identity and receipts after storage failure, then erases them on worker retry", async () => {
+    it("retains creator identity and receipts after storage failure, then erases them on worker retry", async () => {
       const created = await db.auth.admin.createUser({
-        email: `intake-retry-${randomUUID()}@test.local`, email_confirm: true,
+        email: `intake-retry-${randomUUID()}@test.local`,
+        email_confirm: true,
       });
       expect(created.error).toBeNull();
       const user = created.data.user!;
       const requestId = randomUUID();
       const commandId = randomUUID();
-      const { handleAccountDelete } = await import("../../modules/user/user.accountJobs.js");
+      const { handleAccountDelete } = await import(
+        "../../modules/user/user.accountJobs.js"
+      );
       const { setStorageAdapter } = await import("../../lib/storage.js");
-      const { createFilesystemStorageAdapter } = await import("../../lib/storage/filesystem.js");
+      const { createFilesystemStorageAdapter } = await import(
+        "../../lib/storage/filesystem.js"
+      );
       const filesystem = createFilesystemStorageAdapter();
       const job: DbJob = {
-        id: randomUUID(), kind: "account.delete", payload: { userId: user.id, userEmail: user.email },
-        status: "running", attempts: 1, max_attempts: 20, run_at: new Date().toISOString(),
-        created_at: new Date().toISOString(), claimed_at: new Date().toISOString(),
-        finished_at: null, last_error: null, dedupe_key: null, result: null,
+        id: randomUUID(),
+        kind: "account.delete",
+        payload: { userId: user.id, userEmail: user.email },
+        status: "running",
+        attempts: 1,
+        max_attempts: 20,
+        run_at: new Date().toISOString(),
+        created_at: new Date().toISOString(),
+        claimed_at: new Date().toISOString(),
+        finished_at: null,
+        last_error: null,
+        dedupe_key: null,
+        result: null,
       };
       let erased = false;
       try {
-        expect((await db.from("org_members").insert({ org_id: org, user_id: user.id, role: "member" })).error).toBeNull();
-        expect((await db.rpc("intake_submit_request", {
-          p_org: org, p_actor: user.id, p_request: requestId, p_command: commandId,
-          p_category: "general", p_subject: "Retry erasure", p_description: "Retained organization text",
-        })).error).toBeNull();
+        expect(
+          (
+            await db
+              .from("org_members")
+              .insert({ org_id: org, user_id: user.id, role: "member" })
+          ).error,
+        ).toBeNull();
+        expect(
+          (
+            await db.rpc("intake_submit_request", {
+              p_org: org,
+              p_actor: user.id,
+              p_request: requestId,
+              p_command: commandId,
+              p_category: "general",
+              p_subject: "Retry erasure",
+              p_description: "Retained organization text",
+              p_requester_name: "Sam Business",
+            })
+          ).error,
+        ).toBeNull();
         setStorageAdapter({
           ...filesystem,
           async listFiles(prefix) {
-            if (prefix === `exports/${user.id}/`) throw new Error("Synthetic storage failure");
+            if (prefix === `exports/${user.id}/`)
+              throw new Error("Synthetic storage failure");
             return filesystem.listFiles(prefix);
           },
         });
-        await expect(handleAccountDelete(db, job)).rejects.toThrow("Failed to list export artifacts");
+        await expect(handleAccountDelete(db, job)).rejects.toThrow(
+          "Failed to list export artifacts",
+        );
         setStorageAdapter(filesystem);
-        expect((await db.auth.admin.getUserById(user.id)).data.user?.id).toBe(user.id);
-        const retained = await db.from("intake_requests").select("requester_id,export_revision").eq("id", requestId).single();
+        expect((await db.auth.admin.getUserById(user.id)).data.user?.id).toBe(
+          user.id,
+        );
+        const retained = await db
+          .from("intake_requests")
+          .select("created_by,export_revision")
+          .eq("id", requestId)
+          .single();
         expect(retained.error).toBeNull();
-        expect(retained.data).toEqual({ requester_id: user.id, export_revision: 1 });
-        expect((await db.from("intake_commands").select("command_id").eq("command_id", commandId)).data)
-          .toEqual([{ command_id: commandId }]);
+        expect(retained.data).toEqual({ created_by: user.id, export_revision: 1 });
+        expect(
+          (
+            await db
+              .from("intake_commands")
+              .select("command_id")
+              .eq("command_id", commandId)
+          ).data,
+        ).toEqual([{ command_id: commandId }]);
         await handleAccountDelete(db, job);
         erased = true;
         expect((await db.auth.admin.getUserById(user.id)).data.user).toBeNull();
-        expect((await db.from("intake_requests").select("requester_id,export_revision,description").eq("id", requestId).single()).data)
-          .toEqual({ requester_id: null, export_revision: 2, description: "Retained organization text" });
-        expect((await db.from("intake_commands").select("command_id").eq("command_id", commandId)).data).toEqual([]);
-      } finally {
-        setStorageAdapter(filesystem);
-        expect((await db.from("intake_requests").delete().eq("id", requestId)).error).toBeNull();
-        if (!erased) expect((await db.auth.admin.deleteUser(user.id)).error).toBeNull();
-      }
-    }, 60000);
-    it.each(["stored", "during-read", "during-generation"])(
-      "invalidates erased contributor identity %s and rebuilds an anonymous export", async (timing) => {
-        const contributorEmail = `erased-contributor-${randomUUID()}@test.local`;
-        const created = await db.auth.admin.createUser({ email: contributorEmail, email_confirm: true });
-        expect(created.error).toBeNull();
-        const contributor = created.data.user!.id;
-        const requestId = randomUUID();
-        const jobs: string[] = [];
-        let erased = false;
-        const { startUserExport, loadUserExportArtifact } = await import("../../modules/user/user.export.js");
-        const { handleExportBuild } = await import("../../modules/user/user.exportJobs.js");
-        const { processClaimedJob } = await import("../../lib/dbq/runner.js");
-        const { setStorageAdapter } = await import("../../lib/storage.js");
-        const { createFilesystemStorageAdapter } = await import("../../lib/storage/filesystem.js");
-        const filesystem = createFilesystemStorageAdapter();
-        const erase = async () => {
-          expect((await db.auth.admin.deleteUser(contributor)).error).toBeNull();
-          erased = true;
-        };
-        const build = async () => {
-          const started = await startUserExport(db, {
-            userId: users[1].id, type: "account",
-            payload: { userId: users[1].id, userEmail: users[1].email, type: "account" },
-          });
-          expect(started.ok).toBe(true);
-          if (!started.ok) throw new Error(started.detail);
-          jobs.push(started.exportId);
-          const claimed = await db.rpc("claim_db_job", { p_id: started.exportId, p_stale_seconds: 600 });
-          expect(claimed.error).toBeNull();
-          const job = (claimed.data as DbJob[]).find(x => x.id === started.exportId);
-          expect(job).toBeTruthy();
-          await processClaimedJob(db, { "export.build": handleExportBuild }, job!);
-          return started.exportId;
-        };
-        try {
-          expect((await db.from("intake_requests").insert({
-            id: requestId, org_id: org, requester_id: users[1].id,
-            category: "general", subject: "Erasure export fixture", description: "Retained request",
-            state: "resolved",
-          })).error).toBeNull();
-          // A former contributor remains only in history, with no current assignment or roster entry.
-          expect((await db.from("intake_messages").insert({
-            org_id: org, request_id: requestId, author_id: contributor,
-            kind: "answer", body: "Retained reviewed answer",
-          })).error).toBeNull();
-          expect((await db.from("intake_events").insert({
-            org_id: org, request_id: requestId, actor_id: contributor,
-            assignee_id: contributor, kind: "publish",
-          })).error).toBeNull();
-          if (timing === "during-generation") {
-            const { buildIntakeExport } = await import("../../modules/intake/intake.service.js");
-            // The barrier wraps real RPC responses; every read and Auth mutation hits the local stack.
-            const originalRpc = db.rpc.bind(db);
-            const rpc = vi.spyOn(db, "rpc").mockImplementation(((name: string, args: Record<string, unknown>) => {
-              const result = originalRpc(name, args);
-              if (name !== "intake_read_history" || args.p_request !== requestId || erased) return result;
-              return Promise.resolve(result).then(async response => {
-                await erase();
-                return response;
-              });
-            }) as typeof db.rpc);
-            try {
-              await expect(buildIntakeExport(db, users[1].id)).rejects.toThrow("changed during export");
-            } finally {
-              rpc.mockRestore();
-            }
-          } else {
-            const artifactId = await build();
-            const before = await loadUserExportArtifact(db, artifactId, users[1].id);
-            expect(before.ok).toBe(true);
-            if (!before.ok) throw new Error(before.kind);
-            expect(before.body.toString()).toContain(contributorEmail);
-            let read = false;
-            if (timing === "stored") await erase();
-            else setStorageAdapter({
-              ...filesystem,
-              async downloadFile(key) {
-                const bytes = await filesystem.downloadFile(key);
-                expect(bytes).not.toBeNull();
-                read = true;
-                await erase();
-                return bytes;
-              },
-            });
-            try {
-              expect(await loadUserExportArtifact(db, artifactId, users[1].id))
-                .toEqual({ ok: false, kind: "expired" });
-              expect(read).toBe(timing === "during-read");
-            } finally {
-              setStorageAdapter(filesystem);
-            }
-            expect(await loadUserExportArtifact(db, artifactId, users[1].id))
-              .toEqual({ ok: false, kind: "expired" });
-          }
-          expect(erased).toBe(true);
-          const regenerated = await loadUserExportArtifact(db, await build(), users[1].id);
-          expect(regenerated.ok).toBe(true);
-          if (!regenerated.ok) throw new Error(regenerated.kind);
-          expect(regenerated.body.toString()).not.toContain(contributorEmail);
-          const retained = JSON.parse(regenerated.body.toString()).intake.requests
-            .find((item: { request: { id: string } }) => item.request.id === requestId);
-          expect(retained.request.export_revision).toBe(2);
-          expect(retained.messages[0]).toMatchObject({ body: "Retained reviewed answer", author_name: "Former member" });
-          expect(retained.events[0].actor_name).toBe("Former member");
-        } finally {
-          setStorageAdapter(filesystem);
-          if (jobs.length) expect((await db.from("db_jobs").delete().in("id", jobs)).error).toBeNull();
-          expect((await db.from("intake_requests").delete().eq("id", requestId)).error).toBeNull();
-          if (!erased) expect((await db.auth.admin.deleteUser(contributor)).error).toBeNull();
-        }
-      }, 60000,
-    );
-    it("exports over 1,000 requests through the real worker and denies the stored artifact after revocation", async () => {
-      const rows = Array.from({ length: 1001 }, (_, i) => ({
-        id: randomUUID(),
-        org_id: org,
-        requester_id: users[1].id,
-        subject: `Bulk ${i}`,
-        description: "Synthetic",
-        category: "general",
-      }));
-      for (let offset = 0; offset < rows.length; offset += 200)
         expect(
           (
             await db
               .from("intake_requests")
-              .insert(rows.slice(offset, offset + 200))
-          ).error,
+              .select("created_by,export_revision,description,requester_name")
+              .eq("id", requestId)
+              .single()
+          ).data,
+        ).toEqual({
+          created_by: null,
+          export_revision: 2,
+          description: "Retained organization text",
+          requester_name: "Sam Business",
+        });
+        expect(
+          (
+            await db
+              .from("intake_commands")
+              .select("command_id")
+              .eq("command_id", commandId)
+          ).data,
+        ).toEqual([]);
+      } finally {
+        setStorageAdapter(filesystem);
+        expect(
+          (await db.from("intake_requests").delete().eq("id", requestId)).error,
         ).toBeNull();
+        if (!erased)
+          expect((await db.auth.admin.deleteUser(user.id)).error).toBeNull();
+      }
+    }, 60000);
+    it("lets every member list and read a request's attachments, and removes them with the request", async () => {
+      const body = input();
+      expect((await post(1, "/requests", body)).status).toBe(201);
+      const documentId = randomUUID();
+      const versionId = randomUUID();
+      expect(
+        (
+          await db.from("documents").insert({
+            id: documentId,
+            org_id: org,
+            user_id: users[1].id,
+            library_kind: "intake_attachment",
+            status: "ready",
+          })
+        ).error,
+      ).toBeNull();
+      expect(
+        (
+          await db.from("document_versions").insert({
+            id: versionId,
+            document_id: documentId,
+            storage_path: `documents/${users[1].id}/${documentId}/nda.pdf`,
+            version_number: 1,
+            filename: "Supplier NDA.pdf",
+            file_type: "pdf",
+            size_bytes: 10,
+          })
+        ).error,
+      ).toBeNull();
+      await db
+        .from("documents")
+        .update({ current_version_id: versionId })
+        .eq("id", documentId);
+      expect(
+        (
+          await db.rpc("intake_attach_document", {
+            p_org: org,
+            p_actor: users[1].id,
+            p_request: body.id,
+            p_document: documentId,
+          })
+        ).error,
+      ).toBeNull();
+      const listed = await get(3, `/requests/${body.id}/documents`);
+      expect(listed.status).toBe(200);
+      expect(listed.body).toEqual([
+        expect.objectContaining({
+          document_id: documentId,
+          filename: "Supplier NDA.pdf",
+          added_by_name: users[1].email,
+        }),
+      ]);
+      expect((await get(5, `/requests/${body.id}/documents`)).status).toBe(404);
+      for (const [user, readable] of [
+        [3, true],
+        [5, false],
+      ] as const)
+        expect(
+          (
+            await db.rpc("org_private_document_access", {
+              p_org_id: org,
+              p_document_id: documentId,
+              p_user_id: users[user].id,
+            })
+          ).data,
+        ).toBe(readable);
+      expect(
+        (await db.from("intake_requests").delete().eq("id", body.id)).error,
+      ).toBeNull();
+      expect(
+        (await db.from("documents").select("id").eq("id", documentId)).data,
+      ).toEqual([]);
+    });
+    it("keeps intake out of new account exports and still checks older intake manifests", async () => {
       const { startUserExport, loadUserExportArtifact } = await import(
         "../../modules/user/user.export.js"
       );
@@ -546,117 +523,98 @@ describe.skipIf(!url || !key || !anon)(
         "../../modules/user/user.exportJobs.js"
       );
       const { processClaimedJob } = await import("../../lib/dbq/runner.js");
-      const started = await startUserExport(db, {
-        userId: users[1].id,
-        type: "account",
-        payload: {
-          userId: users[1].id,
-          userEmail: users[1].email,
-          type: "account",
-        },
-      });
-      expect(started.ok).toBe(true);
-      if (!started.ok) throw new Error(started.detail);
-      exportId = started.exportId;
-      const claimed = await db.rpc("claim_db_job", {
-        p_id: exportId,
-        p_stale_seconds: 600,
-      });
-      expect(claimed.error).toBeNull();
-      const job = (claimed.data as DbJob[]).find((x) => x.id === exportId);
-      expect(job).toBeTruthy();
-      await processClaimedJob(db, { "export.build": handleExportBuild }, job!);
-      const stored = await db
-        .from("db_jobs")
-        .select("status,result,last_error")
-        .eq("id", exportId)
-        .single();
-      expect(stored.data?.status, JSON.stringify(stored.data)).toBe("done");
-      const downloaded = await loadUserExportArtifact(
-        db,
-        exportId,
-        users[1].id,
-      );
-      expect(downloaded.ok).toBe(true);
-      if (!downloaded.ok) throw new Error(downloaded.kind);
-      const exported = JSON.parse(downloaded.body.toString()).intake
-        .requests as { request: { id: string; incarnation_id: string; export_revision: number } }[];
-      expect(exported.length).toBeGreaterThan(1000);
-      expect(new Set(exported.map((x) => x.request.id)).size).toBe(
-        exported.length,
-      );
-      expect(stored.data!.result.intake_manifest.requests).toEqual(
-        exported.map((x) => ({
-          id: x.request.id,
-          incarnation_id: x.request.incarnation_id,
-          export_revision: x.request.export_revision,
-        })),
-      );
-      expect(
-        rows.every((r) => exported.some((x) => x.request.id === r.id)),
-      ).toBe(true);
-      // Revoke after real filesystem bytes are read, before the response leaves.
-      // The second authorization check must refuse those already-read bytes.
-      const { setStorageAdapter } = await import("../../lib/storage.js");
-      const { createFilesystemStorageAdapter } = await import(
-        "../../lib/storage/filesystem.js"
-      );
-      const filesystem = createFilesystemStorageAdapter();
-      let storageRead = false;
-      setStorageAdapter({
-        ...filesystem,
-        async downloadFile(key) {
-          const bytes = await filesystem.downloadFile(key);
-          storageRead = true;
-          expect(bytes).not.toBeNull();
-          expect(
-            (
-              await db.rpc("remove_org_member", {
-                p_org_id: org,
-                p_user_id: users[1].id,
-                p_actor_id: users[0].id,
-              })
-            ).error,
-          ).toBeNull();
-          return bytes;
-        },
-      });
+      const legacyId = randomUUID();
+      let exportId = "";
       try {
-        expect(await loadUserExportArtifact(db, exportId, users[1].id)).toEqual(
-          {
-            ok: false,
-            kind: "expired",
-          },
+        // A request from before the tracker, listed in an older export.
+        expect(
+          (
+            await db.from("intake_requests").insert({
+              id: legacyId,
+              org_id: org,
+              requester_id: users[3].id,
+              created_by: users[3].id,
+              requester_name: users[3].email,
+              category: "general",
+              subject: "Legacy export fixture",
+              description: "Retained request",
+            })
+          ).error,
+        ).toBeNull();
+        const started = await startUserExport(db, {
+          userId: users[3].id,
+          type: "account",
+          payload: { userId: users[3].id, userEmail: users[3].email, type: "account" },
+        });
+        expect(started.ok).toBe(true);
+        if (!started.ok) throw new Error(started.detail);
+        exportId = started.exportId;
+        const claimed = await db.rpc("claim_db_job", {
+          p_id: exportId,
+          p_stale_seconds: 600,
+        });
+        expect(claimed.error).toBeNull();
+        const job = (claimed.data as DbJob[]).find((x) => x.id === exportId);
+        await processClaimedJob(db, { "export.build": handleExportBuild }, job!);
+        const stored = await db
+          .from("db_jobs")
+          .select("status,result")
+          .eq("id", exportId)
+          .single();
+        expect(stored.data?.status, JSON.stringify(stored.data)).toBe("done");
+        expect(stored.data!.result).not.toHaveProperty("intake_manifest");
+        const current = await loadUserExportArtifact(db, exportId, users[3].id);
+        expect(current.ok).toBe(true);
+        if (!current.ok) throw new Error(current.kind);
+        expect(JSON.parse(current.body.toString())).not.toHaveProperty("intake");
+        expect(current.body.toString()).not.toContain("Legacy export fixture");
+        // Mark the same artifact as an older one that listed the legacy request.
+        const legacy = await db
+          .from("intake_requests")
+          .select("incarnation_id,export_revision")
+          .eq("id", legacyId)
+          .single();
+        expect(
+          (
+            await db
+              .from("db_jobs")
+              .update({
+                result: {
+                  ...stored.data!.result,
+                  intake_format: 1,
+                  intake_manifest: {
+                    version: 1,
+                    requests: [{ id: legacyId, ...legacy.data }],
+                  },
+                },
+              })
+              .eq("id", exportId)
+          ).error,
+        ).toBeNull();
+        expect((await loadUserExportArtifact(db, exportId, users[3].id)).ok).toBe(
+          true,
         );
-        expect(storageRead).toBe(true);
+        expect(
+          (
+            await db.rpc("remove_org_member", {
+              p_org_id: org,
+              p_user_id: users[3].id,
+              p_actor_id: users[0].id,
+            })
+          ).error,
+        ).toBeNull();
+        expect(await loadUserExportArtifact(db, exportId, users[3].id)).toEqual({
+          ok: false,
+          kind: "expired",
+        });
+        expect((await get(3, "/requests")).status).toBe(404);
       } finally {
-        setStorageAdapter(filesystem);
+        if (exportId)
+          expect((await db.from("db_jobs").delete().eq("id", exportId)).error).toBeNull();
+        expect(
+          (await db.from("intake_requests").delete().eq("id", legacyId)).error,
+        ).toBeNull();
       }
-      expect(await loadUserExportArtifact(db, exportId, users[1].id)).toEqual({
-        ok: false,
-        kind: "expired",
-      });
-      expect((await get(1, "/requests")).status).toBe(404);
-      // Erasure uses the existing real worker path; organization request text survives.
-      const { handleAccountDelete } = await import(
-        "../../modules/user/user.accountJobs.js"
-      );
-      await handleAccountDelete(db, {
-        ...job!,
-        id: randomUUID(),
-        kind: "account.delete",
-        payload: { userId: users[1].id, userEmail: users[1].email },
-      });
-      const retained = await db
-        .from("intake_requests")
-        .select("requester_id,description")
-        .eq("id", rows[0].id)
-        .single();
-      expect(retained.data).toEqual({
-        requester_id: null,
-        description: "Synthetic",
-      });
-      users.splice(1, 1); // account is already removed by the worker
-    }, 180000);
+    }, 60000);
   },
 );
