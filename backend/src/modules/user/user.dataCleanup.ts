@@ -909,6 +909,8 @@ export async function deleteUserAccountData(
     // references are detached. Safe to repeat after the request already ran it.
     const departure = await db.rpc("prepare_account_org_departures", { p_user_id: userId });
     await throwIfError(departure.error, "Failed to hand over organization work");
+    // Intake attribution is erased atomically by the auth.users delete trigger.
+    // A storage failure below must leave a surviving account's identity intact.
 
     for (const personalOrgId of await listPersonalOrgIds(db, userId)) {
         await deleteOrgContent(db, personalOrgId);

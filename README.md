@@ -22,9 +22,11 @@ Included now:
   structured rules and review contracts against them. See
   [Playbooks](docs/playbooks.md).
 
+- **Intake**: opt-in text-only requests, a shared Legal queue, clarification
+  and reviewed answers. See [Intake](docs/intake.md).
+
 Planned, starting with:
 
-- **Intake**: receive and triage requests for the legal team.
 - **Horizon scanning**: track regulatory updates relevant to the business.
 
 ## Built on Mike

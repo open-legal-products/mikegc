@@ -1,3 +1,4 @@
+import { buildIntakeExport } from "../intake/intake.service";
 import { createHash } from "node:crypto";
 import {
     checkProjectAccess,
@@ -493,6 +494,7 @@ export async function buildProjectExportManifest(db: Db, projectId: string) {
     });
 }
 
+/** Build account data from currently readable resources, including complete own-request intake history. */
 export async function buildUserAccountExport(
     db: Db,
     userId: string,
@@ -705,6 +707,7 @@ export async function buildUserAccountExport(
     ]);
 
     return {
+        intake: await buildIntakeExport(db, userId),
         exported_at: new Date().toISOString(),
         user: { id: userId, email: userEmail ?? null },
         profile,
