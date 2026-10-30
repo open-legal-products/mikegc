@@ -157,6 +157,19 @@ describe("intake route contracts", () => {
     expect(tampered.status).toBe(400);
     expect(mocks.rpc).toHaveBeenCalledTimes(3);
   });
+  it("accepts any email the database accepts, such as a single-label domain", async () => {
+    for (const requester_email of ["jane@localhost", "a@b"]) {
+      const response = await request(app)
+        .post(path + "/requests")
+        .send({ ...details, id, command_id, requester_email });
+      expect(response.status, requester_email).toBe(201);
+      expect(mocks.rpc).toHaveBeenLastCalledWith(
+        "intake_submit_request",
+        expect.objectContaining({ p_requester_email: requester_email }),
+      );
+    }
+  });
+
   it("forwards an edit with its expected version", async () => {
     const body = {
       ...details,

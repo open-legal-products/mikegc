@@ -46,7 +46,15 @@ const details = {
   subject: text(200),
   description: text(20000),
   requester_name: text(200),
-  requester_email: z.email().max(320).nullable().default(null),
+  // Same rule as the intake_requests check constraint and the form, so an
+  // address the database accepted (including a backfilled one) stays valid.
+  requester_email: z
+    .string()
+    .min(3)
+    .max(320)
+    .regex(/^[^@\s]+@[^@\s]+$/)
+    .nullable()
+    .default(null),
   requester_team: text(200).nullable().default(null),
   requested_by_date: z.iso.date().nullable().default(null),
   timezone: z.string().min(1).max(100).nullable().default(null),
