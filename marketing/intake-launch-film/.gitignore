@@ -8,5 +8,4 @@ film/stills/
 film/gl.js
 film/timing.json
 audio/music/*.wav
-audio/vo/*.wav
-audio/vo/raw/
+__pycache__/

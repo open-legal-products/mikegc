@@ -1407,5 +1407,257 @@
         "strong": true
       }
     ]
+  },
+  "splice_candidates_60_70": {
+    "window_trimmed_s": [
+      60.0,
+      70.0
+    ],
+    "method": "Same as splice_candidates: score (Mutopia MIDI, reference only) aligned with open-end chroma DTW extended to bar 44 (bars 1-40 identical to the earlier alignment); each event snapped to the strongest measured onset within +/-150 ms (+/-60 ms for downbeats inside 16th-note runs) and refined (median of flux, high-band rise and bias-corrected librosa onset).",
+    "events": [
+      {
+        "bar": 35,
+        "beat": 1,
+        "is_downbeat": true,
+        "score_marking": "downbeat; RH 16th-note A-major scale figure (cresc. starts mid-bar), LH staccato A-major chord on every beat",
+        "accented_in_score": false,
+        "dtw_prediction_trimmed_s": 59.9,
+        "snap_tolerance_s": 0.15,
+        "t_trimmed": 59.903,
+        "t_file": 62.43,
+        "estimator_spread_ms": 5.7,
+        "onset_strength": 2.3,
+        "peak_dBFS": -28.2,
+        "jump_dB": 5.2,
+        "dtw_vs_onset_ms": 3,
+        "confidence": "high",
+        "in_window": false
+      },
+      {
+        "bar": 36,
+        "beat": 1,
+        "is_downbeat": true,
+        "score_marking": "downbeat; subito p: RH G# half note, LH 16ths (D#-B-G#-B)",
+        "accented_in_score": false,
+        "dtw_prediction_trimmed_s": 61.6,
+        "snap_tolerance_s": 0.06,
+        "t_trimmed": 61.693,
+        "t_file": 64.22,
+        "estimator_spread_ms": 14.0,
+        "onset_strength": 0.83,
+        "peak_dBFS": -27.3,
+        "jump_dB": 11.3,
+        "dtw_vs_onset_ms": 93,
+        "evidence": "The strongest onset within 150 ms of the DTW prediction (64.013 s in the file) is a bar-35 16th. The bar-36 entry shows as a subito-p dip plus the LH D# and RH G# onsets at 64.17-64.21 s, so the snap is centred there (+/-60 ms).",
+        "confidence": "medium",
+        "in_window": true
+      },
+      {
+        "bar": 36,
+        "beat": 3,
+        "is_downbeat": false,
+        "score_marking": "RH A# half note with trill (no accent)",
+        "accented_in_score": false,
+        "dtw_prediction_trimmed_s": 62.575,
+        "snap_tolerance_s": 0.15,
+        "t_trimmed": 62.709,
+        "t_file": 65.236,
+        "estimator_spread_ms": 4.8,
+        "onset_strength": 1.55,
+        "peak_dBFS": -24.5,
+        "jump_dB": 3.6,
+        "dtw_vs_onset_ms": 134,
+        "confidence": "medium",
+        "in_window": true
+      },
+      {
+        "bar": 37,
+        "beat": 1,
+        "is_downbeat": true,
+        "score_marking": "downbeat; RH staccato G# quarter, LH staccato E-G#-B chord (resolution of the trill, no dynamic)",
+        "accented_in_score": false,
+        "dtw_prediction_trimmed_s": 63.6,
+        "snap_tolerance_s": 0.15,
+        "t_trimmed": 63.557,
+        "t_file": 66.084,
+        "estimator_spread_ms": 10.7,
+        "onset_strength": 0.86,
+        "peak_dBFS": -21.1,
+        "jump_dB": 9.2,
+        "dtw_vs_onset_ms": -43,
+        "confidence": "medium",
+        "in_window": true
+      },
+      {
+        "bar": 37,
+        "beat": 2,
+        "is_downbeat": false,
+        "score_marking": "ff A-major chord in both hands (held), then RH p 16ths from beat 3&",
+        "accented_in_score": true,
+        "dtw_prediction_trimmed_s": 64.075,
+        "snap_tolerance_s": 0.15,
+        "t_trimmed": 64.16,
+        "t_file": 66.687,
+        "estimator_spread_ms": 4.3,
+        "onset_strength": 1.61,
+        "peak_dBFS": -13.9,
+        "jump_dB": 32.3,
+        "dtw_vs_onset_ms": 85,
+        "confidence": "high",
+        "in_window": true
+      },
+      {
+        "bar": 38,
+        "beat": 1,
+        "is_downbeat": true,
+        "score_marking": "downbeat inside RH p 16th-note figure; LH rests on beat 1 (weak downbeat)",
+        "accented_in_score": false,
+        "dtw_prediction_trimmed_s": 65.925,
+        "snap_tolerance_s": 0.06,
+        "t_trimmed": 65.91,
+        "t_file": 68.437,
+        "estimator_spread_ms": 30.5,
+        "onset_strength": 0.91,
+        "peak_dBFS": -22.8,
+        "jump_dB": 5.5,
+        "dtw_vs_onset_ms": -15,
+        "evidence": "Checked by pitch: the A/E 16th-group pattern puts bar 37 beat 4 at about 67.91 s and bar 38 beat 1 at about 68.43 s in the file.",
+        "confidence": "low",
+        "in_window": true
+      },
+      {
+        "bar": 39,
+        "beat": 1,
+        "is_downbeat": true,
+        "score_marking": "downbeat inside RH 16th-note figure (cresc.); LH eighth rest on beat 1 (weak downbeat)",
+        "accented_in_score": false,
+        "dtw_prediction_trimmed_s": 67.725,
+        "snap_tolerance_s": 0.06,
+        "t_trimmed": 67.718,
+        "t_file": 70.245,
+        "estimator_spread_ms": 5.7,
+        "onset_strength": 1.09,
+        "peak_dBFS": -23.3,
+        "jump_dB": 6.7,
+        "dtw_vs_onset_ms": -7,
+        "confidence": "medium",
+        "in_window": true
+      },
+      {
+        "bar": 40,
+        "beat": 1,
+        "is_downbeat": true,
+        "score_marking": "downbeat; LH A-major chord quarter, RH starts the rising 16th-note scale",
+        "accented_in_score": false,
+        "dtw_prediction_trimmed_s": 69.475,
+        "snap_tolerance_s": 0.15,
+        "t_trimmed": 69.456,
+        "t_file": 71.983,
+        "estimator_spread_ms": 4.8,
+        "onset_strength": 2.03,
+        "peak_dBFS": -19.1,
+        "jump_dB": 9.2,
+        "dtw_vs_onset_ms": -19,
+        "confidence": "high",
+        "in_window": true
+      },
+      {
+        "bar": 41,
+        "beat": 1,
+        "is_downbeat": true,
+        "score_marking": "downbeat; RH E octave half note, f, LH 16ths",
+        "accented_in_score": true,
+        "dtw_prediction_trimmed_s": 71.1,
+        "snap_tolerance_s": 0.15,
+        "t_trimmed": 71.093,
+        "t_file": 73.62,
+        "estimator_spread_ms": 5.3,
+        "onset_strength": 4.42,
+        "peak_dBFS": -16.2,
+        "jump_dB": 17.4,
+        "dtw_vs_onset_ms": -7,
+        "confidence": "high",
+        "in_window": false
+      },
+      {
+        "bar": 41,
+        "beat": 3,
+        "is_downbeat": false,
+        "score_marking": "RH G# octave half note, f",
+        "accented_in_score": true,
+        "dtw_prediction_trimmed_s": 71.975,
+        "snap_tolerance_s": 0.15,
+        "t_trimmed": 72.014,
+        "t_file": 74.541,
+        "estimator_spread_ms": 16.0,
+        "onset_strength": 1.89,
+        "peak_dBFS": -18.9,
+        "jump_dB": 11.9,
+        "dtw_vs_onset_ms": 39,
+        "confidence": "medium",
+        "in_window": false
+      }
+    ],
+    "downbeats_in_window": [
+      {
+        "bar": 36,
+        "t_trimmed": 61.693,
+        "confidence": "medium",
+        "note": "downbeat; subito p: RH G# half note, LH 16ths (D#-B-G#-B)"
+      },
+      {
+        "bar": 37,
+        "t_trimmed": 63.557,
+        "confidence": "medium",
+        "note": "downbeat; RH staccato G# quarter, LH staccato E-G#-B chord (resolution of the trill, no dynamic)"
+      },
+      {
+        "bar": 38,
+        "t_trimmed": 65.91,
+        "confidence": "low",
+        "note": "downbeat inside RH p 16th-note figure; LH rests on beat 1 (weak downbeat)"
+      },
+      {
+        "bar": 39,
+        "t_trimmed": 67.718,
+        "confidence": "medium",
+        "note": "downbeat inside RH 16th-note figure (cresc.); LH eighth rest on beat 1 (weak downbeat)"
+      },
+      {
+        "bar": 40,
+        "t_trimmed": 69.456,
+        "confidence": "high",
+        "note": "downbeat; LH A-major chord quarter, RH starts the rising 16th-note scale"
+      }
+    ],
+    "accented_onsets_in_window": [
+      {
+        "bar": 37,
+        "beat": 2,
+        "t_trimmed": 64.16,
+        "confidence": "high",
+        "note": "ff A-major chord in both hands (held), then RH p 16ths from beat 3&"
+      }
+    ],
+    "local_bar_lengths_s": {
+      "35->36": 1.79,
+      "36->37": 1.864,
+      "37->38": 2.353,
+      "38->39": 1.808,
+      "39->40": 1.738,
+      "40->41": 1.637
+    },
+    "recommendation": {
+      "cut_at_downbeat": "bar 37 beat 1",
+      "downbeat_t_trimmed": 63.557,
+      "place_ending_wav_start_at_trimmed": 63.544,
+      "why": "The bar 37 downbeat falls at 63.557 s, inside the preferred 63-66 s range. It is where bar 36's A# trill resolves (RH staccato G#, LH E-G#-B chord), so the opening ends on a cadence point and the bar-199 run replaces the resolution. Starting ending.wav 0.013 s early puts its bar-199 attack on the bar-37 downbeat.",
+      "confidence": "medium-high: clear attack followed by a silent break (about -45 dBFS) before the ff chord; estimators within 11 ms; DTW prediction 43 ms away",
+      "not_recommended": {
+        "bar 38 beat 1 (65.910)": "weak downbeat inside p 16ths with a LH rest; low confidence",
+        "bar 37 beat 2 ff chord (64.160)": "strongest accent in the window, but on beat 2, not a downbeat"
+      },
+      "tempo_match": "Bars 35-40 run 1.74-2.35 s per bar (rubato; bar 37 is stretched by the break before the ff chord). The ending's bars 198-200 run 1.60-1.69 s."
+    }
   }
 }

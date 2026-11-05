@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Build the launch film: soundtrack, picture for each format, then the final files.
 #   ./build.sh <audio-dir> <out-dir> [formats...]
-# <audio-dir> holds music/ (moonlight_iii.wav, analysis.json) and vo/ (vo.json, vo0N.wav).
+# <audio-dir> holds music/ (moonlight_iii.wav, analysis.json).
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 AUDIO="$(cd "$1" && pwd)"
@@ -11,9 +11,7 @@ FORMATS=("$@")
 [ "$#" -eq 0 ] && FORMATS=(16x9 1x1 9x16)
 
 python3 "$HERE/make_cues.py" "$AUDIO" > /dev/null
-node "$HERE/render.cjs" timing 16x9 > /dev/null
 python3 "$HERE/mix.py" "$AUDIO" "$OUT/mix.wav"
-cp "$HERE/captions.srt" "$OUT/MikeGC_Intake_launch.srt"
 
 # Loudness: two-pass EBU R128 to -16 LUFS integrated, -1.5 dBTP.
 measure=$(ffmpeg -hide_banner -nostats -i "$OUT/mix.wav" -af loudnorm=I=-16:TP=-1.5:LRA=11:print_format=json -f null - 2>&1 | sed -n '/^{/,/^}/p')

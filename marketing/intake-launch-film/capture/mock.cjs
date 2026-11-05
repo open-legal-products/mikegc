@@ -25,7 +25,6 @@ const ACME_ID = "req-acme-nda";
 // ---- the queue ---------------------------------------------------------------
 // [subject, requester, team, state, assignee, createdDaysAgo, targetOffsetDays|null, source, updatedDaysAgo]
 const ROWS = [
-    ["Brightwater DPA sign-off", "Maya Chen", "Procurement", "in_review", PRIYA, 3, 4, "gmail", 0.2],
     ["Harbor & Pine renewal check", "Tom Becker", "Finance", "in_review", SAM, 4, 8, "outlook", 0.6],
     ["Launch page claim check", "Alex Rivera", "Marketing", "submitted", null, 0, 3, "teams", 0.05],
     ["Acme order form, 2027 pricing", "Jordan Lee", "Sales", "needs_information", DANA, 6, 5, "slack", 1],
@@ -112,6 +111,34 @@ const acme = {
     },
 };
 requests.unshift(acme);
+
+// The email scenario: Maya emails the intake mailbox; MikeGC records it.
+const BW_ID = "req-bw-dpa";
+const brightwater = {
+    id: BW_ID, org_id: ORG, subject: "Brightwater DPA sign-off",
+    description: "Hi Legal,\n\nBrightwater sent over their DPA for the analytics rollout (attached). We need sign-off this week so they can start on Monday.\n\nThanks,\nMaya",
+    requester_name: "Maya Chen", requester_email: "maya.chen@example.com", requester_team: "Procurement",
+    requested_by_date: "2026-11-13", state: "in_review", version: 2,
+    assignee_id: PRIYA.user_id, assignee_name: PRIYA.display_name,
+    created_at: "2026-11-09T09:42:00Z", updated_at: "2026-11-09T09:42:30Z",
+    clarify_stage: null, new_reply: false, unread_replies: 0,
+    created_by: null, created_by_name: "MikeGC", source: "gmail",
+    clarify_rounds: 0, clarify_max_rounds: 2, last_reply_at: null,
+    conversation: {
+        source: "gmail", channel_name: null, team_name: null, permalink: null,
+        mailbox: "legal@example.com", to: ["maya.chen@example.com"], cc: [],
+        max_attachment_bytes: 25000000, documents: true,
+    },
+};
+requests.splice(1, 0, brightwater);
+const bwEvents = [
+    { id: 11, kind: "submitted", from_state: null, to_state: "submitted", actor_id: null, actor_name: "MikeGC", assignee_name: null, created_at: "2026-11-09T09:42:00Z" },
+    { id: 12, kind: "assign", from_state: "submitted", to_state: "in_review", actor_id: null, actor_name: "MikeGC", assignee_name: "Priya Shah", created_at: "2026-11-09T09:42:04Z" },
+];
+const bwDocuments = [{
+    document_id: "doc-bw-dpa", filename: "Brightwater_DPA.docx", file_type: "docx", size_bytes: 61440, status: "ready",
+    added_by_name: "Maya Chen", created_at: "2026-11-09T09:42:01Z", message_id: null, revised: false,
+}];
 
 const PREPROCESS_NOTE = [
     "I reviewed Acme_NDA.docx against the NDA playbook and marked it up with tracked changes.",
@@ -259,12 +286,12 @@ const steps = {
     },
 };
 
-function detail() {
-    const open = ["submitted", "in_review", "needs_information"].includes(acme.state);
+function detail(r = acme) {
+    const open = ["submitted", "in_review", "needs_information"].includes(r.state);
     return {
-        ...acme,
+        ...r,
         capabilities: {
-            edit: open, assign: open, note: true, wait: acme.state === "in_review", resume: acme.state === "needs_information",
+            edit: open, assign: open, note: true, wait: r.state === "in_review", resume: r.state === "needs_information",
             resolve: open, cancel: open, reopen: !open, delete: true, send_to_requester: open, stop_asking: false,
         },
     };
@@ -280,10 +307,57 @@ const PROFILE = {
     practiceSetting: "in_house", professionalTitle: null, practiceAreas: ["Commercial"], profilePhoto: null,
     onboardingVersion: 99, onboardingComplete: true, passwordSet: true, messageCreditsUsed: 0,
     creditsResetDate: "2026-12-01", creditsRemaining: 100, tier: "pro", titleModel: null, tabularModel: null,
-    memoryCuratorModel: null, subagentModel: null, subagentReasoning: null, lastSelectedChatModel: null,
+    memoryCuratorModel: null, subagentModel: null, subagentReasoning: null, lastSelectedChatModel: "claude-opus-5-5",
     lastSelectedReasoningLevel: "medium", mfaOnLogin: false, legalResearchUs: false, quickActionsVisible: true,
-    responseDetailsVisible: false, darkMode: false, projectMemoryDefault: false, apiKeyStatus: {},
+    responseDetailsVisible: false, darkMode: false, projectMemoryDefault: false, apiKeyStatus: { claude: true },
 };
+
+// "Process in Assistant" on the Brightwater request: Priya sends the suggested
+// prompt, and the Assistant reviews the DPA and redlines it.
+const PROCESS_PROMPT = "Process this intake request: work out what is being asked and what is still missing, review it and its documents for the main legal issues and risks, and recommend the next steps.";
+const BW_CHAT = {
+    id: "chat-bw-dpa", title: "Brightwater DPA sign-off", user_id: PRIYA.user_id, project_id: null,
+    model: "claude-opus-5-5", created_at: "2026-11-09T10:18:00Z", is_owner: true, access_role: "owner",
+};
+const ann = (n, deleted_text, inserted_text, context_before, context_after, reason) => ({
+    type: "edit_data", kind: "edit", edit_id: `bw-edit-${n}`, document_id: "doc-bw-dpa", version_id: "v2", version_number: 2,
+    change_id: `bw-change-${n}`, deleted_text, inserted_text, context_before, context_after, reason, status: "pending",
+});
+const BW_MESSAGES = [
+    {
+        id: "bw-m1", chat_id: "chat-bw-dpa", role: "user", content: PROCESS_PROMPT,
+        intake: { id: BW_ID, title: "Brightwater DPA sign-off" }, created_at: "2026-11-09T10:18:00Z",
+    },
+    {
+        id: "bw-m2", chat_id: "chat-bw-dpa", role: "assistant", created_at: "2026-11-09T10:18:05Z",
+        content: [
+            { type: "doc_read", filename: "Brightwater_DPA.docx", document_id: "doc-bw-dpa", version_id: "v1", version_number: 1 },
+            { type: "content", text: [
+                "**What's being asked.** Maya needs sign-off on Brightwater's DPA for the analytics rollout by Friday 13 November, so Brightwater can start on Monday.",
+                "",
+                "**Main issues**",
+                "1. **Sub-processors (clause 2).** Brightwater can add sub-processors at its discretion. We should get notice and a right to object.",
+                "2. **Breach notice (clause 3).** \"Without undue delay\" has no outer limit. 48 hours gives us time to meet our own 72-hour deadline.",
+                "3. **Liability (clause 5).** Data protection claims fall under the services agreement's general cap. A separate cap of twice the annual fees is more usual.",
+                "",
+                "International transfers (clause 4) rely on the Standard Contractual Clauses, which is fine as drafted.",
+            ].join("\n") },
+            { type: "doc_edited", filename: "Brightwater_DPA.docx", document_id: "doc-bw-dpa", version_id: "v2", version_number: 2, download_url: "",
+              annotations: [
+                ann(1, "at its discretion", "after giving the Customer at least 30 days' written notice, during which the Customer may object on reasonable grounds", "The Processor may engage sub-processors ", ".", "Notice and a right to object"),
+                ann(2, "", " and in any event within 48 hours", "Personal Data Breach without undue delay", " after becoming aware of it.", "A fixed outer limit"),
+                ann(3, "is subject to the limitations in the Services Agreement", "for breach of this Agreement is capped at twice the fees paid in the 12 months before the claim", "The Processor's liability ", ".", "A separate cap for data protection"),
+              ] },
+            { type: "content", text: [
+                "I've made these three changes as tracked changes in Brightwater_DPA.docx.",
+                "",
+                "**Still missing.** Annex 3, the list of current sub-processors, is blank. Ask Maya to get it from Brightwater.",
+                "",
+                "**Next steps.** Send Brightwater the redline, and approve once Annex 3 arrives.",
+            ].join("\n") },
+        ],
+    },
+];
 
 const unknown = new Set();
 
@@ -318,10 +392,11 @@ function handle(method, path, query, body) {
         const rm = sub.match(/^\/requests\/([^/]+)(\/.*)?$/);
         if (rm) {
             const tail = rm[2] || "";
-            if (tail === "" && method === "GET") return [200, detail()];
-            if (tail.startsWith("/messages")) return [200, messages];
-            if (tail.startsWith("/events")) return [200, events];
-            if (tail === "/documents") return [200, documents];
+            const bw = rm[1] === BW_ID;
+            if (tail === "" && method === "GET") return [200, detail(bw ? brightwater : acme)];
+            if (tail.startsWith("/messages")) return [200, bw ? [] : messages];
+            if (tail.startsWith("/events")) return [200, bw ? bwEvents : events];
+            if (tail === "/documents") return [200, bw ? bwDocuments : documents];
             if (tail === "/reply-seen") { acme.new_reply = false; acme.unread_replies = 0; return [200, { ok: true }]; }
             if (method === "POST") return [200, { request_id: ACME_ID, applied_version: acme.version, message_id: null, replayed: false }];
         }
@@ -330,25 +405,33 @@ function handle(method, path, query, body) {
         { id: "pb-nda", name: "NDA playbook", description: "Our positions on mutual and one-way NDAs", created_at: "2026-09-01T10:00:00Z", updated_at: "2026-10-20T10:00:00Z" },
         { id: "pb-dpa", name: "DPA playbook", description: "Data processing terms", created_at: "2026-09-01T10:00:00Z", updated_at: "2026-10-20T10:00:00Z" },
     ]];
-    const dm = p.match(/^\/single-documents\/doc-acme-nda(\/.*)?$/);
+    const dm = p.match(/^\/single-documents\/(doc-acme-nda|doc-bw-dpa)(\/.*)?$/);
     if (dm) {
-        const t = dm[1] || "";
+        const t = dm[2] || "";
+        const dpa = dm[1] === "doc-bw-dpa";
+        const name = dpa ? "Brightwater_DPA.docx" : "Acme_NDA.docx";
         const doc = {
-            id: "doc-acme-nda", user_id: PRIYA.user_id, project_id: null, filename: "Acme_NDA.docx", file_type: "docx",
-            storage_path: "x", pdf_storage_path: null, size_bytes: 48213, page_count: 1, structure_tree: null, status: "ready",
-            created_at: "2026-11-09T10:14:02Z", updated_at: "2026-11-09T10:15:20Z", current_version_id: "v2",
-            active_version_number: 2, latest_version_number: 2, can_edit: true, can_delete: false,
-            owner_display_name: "Jordan Lee",
+            id: dm[1], user_id: PRIYA.user_id, project_id: null, filename: name, file_type: "docx",
+            storage_path: "x", pdf_storage_path: null, size_bytes: dpa ? 61440 : 48213, page_count: 1, structure_tree: null, status: "ready",
+            created_at: dpa ? "2026-11-09T09:42:01Z" : "2026-11-09T10:14:02Z", updated_at: dpa ? "2026-11-09T10:19:40Z" : "2026-11-09T10:15:20Z",
+            current_version_id: "v2", active_version_number: 2, latest_version_number: 2, can_edit: true, can_delete: false,
+            owner_display_name: dpa ? "Maya Chen" : "Jordan Lee",
         };
         if (t === "") return [200, doc];
         if (t === "/versions") return [200, { current_version_id: "v2", versions: [
-            { id: "v2", version_number: 2, source: "assistant_edit", created_at: "2026-11-09T10:15:20Z", filename: "Acme_NDA.docx", file_type: "docx", size_bytes: 48213, page_count: 1 },
-            { id: "v1", version_number: 1, source: "upload", created_at: "2026-11-09T10:14:02Z", filename: "Acme_NDA.docx", file_type: "docx", size_bytes: 46120, page_count: 1 },
+            { id: "v2", version_number: 2, source: "assistant_edit", created_at: dpa ? "2026-11-09T10:19:40Z" : "2026-11-09T10:15:20Z", filename: name, file_type: "docx", size_bytes: dpa ? 61440 : 48213, page_count: 1 },
+            { id: "v1", version_number: 1, source: "upload", created_at: dpa ? "2026-11-09T09:42:01Z" : "2026-11-09T10:14:02Z", filename: name, file_type: "docx", size_bytes: dpa ? 58900 : 46120, page_count: 1 },
         ] }];
-        if (t.startsWith("/file")) return [200, require("fs").readFileSync(require("path").join(__dirname, "docx/Acme_NDA.docx")), "application/vnd.openxmlformats-officedocument.wordprocessingml.document"];
+        if (t.startsWith("/file")) return [200, require("fs").readFileSync(require("path").join(__dirname, "docx", name)), "application/vnd.openxmlformats-officedocument.wordprocessingml.document"];
         if (t.startsWith("/url")) return [200, { url: "/api/single-documents/doc-acme-nda/file" }];
         if (t.startsWith("/edits")) return [200, []];
     }
+    if (p === "/models/configured" || p === "/models/ollama") return [200, { models: [] }];
+    if (p === `/orgs/${ORG}/api-keys`) return [200, {
+        keys: { claude: true }, effective: { claude: true }, router_models: {}, effective_router_models: {},
+        allow_personal_api_keys: true, can_manage: true,
+    }];
+    if (p === "/chat/chat-bw-dpa") return [200, { chat: BW_CHAT, is_owner: true, access_role: "owner", messages: BW_MESSAGES }];
     if (p === "/projects") return [200, [
         { id: "p1", name: "Acme commercial", user_id: PRIYA.user_id, access_role: "owner", org_id: ORG, created_at: "2026-10-01T10:00:00Z", updated_at: "2026-11-06T10:00:00Z", documents: [] },
         { id: "p2", name: "Brightwater onboarding", user_id: PRIYA.user_id, access_role: "owner", org_id: ORG, created_at: "2026-10-03T10:00:00Z", updated_at: "2026-11-05T10:00:00Z", documents: [] },
@@ -363,4 +446,4 @@ function handle(method, path, query, body) {
     return null;
 }
 
-module.exports = { handle, steps, queueNewRequestToast, unknown, ACME_ID, ORG, NOW };
+module.exports = { handle, steps, queueNewRequestToast, unknown, ACME_ID, BW_ID, ORG, NOW };

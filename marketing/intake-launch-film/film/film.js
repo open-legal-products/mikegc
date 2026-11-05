@@ -7,56 +7,54 @@ const FORMAT = QS.get("f") || "16x9";
 const CUES = window.__CUES || {};
 
 // ---------------------------------------------------------------- timing cues
-// Music and voiceover land on these. render.cjs injects measured values.
+// The beat schedule and the music landmarks it lands on. render.cjs injects cues.json.
 const C = Object.assign({
-    vo: [0.40, 7.25, 10.25, 18.55, 28.35, 38.35, 48.45],
+    at: [0.0, 7.25, 12.04, 18.05, 28.1, 38.0, 48.2, 58.0], // beat anchors: [3]..[7] start beats 4, 5, 6, the email scenario and 7
     chords: [10.62, 12.52, 14.42, 16.32], // the accented chords each logo lands on
     endcard: 54.0,
     end: 60.0,
-    // Beat 1, set against the first line: "General Legal | has sponsored | MikeOSS | to design MikeGC | : a fork of Mike..."
-    glIn: 0.45, sponsorsIn: 1.35, swap: 2.6, mikeIn: 2.8, gcType: 3.7, subIn: 4.6,
+    // Beat 1: the General Legal mark gives way to the Mike mark on wave 1's chords.
+    glIn: 0.3, sponsorsIn: 1.35, swap: 2.75, mikeIn: 2.9, gcType: 4.35, subIn: 5.0,
+    b2: 6.9, featureIn: 7.25, intakeIn: 7.55,
 }, CUES);
 
 // ---------------------------------------------------------------- layouts
 const LAYOUTS = {
     "16x9": {
         W: 1920, H: 1080, cx: 960, cy: 530,
-        card: { x: 272, y: 64, w: 1376, h: 860 }, dashEnd: [930, 470, 1.2], zw: 1, zp: 1.3,
-        capY: 984, capSize: 36, footY: 1038, footSize: 22,
-        wmSize: 120, glH: 56, sponsorsSize: 36, subSize: 36, subDy: 112,
+        card: { x: 272, y: 64, w: 1376, h: 860 }, dashEnd: [930, 470, 1.2], zChat: 1.3, zw: 1, zp: 1.3,
+        capY: 984, capSize: 36,
+        wmSize: 120, sponsorsSize: 36, subSize: 36, subDy: 112,
         featureSize: 34, intakeSize: 120,
-        corner: { left: 48, cy: 46, s: 0.3 },
         logoSize: 112, logoY: 300, logoXs: [330, 750, 1170, 1590],
         bubble: { mode: "under", w: 380, font: 25, top: 392 },
         queue: { w: 1180, rowH: 96, top: 300, font: 26 },
         thread: { w: 1200 },
-        end: { wmY: 440, intakeY: 560, intakeSize: 72, tagY: 660, urlY: 718, sponsorY: 1000, tagSize: 36, urlSize: 28, sponsorSize: 22 },
+        end: { wmY: 470, byY: 602, bySize: 24, glY: 656, glH: 44 },
     },
     "1x1": {
         W: 1080, H: 1080, cx: 540, cy: 520,
-        card: { x: 40, y: 104, w: 1000, h: 760 }, dashEnd: [720, 520, 1.6], zw: 1.3, zp: 1.75,
-        capY: 930, capSize: 36, footY: 990, footSize: 22,
-        wmSize: 104, glH: 48, sponsorsSize: 32, subSize: 32, subDy: 100,
+        card: { x: 40, y: 104, w: 1000, h: 760 }, dashEnd: [720, 520, 1.6], zChat: 1.3, zw: 1.3, zp: 1.75,
+        capY: 930, capSize: 36,
+        wmSize: 104, sponsorsSize: 32, subSize: 32, subDy: 100,
         featureSize: 30, intakeSize: 112,
-        corner: { left: 36, cy: 44, s: 0.3 },
         logoSize: 92, logoY: 230, logoXs: [165, 415, 665, 915],
         bubble: { mode: "stack", w: 860, font: 24, top: 330, gap: 94 },
         queue: { w: 1000, rowH: 96, top: 290, font: 24 },
         thread: { w: 1000 },
-        end: { wmY: 420, intakeY: 530, intakeSize: 66, tagY: 625, urlY: 680, sponsorY: 1000, tagSize: 32, urlSize: 26, sponsorSize: 21 },
+        end: { wmY: 480, byY: 598, bySize: 22, glY: 648, glH: 40 },
     },
     "9x16": {
         W: 1080, H: 1920, cx: 540, cy: 900,
-        card: { x: 40, y: 430, w: 1000, h: 1100 }, dashEnd: [680, 500, 1.25], zw: 1, zp: 1.35,
-        capY: 1660, capSize: 40, footY: 1730, footSize: 24,
-        wmSize: 116, glH: 52, sponsorsSize: 36, subSize: 34, subDy: 112,
+        card: { x: 40, y: 430, w: 1000, h: 1100 }, dashEnd: [680, 500, 1.25], zChat: 1.0, zw: 1, zp: 1.35,
+        capY: 1660, capSize: 40,
+        wmSize: 116, sponsorsSize: 36, subSize: 34, subDy: 112,
         featureSize: 34, intakeSize: 132,
-        corner: { left: 48, cy: 96, s: 0.32 },
         logoSize: 110, logoY: 560, logoXs: [165, 415, 665, 915],
         bubble: { mode: "stack", w: 900, font: 26, top: 680, gap: 104 },
         queue: { w: 1000, rowH: 104, top: 700, font: 26 },
         thread: { w: 1000 },
-        end: { wmY: 800, intakeY: 925, intakeSize: 76, tagY: 1030, urlY: 1092, sponsorY: 1780, tagSize: 36, urlSize: 28, sponsorSize: 23 },
+        end: { wmY: 880, byY: 1012, bySize: 24, glY: 1066, glH: 44 },
     },
 };
 const L = LAYOUTS[FORMAT];
@@ -254,24 +252,30 @@ function cursor(cam, path, clicks = []) {
 }
 
 // ================================================================ BEAT 1 · sponsor (0–7)
-const GL_SVG = window.__GL_SVG;
-const glWrap = h("div", { html: GL_SVG, style: { color: "var(--ink)", lineHeight: "0" } });
-const glSvg = glWrap.querySelector("svg");
-glSvg.setAttribute("height", L.glH);
-glSvg.setAttribute("width", Math.round(L.glH * 116 / 18));
-glSvg.querySelectorAll("path").forEach((p) => p.removeAttribute("style"));
-const gl = anchor(L.cx, L.cy - 18, glWrap);
+// General Legal's header logo (mark and outlined wordmark, drawn in currentColor).
+function glLogo(height) {
+    const wrap = h("div", { html: window.__GL_SVG, style: { color: "var(--ink)", lineHeight: "0" } });
+    const svg = wrap.querySelector("svg");
+    svg.setAttribute("height", height);
+    svg.setAttribute("width", Math.round(height * 116 / 18));
+    svg.querySelectorAll("path").forEach((p) => p.removeAttribute("style"));
+    return wrap;
+}
+// The Mike mark is iconPx tall; General Legal's mark fills 16 of its logo's
+// 18 units, so this makes the two marks (and their lettering) the same size.
+const iconPx = Math.round(L.wmSize * 0.86);
+const glH = Math.round(iconPx * 18 / 16);
+const gl = anchor(L.cx, L.cy - 22, glLogo(glH));
 fadeIn(gl, C.glIn, 0.6, 16);
 A(gl, "o", [[C.swap, 1], [C.swap + 0.3, 0, "io"]]);
 A(gl, "y", [[C.swap, 0], [C.swap + 0.4, -44, "io"]]);
 
-const sponsors = anchor(L.cx, L.cy + 62, textEl("sponsors", "", L.sponsorsSize, { fontWeight: 400, letterSpacing: "0.01em" }));
+const sponsors = anchor(L.cx, L.cy - 22 + glH / 2 + L.sponsorsSize + 22, textEl("sponsors", "", L.sponsorsSize, { fontWeight: 400, letterSpacing: "0.01em" }));
 fadeIn(sponsors, C.sponsorsIn, 0.45, 10);
 A(sponsors, "o", [[C.swap - 0.05, 1], [C.swap + 0.25, 0, "io"]]);
 A(sponsors, "y", [[C.swap - 0.05, 0], [C.swap + 0.3, -20, "io"]]);
 
 // The wordmark: mark + "Mike" + "GC".
-const iconPx = Math.round(L.wmSize * 0.86);
 const iconBox = h("div", { class: "icon", style: { width: iconPx + "px", height: iconPx + "px", marginRight: Math.round(L.wmSize * 0.1) + "px" } },
     h("img", { src: "assets/mikeoss-icon-orig.svg" }),
     h("img", { src: "assets/mikegc-icon.svg", class: "blue" }));
@@ -356,7 +360,37 @@ function thread(messages, opts = {}) {
     c.__viewH = innerH - 84;
     return c;
 }
-const AV = { JL: "#5b4fc4", PS: "#7c3aed" };
+const AV = { JL: "#5b4fc4", PS: "#7c3aed", MC: "#c2410c" };
+// An email thread in the intake mailbox (a neutral mail view with the Gmail logo).
+function mailCard() {
+    const r = L.card;
+    const sc = r.w / TH.w;
+    const innerH = r.h / sc;
+    const c = h("div", { class: "abs glass", style: { left: r.x + "px", top: r.y + "px", width: r.w + "px", height: r.h + "px", transformOrigin: "50% 50%" } });
+    const t = h("div", { class: "thread", style: { width: TH.w + "px", height: innerH + "px", transform: `scale(${sc})` } });
+    const bar = h("div", { class: "bar" }, h("img", { src: "assets/gmail.svg" }), h("span", { class: "ch" }, "Inbox"), h("span", { class: "sub" }, "legal@example.com"));
+    const scroll = h("div", { class: "scroll" });
+    const subj = h("div", { class: "subj" }, "DPA for Brightwater: need sign-off this week");
+    const m1 = mailMsg({ initials: "MC", name: "Maya Chen", addr: "maya.chen@example.com", to: "to legal@example.com", time: "9:41 AM",
+        html: "Hi Legal,<br><br>Brightwater sent over their DPA for the analytics rollout (attached). We need sign-off this week so they can start on Monday.<br><br>Thanks,<br>Maya",
+        file: "Brightwater_DPA.docx" });
+    const m2 = mailMsg({ mike: true, name: "Legal", addr: "legal@example.com", to: "to Maya Chen", time: "9:42 AM",
+        html: 'Logged for Legal: <span class="lnk">Brightwater DPA sign-off</span>. Assigned to Priya Shah.' });
+    scroll.append(subj, m1, m2);
+    t.append(bar, h("div", { class: "body" }, scroll));
+    c.append(t, h("div", { class: "edge" }));
+    stage.append(c);
+    c.__m = [m1, m2];
+    return c;
+}
+function mailMsg(m) {
+    const el = msgEl(m);
+    const head = el.querySelector(".nm").parentElement;
+    head.querySelector(".nm").after(h("span", { class: "addr" }, `<${m.addr}>`));
+    head.after(h("div", { class: "to" }, m.to));
+    el.classList.add("mail");
+    return el;
+}
 function msgEl(m) {
     const av = m.mike
         ? h("div", { class: "av", style: { background: "#fff", border: "1px solid #ececef" } }, h("img", { src: "assets/mikegc-icon.svg" }))
@@ -380,7 +414,6 @@ const T = {};
 function buildTimeline() {
     // --- Beat 1
     A(white, "o", [[0, 1], [0.9, 0, "io"]]);
-    const wmW = wmInner.getBoundingClientRect().width; // with "GC" laid out below
     const gcW = gcSpan.getBoundingClientRect().width;
     gcSpan.style.width = gcW + "px"; // keep its space so the wordmark slides rather than jumps
     gcSpan.textContent = "";
@@ -393,18 +426,14 @@ function buildTimeline() {
     A(blue, "o", [[C.gcType + 0.4, 0], [C.gcType + 0.95, 1, "io"]]);
     A(black, "o", [[C.gcType + 0.4, 1], [C.gcType + 0.95, 0, "io"]]);
     fadeIn(subtitle, C.subIn, 0.5, 12);
-    const b2 = C.b2 != null ? C.b2 : C.vo[1] - 0.2;
+    const b2 = C.b2;
     A(subtitle, "o", [[b2 - 0.15, 1], [b2 + 0.2, 0, "io"]]);
 
-    // --- Beat 2: the wordmark shrinks into the corner and stays there.
-    const cs = L.corner.s;
-    const cornerX = L.corner.left + (wmW * cs) / 2 - L.cx;
-    const cornerY = L.corner.cy - (L.cy - 22);
-    A(wm, "x", [[b2, 0], [b2 + 0.6, cornerX, "io"]]);
-    A(wm, "y", [[b2, 0], [b2 + 0.6, cornerY, "io"]]);
-    A(wm, "s", [[b2, 1], [b2 + 0.6, cs, "io"]]);
-    const featureIn = C.featureIn != null ? C.featureIn : b2 + 0.4;
-    const intakeIn = C.intakeIn != null ? C.intakeIn : b2 + 0.6;
+    // --- Beat 2: the wordmark gives way to the feature's name.
+    A(wm, "o", [[b2, 1], [b2 + 0.45, 0, "io"]]);
+    A(wm, "y", [[b2, 0], [b2 + 0.5, -36, "io"]]);
+    const featureIn = C.featureIn;
+    const intakeIn = C.intakeIn;
     fadeIn(feature, featureIn, 0.45, 12);
     A(intake, "o", [[intakeIn, 0], [intakeIn + 0.6, 1, "o"]]);
     A(intake, "y", [[intakeIn, 46], [intakeIn + 0.65, 0, "o"]]);
@@ -443,7 +472,7 @@ function buildTimeline() {
         A(b, "s", [[tq + d, 1], [tq + d + 0.55, 0.85, "io"]]);
         A(rowEls[i], "o", [[tq + d + 0.3, 0], [tq + d + 0.7, 1, "o"]]);
     });
-    const b3end = C.vo[3] - 0.1;
+    const b3end = C.at[3] - 0.1;
     T.b4 = b3end;
     A(queue, "o", [[b3end - 0.4, 1], [b3end, 0, "io"]]);
     A(queue, "s", [[b3end - 0.4, 1], [b3end, 0.97, "io"]]);
@@ -457,14 +486,14 @@ function buildTimeline() {
     fadeIn(mJ, t4 + 0.45, 0.4, 18);
     fadeIn(dv, t4 + 1.75, 0.3, 0);
     fadeIn(mA, t4 + 1.95, 0.4, 18);
-    caption("Recorded from Slack", t4 + 0.5, C.vo[4] - 0.25);
+    caption("Recorded from Slack", t4 + 0.5, C.at[4] - 0.25);
     const s4t = t4 + 3.95;
     const s4 = card([img("s4_request")]);
-    show(s4, s4t, C.vo[4] - 0.15, "push", "fade");
+    show(s4, s4t, C.at[4] - 0.15, "push", "fade");
     const req = { title: { x: 410, y: 84, w: 210, h: 34 }, reviewer: { x: 1171, y: 216, w: 266, h: 60 }, requester: { x: 1171, y: 286, w: 266, h: 60 },
         target: { x: 1171, y: 356, w: 266, h: 60 }, documents: { x: 425, y: 336, w: 702, h: 30 }, created: { x: 1171, y: 484, w: 266, h: 56 } };
     // "MikeGC records the subject, the requester, the deadline and the documents."
-    const v4 = C.vo[3];
+    const v4 = C.at[3];
     const g4 = C.g4 || { subject: v4 + 5.0, requester: v4 + 5.9, deadline: v4 + 7.0, documents: v4 + 7.8 };
     glow(s4.__cam, req.title, g4.subject, g4.requester + 0.5);
     glow(s4.__cam, req.requester, g4.requester, g4.deadline + 0.5);
@@ -472,11 +501,11 @@ function buildTimeline() {
     glow(s4.__cam, req.documents, g4.documents, g4.documents + 1.1);
     const punch4 = Math.max(g4.documents + 0.8, s4t + 3.2);
     camKeys(s4, [[s4t, [800, 500, "w"]], [punch4, [800, 500, "w"]], [punch4 + 0.6, [1304, 380, "p"]]]);
-    glow(s4.__cam, req.reviewer, punch4 + 0.45, C.vo[4] - 0.2);
-    glow(s4.__cam, req.created, punch4 + 0.75, C.vo[4] - 0.2);
+    glow(s4.__cam, req.reviewer, punch4 + 0.45, C.at[4] - 0.2);
+    glow(s4.__cam, req.created, punch4 + 0.75, C.at[4] - 0.2);
 
     // --- Beat 5: triage and first pass
-    const t5 = C.vo[4] - 0.2;
+    const t5 = C.at[4] - 0.2;
     T.b5 = t5;
     const rules = card([img("s5_rules")]);
     show(rules, t5, t5 + 2.9, "fade", "fade");
@@ -498,9 +527,8 @@ function buildTimeline() {
     show(act, ta, ta + 2.55, "fade", "fade");
     camKeys(act, [[ta, [780, 640, "w"]], [ta + 0.3, [780, 640, "w"]], [ta + 0.9, [790, 760, "p"]]]);
     glow(act.__cam, { x: 462, y: 660, w: 664, h: 262 }, ta + 0.85);
-    const t6 = C.vo[5] - 0.2;
+    const t6 = C.at[5] - 0.2;
     caption("First pass against your playbook", ta + 0.1, t6);
-    caption("A first draft for a lawyer, not legal advice.", t5 + 0.35, t6, { foot: true, y: L.footY });
     const td = ta + 2.55;
     const doc = card([img("s5_doc")]);
     show(doc, td, t6, "fade", "fade");
@@ -534,7 +562,7 @@ function buildTimeline() {
     show(rt, trs, trs + 1.3, "fade", "fade");
     camKeys(rt, [[trs, [780, 860, "p"]]]);
     cursor(rt.__cam, [[trs, 1180, 700], [trs + 0.25, 1180, 700], [trs + 0.8, 984, 930]], [[trs + 0.95, 984, 930]]);
-    caption("Answer in the thread", trs + 0.05, C.vo[6] - 0.2);
+    caption("Answer in the thread", trs + 0.05, C.at[6] - 0.2);
     const tdg = trs + 1.3;
     T.resolve = tdg + 0.9;
     const dlg = card([img("s6_resolve_dialog")]);
@@ -543,17 +571,59 @@ function buildTimeline() {
     cursor(dlg.__cam, [[tdg, 760, 760], [tdg + 0.2, 760, 760], [tdg + 0.75, 936, 684]], [[T.resolve, 936, 684]]);
     const tf = tdg + 1.15;
     const th3 = thread([M_JORDAN, { divider: "4 replies" }, M_ACK, M_ASK, M_REPLY, M_RESOLVE]);
-    show(th3, tf, C.vo[6] - 0.15, "push", "fade");
+    show(th3, tf, C.at[6] - 0.15, "push", "push");
     fadeIn(th3.__els[5], tf + 0.5, 0.45, 18);
     autoscroll(th3, 5, tf + 0.35);
     autoscroll(th2, 4, tt + 1.25);
 
+    // --- The email scenario: recorded from Gmail, processed in the Assistant.
+    const tE = C.at[6] - 0.25;
+    T.email = tE;
+    const mail = mailCard();
+    show(mail, tE, tE + 2.2, "push", "push");
+    fadeIn(mail.__m[0], tE + 0.35, 0.4, 18);
+    fadeIn(mail.__m[1], tE + 1.2, 0.4, 18);
+    caption("Or by email", tE + 0.3, tE + 4.0);
+    const tq2 = tE + 1.8;
+    const er = card([img("e_request")]);
+    show(er, tq2, tq2 + 2.15, "push", "fade");
+    camKeys(er, [[tq2, [800, 500, "w"]], [tq2 + 0.55, [800, 500, "w"]], [tq2 + 1.05, [1200, 300, "p"]]]);
+    glow(er.__cam, { x: 1171, y: 428, w: 266, h: 84 }, tq2 + 0.75, tq2 + 2.3);
+    glow(er.__cam, { x: 1171, y: 522, w: 266, h: 46 }, tq2 + 0.95, tq2 + 2.3);
+    cursor(er.__cam, [[tq2, 1050, 640], [tq2 + 1.15, 1050, 640], [tq2 + 1.75, 1393, 36]], [[tq2 + 1.88, 1393, 36]]);
+    const tc = tq2 + 2.15;
+    const ec = card([img("e_composer")]);
+    show(ec, tc, tc + 1.5, "fade", "fade");
+    camKeys(ec, [[tc, [930, 500, L.zChat]]]);
+    glow(ec.__cam, { x: 524, y: 446, w: 186, h: 24 }, tc + 0.25, tc + 1.6, 4);
+    cursor(ec.__cam, [[tc, 1150, 700], [tc + 0.5, 1150, 700], [tc + 1.05, 1322, 539]], [[tc + 1.18, 1322, 539]]);
+    caption("Analyse it in the Assistant", tc + 0.05, tc + 3.0);
+    const tt2 = tc + 1.5;
+    const et = card([img("e_chat_top")]);
+    show(et, tt2, tt2 + 1.5, "fade", "fade");
+    camKeys(et, [[tt2, [930, 330, L.zChat]], [tt2 + 1.5, [930, 430, L.zChat]]]);
+    glow(et.__cam, { x: 508, y: 420, w: 842, h: 128 }, tt2 + 0.45, tt2 + 1.6);
+    const tg = tt2 + 1.5;
+    const eg = card([img("e_chat_changes")]);
+    show(eg, tg, tg + 1.25, "fade", "fade");
+    camKeys(eg, [[tg, [930, 560, L.zChat]]]);
+    glow(eg.__cam, { x: 524, y: 416, w: 812, h: 402 }, tg + 0.2, tg + 1.3);
+    cursor(eg.__cam, [[tg, 1120, 760], [tg + 0.35, 1120, 760], [tg + 0.9, 1310, 395]], [[tg + 1.03, 1310, 395]]);
+    caption("Redline with tracked changes", tg + 0.05, C.at[7] - 0.2);
+    const td2 = tg + 1.25;
+    const edoc = card([img("e_doc")]);
+    show(edoc, td2, C.at[7] - 0.15, "fade", "push");
+    camKeys(edoc, [[td2, [1200, 450, "w"]], [td2 + 0.2, [1200, 450, "w"]], [td2 + 0.8, [1202, 430, 1.45 * (L.zp / 1.3)]]]);
+    glow(edoc.__cam, { x: 938, y: 323, w: 530, h: 60 }, td2 + 0.75, null, 4);
+    glow(edoc.__cam, { x: 1046, y: 413, w: 176, h: 20 }, td2 + 0.95, null, 4);
+    glow(edoc.__cam, { x: 938, y: 494, w: 530, h: 41 }, td2 + 1.15, null, 4);
+
     // --- Beat 7: oversight
-    const t7 = C.vo[6] - 0.2;
+    const t7 = C.at[7] - 0.2;
     T.b7 = t7;
     const dash = card([img("s7_dashboard")]);
-    show(dash, t7, C.endcard + 0.15, "fade", "fall");
-    const v7 = C.vo[6];
+    show(dash, t7, C.endcard + 0.15, "push", "fall");
+    const v7 = C.at[7];
     const d7 = C.d7 || { open: v7 + 0.45, overdue: v7 + 1.35, load: v7 + 2.4 };
     // Counts on "open" and "overdue", across the weekly chart, then the workload on "carrying the load".
     camKeys(dash, [
@@ -567,23 +637,15 @@ function buildTimeline() {
     glow(dash.__cam, { x: 287, y: 489, w: 1286, h: 178 }, d7.load + 1.05);
     caption("See the whole queue", t7 + 0.35, C.endcard - 0.05);
 
-    // --- Beat 8: end card
+    // --- Beat 8: end card. The MikeGC wordmark, "Sponsored by" and General Legal's logo.
     const e = C.endcard;
-    A(wm, "x", [[e, cornerX], [e + 0.65, 0, "io"]]);
-    A(wm, "y", [[e, cornerY], [e + 0.65, L.end.wmY - (L.cy - 22), "io"]]);
-    A(wm, "s", [[e, cs], [e + 0.65, 1, "io"]]);
-    const eIntake = anchor(L.cx, L.end.intakeY, textEl("Intake", "serif", L.end.intakeSize));
-    fadeIn(eIntake, e + 0.5, 0.5, 14);
-    const tag = anchor(L.cx, L.end.tagY, textEl("Open source. Built for in-house legal.", "label", L.end.tagSize));
-    fadeIn(tag, e + 1.0, 0.5, 12);
-    const url = anchor(L.cx, L.end.urlY, textEl(C.url || "github.com/open-legal-products/mikegc", "", L.end.urlSize, { fontWeight: 400, opacity: 0.75 }));
-    fadeIn(url, e + 1.3, 0.5, 10);
-    const markPx = Math.round(L.end.sponsorSize * 1.25);
-    const glMark = h("img", { src: "assets/general-legal-favicon.svg", style: { width: markPx + "px", height: markPx + "px", marginRight: Math.round(markPx * 0.5) + "px" } });
-    const sp = h("div", { style: { display: "flex", alignItems: "center", fontSize: L.end.sponsorSize + "px", whiteSpace: "nowrap", letterSpacing: "0.02em" } },
-        glMark, h("span", { style: { opacity: 0.7 } }, "Sponsored by "), h("span", { style: { fontWeight: 600 } }, "GENERAL LEGAL, LLP"));
-    const spA = anchor(L.cx, L.end.sponsorY, sp);
-    fadeIn(spA, e + 1.6, 0.5, 8);
+    const endDy = L.end.wmY - (L.cy - 22);
+    A(wm, "o", [[e, 0], [e + 0.7, 1, "o"]]);
+    A(wm, "y", [[e, endDy + 26], [e + 0.75, endDy, "o"]]);
+    const by = anchor(L.cx, L.end.byY, textEl("Sponsored by", "", L.end.bySize, { fontWeight: 400, opacity: 0.7, letterSpacing: "0.01em" }));
+    fadeIn(by, e + 0.75, 0.5, 10);
+    const glEnd = anchor(L.cx, L.end.glY, glLogo(L.end.glH));
+    fadeIn(glEnd, e + 0.9, 0.5, 10);
 
     stage.append(white);
     window.__T = T;

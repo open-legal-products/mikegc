@@ -209,6 +209,62 @@ const want = (n) => !only.length || only.some((o) => n.startsWith(o));
         await shot(page, "s6_resolved", { resolved: res, status: page.getByText("Resolved", { exact: true }).first() });
     }
 
+    // --- The email scenario: recorded from Gmail, processed in the Assistant ------------
+    if (want("e_request")) {
+        await go(page, `/intake/${mock.BW_ID}?org=${mock.ORG}`);
+        await page.mouse.move(1180, 300);
+        await shot(page, "e_request", {
+            process: page.getByRole("button", { name: "Process in Assistant" }).first(),
+            conversation: page.getByText("Conversation", { exact: true }).first(),
+            created: page.getByText("Created by", { exact: true }).first(),
+            documents: page.getByText("Brightwater_DPA.docx").first(),
+        });
+    }
+    if (want("e_composer")) {
+        await go(page, `/assistant?intake=${mock.BW_ID}&intake_org=${mock.ORG}`);
+        await page.waitForTimeout(800);
+        await page.mouse.move(1180, 700);
+        await shot(page, "e_composer", {
+            pill: page.getByText("Brightwater DPA sign-", { exact: false }).first(),
+            send: page.getByRole("button", { name: /send/i }).last(),
+        });
+    }
+    if (want("e_chat")) {
+        await go(page, "/assistant/chat/chat-bw-dpa");
+        await page.mouse.move(1500, 700);
+        await shot(page, "e_chat_top", {
+            asked: page.getByText("What's being asked.").first(),
+            issues: page.getByText("Main issues", { exact: true }).first(),
+        });
+        const changes = page.getByText("3 tracked changes").first();
+        await changes.scrollIntoViewIfNeeded();
+        await page.mouse.wheel(0, 1200);
+        await page.waitForTimeout(700);
+        await shot(page, "e_chat_bottom", {
+            changes,
+            view: page.getByRole("button", { name: "View", exact: true }).first(),
+            accept: page.getByRole("button", { name: "Accept all" }).first(),
+        });
+        // Open the list of changes.
+        await changes.click();
+        await page.waitForTimeout(700);
+        await page.mouse.wheel(0, 1200);
+        await page.waitForTimeout(700);
+        await page.mouse.move(1500, 700);
+        await shot(page, "e_chat_changes", {
+            changes,
+            view: page.getByRole("button", { name: "View", exact: true }).first(),
+        });
+        await page.getByRole("button", { name: "View", exact: true }).first().click();
+        await page.waitForTimeout(3500);
+        await page.mouse.move(1500, 960);
+        await shot(page, "e_doc", {
+            sub: page.getByText("after giving the Customer", { exact: false }).first(),
+            breach: page.getByText("within 48 hours", { exact: false }).first(),
+            liability: page.getByText("capped at twice", { exact: false }).first(),
+        });
+    }
+
     // --- Beat 7: dashboard -------------------------------------------------------------
     if (want("s7")) {
         await go(page, "/intake/dashboard");
