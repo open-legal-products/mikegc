@@ -1,0 +1,1411 @@
+{
+  "source": {
+    "work": "Ludwig van Beethoven, Piano Sonata No. 14 in C-sharp minor, Op. 27 No. 2 \"Moonlight\", III. Presto agitato",
+    "performer": "Paul Pitman (piano), recorded for Musopen",
+    "license_summary": "Public domain: composition PD (PD-old-100) and recording released into the public domain by the performer (PD-author|Paul Pitman), with a Wikimedia VRT permission ticket on file. Not CC-BY-SA; no attribution legally required.",
+    "primary_license_record": {
+      "file_page_url": "https://commons.wikimedia.org/wiki/File:Moonlight_Sonata_Presto.ogg",
+      "file_url": "https://upload.wikimedia.org/wikipedia/commons/1/1d/Moonlight_Sonata_Presto.ogg",
+      "commons_file_size_bytes": 4823167,
+      "commons_duration_s": 493.7142857142857,
+      "commons_upload": "2011-03-04T06:47:13Z by User:Haha169",
+      "extmetadata_verbatim": {
+        "LicenseShortName": "Public domain",
+        "License": "pd",
+        "UsageTerms": "Public domain",
+        "Copyrighted": "False",
+        "AttributionRequired": "false",
+        "ImageDescription": "Sonata No. 14 in C Sharp Minor \"Moonlight\", Op. 27 No. 2, 3rd movement (presto), performed by Paul Pitman for Musopen"
+      },
+      "wikitext_license_section_verbatim": "Music: {{PD-old-100}}\n\nRecording: {{PD-author|Paul Pitman}}",
+      "wikitext_permission_verbatim": "{{PermissionTicket|id=2008012110017088}}",
+      "wikitext_source_verbatim": "{{musopen|1=http://www.musopen.com/music.php?type=piece&id=278}}",
+      "musopen_courtesy_request_quoted_on_file_page": "We do ask, out of courtesy, two things. One, that you do not directly sell our recordings for profit, as a great amount of work has been donated to this project, and for the benefit of the public, not profit. Two, we ask that any commerical or derived works attribute Musopen somewhere, to give credit to this project. And for all the film students emailing, yes you may use it in your film, you can then sell the film, containing our music."
+    },
+    "audio_actually_used": {
+      "url": "https://archive.org/download/MoonlightSonata_845/Sonata_no_14_in_c_sharp_minor_moonlight_op_27_no_2_Iii.Presto.mp3",
+      "item_page_url": "https://archive.org/details/MoonlightSonata_845",
+      "format": "MP3 256 kbps CBR-ish (VBR tag), 44.1 kHz stereo, 15786016 bytes, sha1 f4c1ffd284507f31f39a5d371e0be5f6133289af",
+      "why": "Highest-quality copy found. It is the original upload of the item; archive.org's Ogg derivative of it (4823167 bytes, 493.714 s, sha1 ee32bb1a1f0c003e3fb0545308dd116d6fbbce55) has the identical byte size and duration as the Commons file, and decodes sample-aligned with the MP3 (lag 0, r=0.9955), so the Commons Ogg is a ~78 kbps transcode of this same recording.",
+      "archive_org_licenseurl_verbatim": "http://creativecommons.org/publicdomain/mark/1.0/",
+      "archive_org_description_excerpt_verbatim": "Performance Licence: This work has been released into the public domain by its author, Paul Pitman at musopen.com"
+    },
+    "rejected_candidates": [
+      {
+        "file": "File:Beethoven - Sonate au clair de lune - 3 presto agitato.ogg",
+        "license": "CC BY-SA 3.0"
+      },
+      {
+        "file": "File:Beethoven Moonlight 3rd movement.ogg",
+        "license": "CC BY-SA 2.0 de (piano-midi.de MIDI rendering)"
+      },
+      {
+        "file": "File:Muriel-Nguyen-Xuan-Beethovens-Moonlight-Sonata-mvt-3.oga",
+        "license": "CC BY-SA 3.0"
+      },
+      {
+        "file": "File:Beethoven - Moonlight Sonata Op-27 No-2 Mvt-3 (Piano Performance by eld\u00fcendes\u00fcarez).wav",
+        "license": "CC BY-SA 4.0"
+      }
+    ],
+    "score_reference_for_analysis_only": "Mutopia Project moonlight3.ly (Berners 1908 ed., CC BY-SA 2.5 typesetting) used only to identify bar/beat positions; nothing from it is redistributed."
+  },
+  "audio_file": {
+    "path": "moonlight_iii.wav",
+    "format": "WAV PCM 24-bit, 48000 Hz, stereo (untrimmed)",
+    "duration_s": 493.714
+  },
+  "time_base": "All '*_trimmed' times (and the per-wave summary) are seconds from the trimmed start; add trim_offset_s for times in moonlight_iii.wav.",
+  "first_note": {
+    "trim_offset_s": 2.527,
+    "first_note_time_in_file_s": 2.537,
+    "first_note_time_trimmed_s": 0.01,
+    "digital_silence_until_s": 2.03,
+    "note": "File is digital silence to ~2.0 s, then < -60 dBFS low-level noise until the first attack (LH C# on bar 1 beat 1; the RH arpeggio's first note follows one 16th later). Trim offset = attack - 10 ms pre-roll, so the first note sits at 0.010 s on the trimmed timeline.",
+    "detail": {
+      "t": 2.537,
+      "flux": 2.537,
+      "hf_rise": 2.537,
+      "broadband_rise": 2.542,
+      "spread_ms": 0.5,
+      "librosa_coarse": 2.549
+    }
+  },
+  "waves_summary_columns": "start / chord1 / chord2 in seconds from trimmed start",
+  "waves": [
+    {
+      "wave": 1,
+      "bars": "1-2",
+      "harmony": "C#m",
+      "start": 0.01,
+      "chord1": 2.896,
+      "chord2": 3.114,
+      "chord_gap_s": 0.218,
+      "confidence": {
+        "chord1": "high",
+        "chord2": "high",
+        "start": "high"
+      },
+      "loudness_check": {
+        "onsets_in_wave": 19,
+        "chord1_level_rank": 1,
+        "chord2_level_rank": 2,
+        "chord1_jump_dB": 15.7,
+        "chord2_jump_dB": 4.7
+      },
+      "detail": {
+        "wave_start": {
+          "method": "first note (LH C# on bar 1 beat 1)",
+          "t_file": 2.537,
+          "t_trimmed": 0.01
+        },
+        "chord1": {
+          "spread_ms": 4.2,
+          "onset_strength": 2.96,
+          "peak_dBFS": -18.0,
+          "jump_dB": 15.7,
+          "t_file": 5.423,
+          "flux_file": 5.421,
+          "hf_rise_file": 5.425,
+          "broadband_rise_file": 5.419,
+          "librosa_coarse_file": 5.435,
+          "t_trimmed": 2.896
+        },
+        "chord2": {
+          "spread_ms": 8.2,
+          "onset_strength": 1.69,
+          "peak_dBFS": -18.7,
+          "jump_dB": 4.7,
+          "t_file": 5.641,
+          "flux_file": 5.636,
+          "hf_rise_file": 5.644,
+          "broadband_rise_file": 5.613,
+          "librosa_coarse_file": 5.653,
+          "t_trimmed": 3.114
+        }
+      }
+    },
+    {
+      "wave": 2,
+      "bars": "3-4",
+      "harmony": "G#/B# (V6)",
+      "start": 3.307,
+      "chord1": 6.186,
+      "chord2": 6.41,
+      "chord_gap_s": 0.224,
+      "confidence": {
+        "chord1": "high",
+        "chord2": "medium",
+        "start": "medium (tempo-model estimate, +/-40 ms)"
+      },
+      "loudness_check": {
+        "onsets_in_wave": 13,
+        "chord1_level_rank": 2,
+        "chord2_level_rank": 1,
+        "chord1_jump_dB": 17.5,
+        "chord2_jump_dB": 10.6
+      },
+      "detail": {
+        "wave_start": {
+          "method": "bar downbeat estimated as previous wave's chord 1 + one local beat (local beat = chord1-to-chord1 interval / beats). The LH bass note is soft and masked by the ringing chords, so it is not reliably detectable; RH arpeggio enters a 16th later.",
+          "lowband_peak_ratio": 3.3,
+          "t_file": 5.834,
+          "t_trimmed": 3.307,
+          "lowband_onset_candidate_unreliable_trimmed": 3.409
+        },
+        "chord1": {
+          "spread_ms": 3.8,
+          "onset_strength": 1.58,
+          "peak_dBFS": -18.9,
+          "jump_dB": 17.5,
+          "t_file": 8.713,
+          "flux_file": 8.713,
+          "hf_rise_file": 8.717,
+          "broadband_rise_file": 8.706,
+          "librosa_coarse_file": 8.725,
+          "t_trimmed": 6.186
+        },
+        "chord2": {
+          "spread_ms": 25.5,
+          "onset_strength": 1.26,
+          "peak_dBFS": -16.2,
+          "jump_dB": 10.6,
+          "t_file": 8.937,
+          "flux_file": 8.934,
+          "hf_rise_file": 8.96,
+          "broadband_rise_file": 8.904,
+          "librosa_coarse_file": 8.949,
+          "t_trimmed": 6.41
+        }
+      }
+    },
+    {
+      "wave": 3,
+      "bars": "5-6",
+      "harmony": "C#7/B (V7 of iv)",
+      "start": 6.584,
+      "chord1": 9.37,
+      "chord2": 9.6,
+      "chord_gap_s": 0.23,
+      "confidence": {
+        "chord1": "high",
+        "chord2": "high",
+        "start": "medium (tempo-model estimate, +/-40 ms)"
+      },
+      "loudness_check": {
+        "onsets_in_wave": 15,
+        "chord1_level_rank": 1,
+        "chord2_level_rank": 2,
+        "chord1_jump_dB": 18.4,
+        "chord2_jump_dB": 7.1
+      },
+      "detail": {
+        "wave_start": {
+          "method": "bar downbeat estimated as previous wave's chord 1 + one local beat (local beat = chord1-to-chord1 interval / beats). The LH bass note is soft and masked by the ringing chords, so it is not reliably detectable; RH arpeggio enters a 16th later.",
+          "lowband_peak_ratio": 4.6,
+          "t_file": 9.111,
+          "t_trimmed": 6.584,
+          "lowband_onset_candidate_unreliable_trimmed": 6.721
+        },
+        "chord1": {
+          "spread_ms": 5.7,
+          "onset_strength": 3.02,
+          "peak_dBFS": -15.1,
+          "jump_dB": 18.4,
+          "t_file": 11.897,
+          "flux_file": 11.896,
+          "hf_rise_file": 11.901,
+          "broadband_rise_file": 11.903,
+          "librosa_coarse_file": 11.909,
+          "t_trimmed": 9.37
+        },
+        "chord2": {
+          "spread_ms": 5.7,
+          "onset_strength": 1.96,
+          "peak_dBFS": -15.4,
+          "jump_dB": 7.1,
+          "t_file": 12.127,
+          "flux_file": 12.121,
+          "hf_rise_file": 12.127,
+          "broadband_rise_file": 12.126,
+          "librosa_coarse_file": 12.139,
+          "t_trimmed": 9.6
+        }
+      }
+    },
+    {
+      "wave": 4,
+      "bars": "7",
+      "harmony": "F#m/A (iv6)",
+      "start": 9.774,
+      "chord1": 10.986,
+      "chord2": 11.21,
+      "chord_gap_s": 0.224,
+      "confidence": {
+        "chord1": "high",
+        "chord2": "high",
+        "start": "medium (tempo-model estimate, +/-40 ms)"
+      },
+      "loudness_check": {
+        "onsets_in_wave": 5,
+        "chord1_level_rank": 1,
+        "chord2_level_rank": 2,
+        "chord1_jump_dB": 16.2,
+        "chord2_jump_dB": 6.0
+      },
+      "detail": {
+        "wave_start": {
+          "method": "bar downbeat estimated as previous wave's chord 1 + one local beat (local beat = chord1-to-chord1 interval / beats). The LH bass note is soft and masked by the ringing chords, so it is not reliably detectable; RH arpeggio enters a 16th later.",
+          "lowband_peak_ratio": 2.7,
+          "t_file": 12.301,
+          "t_trimmed": 9.774,
+          "lowband_onset_candidate_unreliable_trimmed": 9.813
+        },
+        "chord1": {
+          "spread_ms": 4.3,
+          "onset_strength": 1.82,
+          "peak_dBFS": -14.6,
+          "jump_dB": 16.2,
+          "t_file": 13.513,
+          "flux_file": 13.513,
+          "hf_rise_file": 13.517,
+          "broadband_rise_file": 13.518,
+          "librosa_coarse_file": 13.525,
+          "t_trimmed": 10.986
+        },
+        "chord2": {
+          "spread_ms": 5.2,
+          "onset_strength": 1.21,
+          "peak_dBFS": -17.0,
+          "jump_dB": 6.0,
+          "t_file": 13.737,
+          "flux_file": 13.736,
+          "hf_rise_file": 13.741,
+          "broadband_rise_file": 13.743,
+          "librosa_coarse_file": 13.749,
+          "t_trimmed": 11.21
+        }
+      }
+    },
+    {
+      "wave": 5,
+      "bars": "8",
+      "harmony": "German augmented 6th A-C#-E-F## (to V)",
+      "start": 11.397,
+      "chord1": 12.63,
+      "chord2": 12.89,
+      "chord_gap_s": 0.26,
+      "confidence": {
+        "chord1": "high",
+        "chord2": "high",
+        "start": "medium (tempo-model estimate, +/-40 ms)"
+      },
+      "loudness_check": {
+        "onsets_in_wave": 7,
+        "chord1_level_rank": 2,
+        "chord2_level_rank": 1,
+        "chord1_jump_dB": 15.4,
+        "chord2_jump_dB": 11.3
+      },
+      "detail": {
+        "wave_start": {
+          "method": "bar downbeat estimated as previous wave's chord 1 + one local beat (local beat = chord1-to-chord1 interval / beats). The LH bass note is soft and masked by the ringing chords, so it is not reliably detectable; RH arpeggio enters a 16th later.",
+          "lowband_peak_ratio": 3.8,
+          "t_file": 13.924,
+          "t_trimmed": 11.397,
+          "lowband_onset_candidate_unreliable_trimmed": 11.415
+        },
+        "chord1": {
+          "spread_ms": 6.0,
+          "onset_strength": 1.55,
+          "peak_dBFS": -16.4,
+          "jump_dB": 15.4,
+          "t_file": 15.157,
+          "flux_file": 15.157,
+          "hf_rise_file": 15.162,
+          "broadband_rise_file": 15.165,
+          "librosa_coarse_file": 15.168,
+          "t_trimmed": 12.63
+        },
+        "chord2": {
+          "spread_ms": 5.7,
+          "onset_strength": 2.81,
+          "peak_dBFS": -13.6,
+          "jump_dB": 11.3,
+          "t_file": 15.417,
+          "flux_file": 15.412,
+          "hf_rise_file": 15.417,
+          "broadband_rise_file": 15.419,
+          "librosa_coarse_file": 15.429,
+          "t_trimmed": 12.89
+        }
+      }
+    },
+    {
+      "wave": 6,
+      "bars": "15-16",
+      "harmony": "C#m (opening restated, chords are E octaves)",
+      "start": 25.051,
+      "chord1": 27.92,
+      "chord2": 28.146,
+      "chord_gap_s": 0.226,
+      "confidence": {
+        "chord1": "high",
+        "chord2": "high",
+        "start": "high"
+      },
+      "loudness_check": {
+        "onsets_in_wave": 13,
+        "chord1_level_rank": 1,
+        "chord2_level_rank": 2,
+        "chord1_jump_dB": 16.1,
+        "chord2_jump_dB": 6.5
+      },
+      "detail": {
+        "wave_start": {
+          "method": "first onset after the bar-14 fermata (bar 15 downbeat)",
+          "t_file": 27.578,
+          "t_trimmed": 25.051
+        },
+        "chord1": {
+          "spread_ms": 5.2,
+          "onset_strength": 3.64,
+          "peak_dBFS": -12.9,
+          "jump_dB": 16.1,
+          "t_file": 30.447,
+          "flux_file": 30.445,
+          "hf_rise_file": 30.45,
+          "broadband_rise_file": 30.452,
+          "librosa_coarse_file": 30.459,
+          "t_trimmed": 27.92
+        },
+        "chord2": {
+          "spread_ms": 5.7,
+          "onset_strength": 1.57,
+          "peak_dBFS": -14.0,
+          "jump_dB": 6.5,
+          "t_file": 30.673,
+          "flux_file": 30.67,
+          "hf_rise_file": 30.673,
+          "broadband_rise_file": 30.677,
+          "librosa_coarse_file": 30.688,
+          "t_trimmed": 28.146
+        }
+      }
+    }
+  ],
+  "wave7_bonus": {
+    "bars": "17-18",
+    "chord1": 31.12,
+    "chord2": 31.36
+  },
+  "other_landmarks_trimmed": {
+    "bar9_downbeat_f_chord": 13.201,
+    "bar14_fermata_chord": 22.901,
+    "bar15_downbeat": 25.051
+  },
+  "tempo": {
+    "time_signature": "4/4",
+    "bars_1_to_8_mean_beat_s": 0.4071,
+    "bars_1_to_8_quarter_bpm": 147.4,
+    "bars_1_to_8_half_note_bpm": 73.7,
+    "bars_1_to_8_bar_s": 1.628,
+    "two_bar_wave_s": 3.257,
+    "wave1_beat_s": 0.4123,
+    "local_from_chord1_spacing": [
+      {
+        "from_wave": 1,
+        "to_wave": 2,
+        "beat_s": 0.4112,
+        "quarter_bpm": 145.9,
+        "bar_s": 1.645
+      },
+      {
+        "from_wave": 2,
+        "to_wave": 3,
+        "beat_s": 0.398,
+        "quarter_bpm": 150.8,
+        "bar_s": 1.592
+      },
+      {
+        "from_wave": 3,
+        "to_wave": 4,
+        "beat_s": 0.404,
+        "quarter_bpm": 148.5,
+        "bar_s": 1.616
+      },
+      {
+        "from_wave": 4,
+        "to_wave": 5,
+        "beat_s": 0.411,
+        "quarter_bpm": 146.0,
+        "bar_s": 1.644
+      }
+    ],
+    "bars_15_to_17_beat_s": 0.4,
+    "bars_15_to_17_quarter_bpm": 150.0,
+    "librosa_beat_track_bpm_first_13s_unreliable": 267.9,
+    "tempo_note": "Use the chord-spacing figures. librosa's beat tracker locks onto a sub-beat level here (the 16th-note arpeggios), so its number is not the quarter-note tempo. Waves 1-3 are two bars long (about 3.2-3.3 s); waves 4-5 are one bar long (about 1.6 s). Bars 9-14 (G# pedal, fermata) separate wave 5 from wave 6.",
+    "eighth_s": 0.2035,
+    "sixteenth_s": 0.1018
+  },
+  "ending": {
+    "final_chord_onset_file_s": 485.642,
+    "final_chord_onset_trimmed_s": 483.115,
+    "penultimate_chord_onset_file_s": 484.681,
+    "penultimate_chord_onset_trimmed_s": 482.154,
+    "bar200_low_C#_file_s": 483.812,
+    "final_chord_peak_rms_dBFS_50ms": -14.6,
+    "noise_floor_dBFS_50ms_median": -74.3,
+    "rings_out_minus50dBFS_file_s": 487.595,
+    "rings_out_minus50dB_re_chord_peak_file_s": 488.41,
+    "rings_out_minus60dBFS_file_s": 488.05,
+    "decay_after_final_onset_s": {
+      "to_-50dBFS": 1.953,
+      "to_-50dB_re_peak": 2.768
+    },
+    "cut_in_candidates": [
+      {
+        "event": "bar 198 beat 1 (sf E6, top of the final arpeggio; starts the one-gesture descending cascade)",
+        "t_file": 480.516,
+        "t_trimmed": 477.989,
+        "len_to_end_minus50dB_re_peak": 7.894,
+        "len_to_end_minus50dBFS": 7.079,
+        "in_5.6_to_6.4_window(rel)": false,
+        "in_5.6_to_6.4_window(abs)": false
+      },
+      {
+        "event": "bar 199 beat 1 (downbeat inside the descending cascade; 5th-finger group start on C#5, no accent)",
+        "t_file": 482.12,
+        "t_trimmed": 479.593,
+        "len_to_end_minus50dB_re_peak": 6.29,
+        "len_to_end_minus50dBFS": 5.475,
+        "in_5.6_to_6.4_window(rel)": true,
+        "in_5.6_to_6.4_window(abs)": false
+      },
+      {
+        "event": "bar 200 beat 1 (low C# that ends the runs)",
+        "t_file": 483.812,
+        "t_trimmed": 481.285,
+        "len_to_end_minus50dB_re_peak": 4.598,
+        "len_to_end_minus50dBFS": 3.783,
+        "in_5.6_to_6.4_window(rel)": false,
+        "in_5.6_to_6.4_window(abs)": false
+      },
+      {
+        "event": "bar 200 beat 3 (ff penultimate chord)",
+        "t_file": 484.681,
+        "t_trimmed": 482.154,
+        "len_to_end_minus50dB_re_peak": 3.729,
+        "len_to_end_minus50dBFS": 2.914,
+        "in_5.6_to_6.4_window(rel)": false,
+        "in_5.6_to_6.4_window(abs)": false
+      }
+    ],
+    "proposal": {
+      "cut_in_file_s": 482.107,
+      "cut_in_trimmed_s": 479.58,
+      "end_file_s": 488.41,
+      "end_trimmed_s": 485.883,
+      "duration_s": 6.303,
+      "cut_in_event": "bar 199 beat 1 (cut-in placed 10 ms before its attack)",
+      "downbeat_attack_at_s_into_segment": 0.013,
+      "mid_run_check": "Bars 197-199 are continuous 16th-note arpeggios; bars 198-199 form one descending cascade from the sf E6 (bar 198 beat 1) to the low C# (bar 200 beat 1). Every cut-in that yields 5.6-6.4 s therefore lands inside that run. Bar 199 beat 1 is the best compromise: a bar downbeat and a group start, but not accented. The accented bar-198 sf gives 7.08 s (to -50 dBFS) or 7.89 s (to -50 dB re peak) instead.",
+      "exact_6s_variant": {
+        "cut_in_file_s": 482.107,
+        "end_file_s": 488.107,
+        "level_at_end_dBFS_50ms": -60.7
+      },
+      "end_rule": "final chord decayed 50 dB below its own peak (-64.6 dBFS)",
+      "final_chord_at_s_into_segment": 3.535,
+      "penultimate_chord_at_s_into_segment": 2.574,
+      "bar200_low_C#_at_s_into_segment": 1.705
+    },
+    "detail": {
+      "final": {
+        "t": 485.642,
+        "flux": 485.642,
+        "hf_rise": 485.647,
+        "broadband_rise": 485.648,
+        "spread_ms": 6.0,
+        "librosa_coarse": 485.653,
+        "peak_dBFS": -13.8,
+        "jump_dB": 25.8
+      },
+      "penultimate": {
+        "t": 484.681,
+        "flux": 484.677,
+        "hf_rise": 484.682,
+        "broadband_rise": 484.683,
+        "spread_ms": 4.8,
+        "librosa_coarse": 484.693,
+        "peak_dBFS": -12.7,
+        "jump_dB": 29.8
+      },
+      "bar200_downbeat": {
+        "t": 483.812,
+        "flux": 483.808,
+        "hf_rise": 483.814,
+        "broadband_rise": 483.774,
+        "spread_ms": 5.8,
+        "librosa_coarse": 483.824,
+        "peak_dBFS": -18.4,
+        "jump_dB": 10.2
+      },
+      "bar199_downbeat": {
+        "t": 482.12,
+        "flux": 482.117,
+        "hf_rise": 482.12,
+        "broadband_rise": 482.128,
+        "spread_ms": 4.3,
+        "librosa_coarse": 482.133,
+        "peak_dBFS": -19.2,
+        "jump_dB": 3.1
+      },
+      "bar198_downbeat_sf": {
+        "t": 480.516,
+        "flux": 480.512,
+        "hf_rise": 480.518,
+        "broadband_rise": 480.518,
+        "spread_ms": 6.3,
+        "librosa_coarse": 480.528,
+        "peak_dBFS": -15.8,
+        "jump_dB": 9.0
+      }
+    }
+  },
+  "rendered_files": {
+    "opening": {
+      "file": "opening_18s.wav",
+      "start_in_moonlight_iii_s": 2.527,
+      "end_in_moonlight_iii_s": 22.527,
+      "start_sample": 121296,
+      "end_sample_exclusive": 1081296,
+      "duration_s": 20.0,
+      "fade_in_ms": 2.0,
+      "fade_out_ms": 10.0,
+      "peak_dBFS": -5.12,
+      "format": "WAV PCM 24-bit, 48000 Hz, stereo",
+      "note": "Starts at the trim offset, so its timeline equals the '*_trimmed' times in this file. Length is 20.000 s as requested (the filename says 18s). Contains waves 1-5; wave 6 (from 25.05 s trimmed) is outside it. 2 ms fade-in (signal there is below -60 dBFS, 10 ms before the first note) and 10 ms fade-out declicks."
+    },
+    "ending": {
+      "file": "ending.wav",
+      "start_in_moonlight_iii_s": 482.107,
+      "end_in_moonlight_iii_s": 488.41,
+      "start_sample": 23141136,
+      "end_sample_exclusive": 23443680,
+      "duration_s": 6.303,
+      "fade_in_ms": 10.0,
+      "fade_out_ms": 10.0,
+      "peak_dBFS": -2.62,
+      "format": "WAV PCM 24-bit, 48000 Hz, stereo",
+      "note": "Cut-in at bar 199 beat 1 minus 10 ms; 10 ms linear declick fade-in only (no musical fade). 10 ms declick fade-out at the end, where the signal is already about -65 dBFS."
+    }
+  },
+  "splice_candidates": {
+    "window_trimmed_s": [
+      52.0,
+      56.0
+    ],
+    "method": "Score (Mutopia MIDI, reference only) aligned to the recording with open-end chroma DTW (checked against measured wave chords: errors of 5-30 ms, one 111 ms outlier); each predicted event snapped to the strongest measured onset within +/-150 ms and refined (median of flux, high-band rise and bias-corrected librosa onset).",
+    "bars_in_window": "bars 31-32 (bar 33's ff downbeat falls just after the window)",
+    "events": [
+      {
+        "bar": 30,
+        "beat": 1,
+        "is_downbeat": true,
+        "score_marking": "downbeat; RH A# octave with trill (no accent mark)",
+        "accented_in_score": false,
+        "dtw_prediction_trimmed_s": 50.775,
+        "t_trimmed": 50.752,
+        "t_file": 53.279,
+        "estimator_spread_ms": 7.8,
+        "onset_strength": 1.38,
+        "peak_dBFS": -15.1,
+        "jump_dB": 12.5,
+        "dtw_vs_onset_ms": -23,
+        "confidence": "high",
+        "in_window": false
+      },
+      {
+        "bar": 30,
+        "beat": 2,
+        "is_downbeat": false,
+        "score_marking": "RH B octave, sf (half-bar-plus held note)",
+        "accented_in_score": true,
+        "dtw_prediction_trimmed_s": 51.15,
+        "t_trimmed": 51.247,
+        "t_file": 53.774,
+        "estimator_spread_ms": 5.7,
+        "onset_strength": 3.4,
+        "peak_dBFS": -14.7,
+        "jump_dB": 16.8,
+        "dtw_vs_onset_ms": 97,
+        "confidence": "high",
+        "in_window": false
+      },
+      {
+        "bar": 31,
+        "beat": 1,
+        "is_downbeat": true,
+        "score_marking": "downbeat; RH G# octave, sf",
+        "accented_in_score": true,
+        "dtw_prediction_trimmed_s": 52.575,
+        "t_trimmed": 52.56,
+        "t_file": 55.087,
+        "estimator_spread_ms": 5.7,
+        "onset_strength": 1.44,
+        "peak_dBFS": -18.9,
+        "jump_dB": 9.3,
+        "dtw_vs_onset_ms": -15,
+        "confidence": "high",
+        "in_window": true
+      },
+      {
+        "bar": 31,
+        "beat": 3,
+        "is_downbeat": false,
+        "score_marking": "RH A octave, sf (mid-bar)",
+        "accented_in_score": true,
+        "dtw_prediction_trimmed_s": 53.4,
+        "t_trimmed": 53.472,
+        "t_file": 55.999,
+        "estimator_spread_ms": 4.5,
+        "onset_strength": 1.72,
+        "peak_dBFS": -16.8,
+        "jump_dB": 14.0,
+        "dtw_vs_onset_ms": 72,
+        "confidence": "high",
+        "in_window": true
+      },
+      {
+        "bar": 32,
+        "beat": 1,
+        "is_downbeat": true,
+        "score_marking": "downbeat; RH F## octave with trill (no accent mark)",
+        "accented_in_score": false,
+        "dtw_prediction_trimmed_s": 54.275,
+        "t_trimmed": 54.258,
+        "t_file": 56.785,
+        "estimator_spread_ms": 4.4,
+        "onset_strength": 2.58,
+        "peak_dBFS": -17.6,
+        "jump_dB": 10.6,
+        "dtw_vs_onset_ms": -17,
+        "confidence": "high",
+        "in_window": true
+      },
+      {
+        "bar": 32,
+        "beat": 2,
+        "is_downbeat": false,
+        "score_marking": "RH G# octave, sf (beat 2, not a downbeat)",
+        "accented_in_score": true,
+        "dtw_prediction_trimmed_s": 54.7,
+        "t_trimmed": 54.784,
+        "t_file": 57.311,
+        "estimator_spread_ms": 5.2,
+        "onset_strength": 1.61,
+        "peak_dBFS": -20.3,
+        "jump_dB": 6.0,
+        "dtw_vs_onset_ms": 84,
+        "confidence": "high",
+        "in_window": true
+      },
+      {
+        "bar": 33,
+        "beat": 1,
+        "is_downbeat": true,
+        "score_marking": "downbeat; A major chord in both hands, ff (strongest accent of the passage)",
+        "accented_in_score": true,
+        "dtw_prediction_trimmed_s": 56.175,
+        "t_trimmed": 56.181,
+        "t_file": 58.708,
+        "estimator_spread_ms": 6.5,
+        "onset_strength": 2.24,
+        "peak_dBFS": -14.4,
+        "jump_dB": 15.5,
+        "dtw_vs_onset_ms": 6,
+        "confidence": "high",
+        "in_window": false
+      },
+      {
+        "bar": 34,
+        "beat": 1,
+        "is_downbeat": true,
+        "score_marking": "downbeat; RH p 16th-note scale, LH staccato A-major chord",
+        "accented_in_score": false,
+        "dtw_prediction_trimmed_s": 58.225,
+        "t_trimmed": 58.218,
+        "t_file": 60.745,
+        "estimator_spread_ms": 3.7,
+        "onset_strength": 0.92,
+        "peak_dBFS": -27.9,
+        "jump_dB": 4.4,
+        "dtw_vs_onset_ms": -7,
+        "confidence": "medium",
+        "in_window": false
+      }
+    ],
+    "downbeats_in_window": [
+      {
+        "bar": 31,
+        "t_trimmed": 52.56,
+        "confidence": "high",
+        "note": "downbeat; RH G# octave, sf"
+      },
+      {
+        "bar": 32,
+        "t_trimmed": 54.258,
+        "confidence": "high",
+        "note": "downbeat; RH F## octave with trill (no accent mark)"
+      }
+    ],
+    "accented_onsets_in_window": [
+      {
+        "bar": 31,
+        "beat": 1,
+        "t_trimmed": 52.56,
+        "confidence": "high",
+        "note": "downbeat; RH G# octave, sf"
+      },
+      {
+        "bar": 31,
+        "beat": 3,
+        "t_trimmed": 53.472,
+        "confidence": "high",
+        "note": "RH A octave, sf (mid-bar)"
+      },
+      {
+        "bar": 32,
+        "beat": 2,
+        "t_trimmed": 54.784,
+        "confidence": "high",
+        "note": "RH G# octave, sf (beat 2, not a downbeat)"
+      }
+    ],
+    "local_bar_lengths_s": {
+      "30->31": 1.808,
+      "31->32": 1.698,
+      "32->33": 1.923,
+      "33->34": 2.037
+    },
+    "recommendation": {
+      "primary": {
+        "cut_at_downbeat": "bar 32 beat 1",
+        "downbeat_t_trimmed": 54.258,
+        "place_ending_wav_start_at_trimmed": 54.245,
+        "why": "Closest downbeat to 54 s. Starting ending.wav 0.013 s early puts its bar-199 attack exactly on the bar-32 downbeat, so the meter carries through the splice. The bar-32 downbeat is a trill start, not an accent; the sf of that bar falls on beat 2 (54.784)."
+      },
+      "accented_alternative": {
+        "cut_at_downbeat": "bar 31 beat 1 (sf)",
+        "downbeat_t_trimmed": 52.56,
+        "place_ending_wav_start_at_trimmed": 52.547
+      },
+      "strongest_nearby_accent_outside_window": {
+        "event": "bar 33 beat 1, ff A-major chord",
+        "t_trimmed": 56.181
+      },
+      "tempo_match": "Bars 30-33 run 1.70-1.92 s per bar (about 125-141 bpm). The ending's bars 198-200 run 1.60-1.69 s. The difference is small enough for a downbeat-to-downbeat butt splice."
+    }
+  },
+  "bars_9_14_accents": {
+    "bar9_downbeat_confirmed": {
+      "t_trimmed": 13.201,
+      "t_file": 15.728,
+      "note": "Forte chord (RH B#-G#-B#, LH G# octave). Flux 15.728 s file; high-band rise 15.727-15.735 s; the dip at 15.696 s is the gap before it, not an onset. Confidence high, +/-10 ms."
+    },
+    "score_says": "Bars 10-13 carry no sf/accent marks (continuous RH 16ths alternating with G#, LH eighths). Bar 14: beat 1 staccato G# octave quarter (both hands), beat 2 sf G# octave held under the fermata.",
+    "strength_reference": {
+      "wave_chord1_peak_dBFS_range": [
+        -18.9,
+        -12.9
+      ],
+      "wave_chord1_jump_dB_range": [
+        15.4,
+        18.4
+      ],
+      "strong_flag_rule": "peak >= -19.5 dBFS and jump >= 12 dB"
+    },
+    "bar_downbeats": [
+      {
+        "bar": 9,
+        "t_trimmed": 13.201,
+        "confidence": "high",
+        "note": "forte chord, measured"
+      },
+      {
+        "bar": 10,
+        "t_trimmed": 14.981,
+        "equal_division_estimate_trimmed": 15.024,
+        "onset_peak_dBFS": -24.2,
+        "onset_jump_dB": 7.0,
+        "confidence": "low (+/-0.2 s; identical repeated figuration over a G# pedal, no clear downbeat cue; do not cut on these)"
+      },
+      {
+        "bar": 11,
+        "t_trimmed": 16.737,
+        "equal_division_estimate_trimmed": 16.847,
+        "onset_peak_dBFS": -21.3,
+        "onset_jump_dB": 11.3,
+        "confidence": "low (+/-0.2 s; identical repeated figuration over a G# pedal, no clear downbeat cue; do not cut on these)"
+      },
+      {
+        "bar": 12,
+        "t_trimmed": 18.624,
+        "equal_division_estimate_trimmed": 18.67,
+        "onset_peak_dBFS": -23.1,
+        "onset_jump_dB": 8.9,
+        "confidence": "low (+/-0.2 s; identical repeated figuration over a G# pedal, no clear downbeat cue; do not cut on these)"
+      },
+      {
+        "bar": 13,
+        "t_trimmed": 20.493,
+        "onset_peak_dBFS": -20.3,
+        "onset_jump_dB": 10.9,
+        "confidence": "medium (eighth-note grid count; +/-30 ms)"
+      },
+      {
+        "bar": 14,
+        "t_trimmed": 22.234,
+        "onset_peak_dBFS": -18.5,
+        "onset_jump_dB": 10.8,
+        "confidence": "high",
+        "note": "beat 1: staccato G# octave (both hands)"
+      },
+      {
+        "bar": 14,
+        "beat": 2,
+        "t_trimmed": 22.901,
+        "confidence": "high",
+        "note": "sf G# octave under the fermata; held about 2.1 s, bar 15 enters at 25.051"
+      }
+    ],
+    "strong_onsets": [
+      {
+        "t_trimmed": 20.096,
+        "t_file": 22.623,
+        "onset_strength": 1.01,
+        "peak_dBFS": -18.8,
+        "jump_dB": 17.6,
+        "approx_score_pos": "bar 12 beat 4",
+        "strong": true
+      },
+      {
+        "t_trimmed": 22.901,
+        "t_file": 25.428,
+        "onset_strength": 3.09,
+        "peak_dBFS": -18.1,
+        "jump_dB": 21.2,
+        "approx_score_pos": "bar 14 beat 2",
+        "strong": true
+      }
+    ],
+    "all_onsets": [
+      {
+        "t_trimmed": 13.201,
+        "t_file": 15.728,
+        "onset_strength": 1.63,
+        "peak_dBFS": -14.2,
+        "jump_dB": 10.8,
+        "approx_score_pos": "bar 9 beat 1",
+        "strong": false
+      },
+      {
+        "t_trimmed": 14.138,
+        "t_file": 16.665,
+        "onset_strength": 0.81,
+        "peak_dBFS": -24.8,
+        "jump_dB": 9.3,
+        "approx_score_pos": "bar 9 beat 3",
+        "strong": false
+      },
+      {
+        "t_trimmed": 14.357,
+        "t_file": 16.884,
+        "onset_strength": 1.28,
+        "peak_dBFS": -20.0,
+        "jump_dB": 12.4,
+        "approx_score_pos": "bar 9 beat 3.5",
+        "strong": false
+      },
+      {
+        "t_trimmed": 14.565,
+        "t_file": 17.092,
+        "onset_strength": 1.35,
+        "peak_dBFS": -20.9,
+        "jump_dB": 12.7,
+        "approx_score_pos": "bar 9 beat 4",
+        "strong": false
+      },
+      {
+        "t_trimmed": 14.693,
+        "t_file": 17.22,
+        "onset_strength": 0.9,
+        "peak_dBFS": -24.4,
+        "jump_dB": 2.8,
+        "approx_score_pos": "bar 9 beat 4.5",
+        "strong": false
+      },
+      {
+        "t_trimmed": 14.766,
+        "t_file": 17.293,
+        "onset_strength": 0.88,
+        "peak_dBFS": -23.4,
+        "jump_dB": 6.6,
+        "approx_score_pos": "bar 9 beat 4.5",
+        "strong": false
+      },
+      {
+        "t_trimmed": 14.801,
+        "t_file": 17.328,
+        "onset_strength": 0.91,
+        "peak_dBFS": -23.4,
+        "jump_dB": 8.4,
+        "approx_score_pos": "bar 9 beat 4.5",
+        "strong": false
+      },
+      {
+        "t_trimmed": 14.906,
+        "t_file": 17.433,
+        "onset_strength": 0.89,
+        "peak_dBFS": -23.5,
+        "jump_dB": 3.4,
+        "approx_score_pos": "bar 10 beat 1",
+        "strong": false
+      },
+      {
+        "t_trimmed": 14.981,
+        "t_file": 17.508,
+        "onset_strength": 1.19,
+        "peak_dBFS": -24.2,
+        "jump_dB": 7.0,
+        "approx_score_pos": "bar 10 beat 1",
+        "strong": false
+      },
+      {
+        "t_trimmed": 15.202,
+        "t_file": 17.729,
+        "onset_strength": 1.74,
+        "peak_dBFS": -23.2,
+        "jump_dB": 8.9,
+        "approx_score_pos": "bar 10 beat 1.5",
+        "strong": false
+      },
+      {
+        "t_trimmed": 15.407,
+        "t_file": 17.934,
+        "onset_strength": 1.51,
+        "peak_dBFS": -25.2,
+        "jump_dB": 12.8,
+        "approx_score_pos": "bar 10 beat 2",
+        "strong": false
+      },
+      {
+        "t_trimmed": 15.605,
+        "t_file": 18.132,
+        "onset_strength": 0.91,
+        "peak_dBFS": -25.3,
+        "jump_dB": 5.2,
+        "approx_score_pos": "bar 10 beat 2.5",
+        "strong": false
+      },
+      {
+        "t_trimmed": 15.861,
+        "t_file": 18.388,
+        "onset_strength": 2.64,
+        "peak_dBFS": -23.5,
+        "jump_dB": 12.2,
+        "approx_score_pos": "bar 10 beat 3",
+        "strong": false
+      },
+      {
+        "t_trimmed": 16.106,
+        "t_file": 18.633,
+        "onset_strength": 1.13,
+        "peak_dBFS": -26.2,
+        "jump_dB": 8.1,
+        "approx_score_pos": "bar 10 beat 3.5",
+        "strong": false
+      },
+      {
+        "t_trimmed": 16.229,
+        "t_file": 18.756,
+        "onset_strength": 1.07,
+        "peak_dBFS": -24.4,
+        "jump_dB": 4.3,
+        "approx_score_pos": "bar 10 beat 4",
+        "strong": false
+      },
+      {
+        "t_trimmed": 16.277,
+        "t_file": 18.804,
+        "onset_strength": 1.01,
+        "peak_dBFS": -24.5,
+        "jump_dB": 5.4,
+        "approx_score_pos": "bar 10 beat 4",
+        "strong": false
+      },
+      {
+        "t_trimmed": 16.33,
+        "t_file": 18.857,
+        "onset_strength": 0.92,
+        "peak_dBFS": -24.4,
+        "jump_dB": 4.1,
+        "approx_score_pos": "bar 10 beat 4",
+        "strong": false
+      },
+      {
+        "t_trimmed": 16.459,
+        "t_file": 18.986,
+        "onset_strength": 0.89,
+        "peak_dBFS": -26.4,
+        "jump_dB": 3.4,
+        "approx_score_pos": "bar 10 beat 4.5",
+        "strong": false
+      },
+      {
+        "t_trimmed": 16.531,
+        "t_file": 19.058,
+        "onset_strength": 1.66,
+        "peak_dBFS": -23.4,
+        "jump_dB": 9.2,
+        "approx_score_pos": "bar 10 beat 4.5",
+        "strong": false
+      },
+      {
+        "t_trimmed": 16.736,
+        "t_file": 19.263,
+        "onset_strength": 1.01,
+        "peak_dBFS": -21.3,
+        "jump_dB": 11.3,
+        "approx_score_pos": "bar 11 beat 1",
+        "strong": false
+      },
+      {
+        "t_trimmed": 16.737,
+        "t_file": 19.264,
+        "onset_strength": 1.31,
+        "peak_dBFS": -21.3,
+        "jump_dB": 11.3,
+        "approx_score_pos": "bar 11 beat 1",
+        "strong": false
+      },
+      {
+        "t_trimmed": 16.949,
+        "t_file": 19.476,
+        "onset_strength": 1.16,
+        "peak_dBFS": -25.5,
+        "jump_dB": 5.4,
+        "approx_score_pos": "bar 11 beat 1.5",
+        "strong": false
+      },
+      {
+        "t_trimmed": 17.093,
+        "t_file": 19.62,
+        "onset_strength": 0.9,
+        "peak_dBFS": -25.3,
+        "jump_dB": 7.8,
+        "approx_score_pos": "bar 11 beat 2",
+        "strong": false
+      },
+      {
+        "t_trimmed": 17.146,
+        "t_file": 19.673,
+        "onset_strength": 1.44,
+        "peak_dBFS": -22.2,
+        "jump_dB": 9.9,
+        "approx_score_pos": "bar 11 beat 2",
+        "strong": false
+      },
+      {
+        "t_trimmed": 17.389,
+        "t_file": 19.916,
+        "onset_strength": 0.77,
+        "peak_dBFS": -23.9,
+        "jump_dB": 9.7,
+        "approx_score_pos": "bar 11 beat 2.5",
+        "strong": false
+      },
+      {
+        "t_trimmed": 17.576,
+        "t_file": 20.103,
+        "onset_strength": 1.27,
+        "peak_dBFS": -25.1,
+        "jump_dB": 8.6,
+        "approx_score_pos": "bar 11 beat 3",
+        "strong": false
+      },
+      {
+        "t_trimmed": 17.786,
+        "t_file": 20.313,
+        "onset_strength": 1.38,
+        "peak_dBFS": -20.5,
+        "jump_dB": 15.2,
+        "approx_score_pos": "bar 11 beat 3",
+        "strong": false
+      },
+      {
+        "t_trimmed": 17.984,
+        "t_file": 20.511,
+        "onset_strength": 1.77,
+        "peak_dBFS": -20.6,
+        "jump_dB": 10.7,
+        "approx_score_pos": "bar 11 beat 3.5",
+        "strong": false
+      },
+      {
+        "t_trimmed": 18.117,
+        "t_file": 20.644,
+        "onset_strength": 0.79,
+        "peak_dBFS": -22.7,
+        "jump_dB": 3.8,
+        "approx_score_pos": "bar 11 beat 4",
+        "strong": false
+      },
+      {
+        "t_trimmed": 18.197,
+        "t_file": 20.724,
+        "onset_strength": 0.88,
+        "peak_dBFS": -22.7,
+        "jump_dB": 7.6,
+        "approx_score_pos": "bar 11 beat 4",
+        "strong": false
+      },
+      {
+        "t_trimmed": 18.322,
+        "t_file": 20.849,
+        "onset_strength": 0.88,
+        "peak_dBFS": -24.7,
+        "jump_dB": 2.7,
+        "approx_score_pos": "bar 11 beat 4.5",
+        "strong": false
+      },
+      {
+        "t_trimmed": 18.405,
+        "t_file": 20.932,
+        "onset_strength": 1.33,
+        "peak_dBFS": -23.3,
+        "jump_dB": 8.9,
+        "approx_score_pos": "bar 11 beat 4.5",
+        "strong": false
+      },
+      {
+        "t_trimmed": 18.624,
+        "t_file": 21.151,
+        "onset_strength": 1.13,
+        "peak_dBFS": -23.1,
+        "jump_dB": 8.9,
+        "approx_score_pos": "bar 12 beat 1",
+        "strong": false
+      },
+      {
+        "t_trimmed": 18.82,
+        "t_file": 21.347,
+        "onset_strength": 1.98,
+        "peak_dBFS": -22.1,
+        "jump_dB": 12.7,
+        "approx_score_pos": "bar 12 beat 1.5",
+        "strong": false
+      },
+      {
+        "t_trimmed": 19.007,
+        "t_file": 21.534,
+        "onset_strength": 0.88,
+        "peak_dBFS": -23.6,
+        "jump_dB": 5.7,
+        "approx_score_pos": "bar 12 beat 2",
+        "strong": false
+      },
+      {
+        "t_trimmed": 19.007,
+        "t_file": 21.534,
+        "onset_strength": 1.11,
+        "peak_dBFS": -23.6,
+        "jump_dB": 5.7,
+        "approx_score_pos": "bar 12 beat 2",
+        "strong": false
+      },
+      {
+        "t_trimmed": 19.237,
+        "t_file": 21.764,
+        "onset_strength": 1.15,
+        "peak_dBFS": -22.2,
+        "jump_dB": 13.7,
+        "approx_score_pos": "bar 12 beat 2.5",
+        "strong": false
+      },
+      {
+        "t_trimmed": 19.4,
+        "t_file": 21.927,
+        "onset_strength": 0.85,
+        "peak_dBFS": -27.0,
+        "jump_dB": 2.4,
+        "approx_score_pos": "bar 12 beat 2.5",
+        "strong": false
+      },
+      {
+        "t_trimmed": 19.659,
+        "t_file": 22.186,
+        "onset_strength": 0.94,
+        "peak_dBFS": -23.2,
+        "jump_dB": 11.3,
+        "approx_score_pos": "bar 12 beat 3",
+        "strong": false
+      },
+      {
+        "t_trimmed": 19.791,
+        "t_file": 22.318,
+        "onset_strength": 0.92,
+        "peak_dBFS": -23.8,
+        "jump_dB": 3.2,
+        "approx_score_pos": "bar 12 beat 3.5",
+        "strong": false
+      },
+      {
+        "t_trimmed": 19.913,
+        "t_file": 22.44,
+        "onset_strength": 1.15,
+        "peak_dBFS": -23.6,
+        "jump_dB": 5.2,
+        "approx_score_pos": "bar 12 beat 4",
+        "strong": false
+      },
+      {
+        "t_trimmed": 20.096,
+        "t_file": 22.623,
+        "onset_strength": 1.01,
+        "peak_dBFS": -18.8,
+        "jump_dB": 17.6,
+        "approx_score_pos": "bar 12 beat 4",
+        "strong": true
+      },
+      {
+        "t_trimmed": 20.32,
+        "t_file": 22.847,
+        "onset_strength": 0.85,
+        "peak_dBFS": -22.4,
+        "jump_dB": 2.9,
+        "approx_score_pos": "bar 12 beat 4.5",
+        "strong": false
+      },
+      {
+        "t_trimmed": 20.493,
+        "t_file": 23.02,
+        "onset_strength": 1.54,
+        "peak_dBFS": -20.3,
+        "jump_dB": 10.9,
+        "approx_score_pos": "bar 13 beat 1",
+        "strong": false
+      },
+      {
+        "t_trimmed": 20.927,
+        "t_file": 23.454,
+        "onset_strength": 1.23,
+        "peak_dBFS": -20.9,
+        "jump_dB": 14.6,
+        "approx_score_pos": "bar 13 beat 2",
+        "strong": false
+      },
+      {
+        "t_trimmed": 21.051,
+        "t_file": 23.578,
+        "onset_strength": 0.75,
+        "peak_dBFS": -24.6,
+        "jump_dB": 1.3,
+        "approx_score_pos": "bar 13 beat 2.5",
+        "strong": false
+      },
+      {
+        "t_trimmed": 21.157,
+        "t_file": 23.684,
+        "onset_strength": 0.84,
+        "peak_dBFS": -23.9,
+        "jump_dB": 9.6,
+        "approx_score_pos": "bar 13 beat 2.5",
+        "strong": false
+      },
+      {
+        "t_trimmed": 21.258,
+        "t_file": 23.785,
+        "onset_strength": 0.89,
+        "peak_dBFS": -23.2,
+        "jump_dB": 7.1,
+        "approx_score_pos": "bar 13 beat 3",
+        "strong": false
+      },
+      {
+        "t_trimmed": 21.359,
+        "t_file": 23.886,
+        "onset_strength": 1.5,
+        "peak_dBFS": -20.6,
+        "jump_dB": 9.3,
+        "approx_score_pos": "bar 13 beat 3",
+        "strong": false
+      },
+      {
+        "t_trimmed": 21.583,
+        "t_file": 24.11,
+        "onset_strength": 2.2,
+        "peak_dBFS": -20.7,
+        "jump_dB": 11.2,
+        "approx_score_pos": "bar 13 beat 3.5",
+        "strong": false
+      },
+      {
+        "t_trimmed": 21.679,
+        "t_file": 24.206,
+        "onset_strength": 0.89,
+        "peak_dBFS": -21.6,
+        "jump_dB": 5.8,
+        "approx_score_pos": "bar 13 beat 3.5",
+        "strong": false
+      },
+      {
+        "t_trimmed": 21.786,
+        "t_file": 24.313,
+        "onset_strength": 1.6,
+        "peak_dBFS": -18.6,
+        "jump_dB": 8.4,
+        "approx_score_pos": "bar 13 beat 4",
+        "strong": false
+      },
+      {
+        "t_trimmed": 22.01,
+        "t_file": 24.537,
+        "onset_strength": 1.3,
+        "peak_dBFS": -21.5,
+        "jump_dB": 7.2,
+        "approx_score_pos": "bar 13 beat 4.5",
+        "strong": false
+      },
+      {
+        "t_trimmed": 22.141,
+        "t_file": 24.668,
+        "onset_strength": 0.84,
+        "peak_dBFS": -23.2,
+        "jump_dB": 5.3,
+        "approx_score_pos": "bar 14 beat 1",
+        "strong": false
+      },
+      {
+        "t_trimmed": 22.234,
+        "t_file": 24.761,
+        "onset_strength": 1.33,
+        "peak_dBFS": -18.5,
+        "jump_dB": 10.8,
+        "approx_score_pos": "bar 14 beat 1",
+        "strong": false
+      },
+      {
+        "t_trimmed": 22.901,
+        "t_file": 25.428,
+        "onset_strength": 3.09,
+        "peak_dBFS": -18.1,
+        "jump_dB": 21.2,
+        "approx_score_pos": "bar 14 beat 2",
+        "strong": true
+      }
+    ]
+  }
+}

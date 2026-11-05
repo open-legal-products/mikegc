@@ -1,0 +1,726 @@
+{
+  "project": "Product launch film - scratch (temporary) voiceover",
+  "engine": {
+    "name": "Kokoro (StyleTTS2-based neural TTS), run on CPU with PyTorch",
+    "python_package": "kokoro 0.9.4 (Apache-2.0)",
+    "g2p": "misaki 0.9.4 (Apache-2.0), American English lexicon + spaCy en_core_web_sm 3.7.1 (MIT) for POS; espeak-ng fallback was loaded but not needed for any word in these lines",
+    "torch": "2.15.0+cpu",
+    "inference_note": "KModel weights and modules unchanged; integer frame durations allocated by cumulative rounding so `speed` is applied linearly (stock per-token rounding barely shortens speech for speeds 1.05-1.12). See scripts/synth3.py."
+  },
+  "model": {
+    "repo": "huggingface.co/hexgrad/Kokoro-82M",
+    "revision": "f3ff3571791e39611d31c381e3a41a3af07b4987",
+    "weights": "kokoro-v1_0.pth (Kokoro v1.0, 82M params)",
+    "weights_sha256": "496dba118d1a58f5f3db2efc88dbdc216e0483fc89fe6e47ee1f2c53f18ad1e4",
+    "license": "Apache-2.0 (model card: 'Apache-licensed model ... can be deployed anywhere from production environments to personal projects')",
+    "training_data_note": "Model card: trained on permissive/non-copyrighted audio (public domain, Apache/MIT-licensed audio, synthetic audio from closed TTS providers). CC BY attributions listed on the card (Koniwa CC BY 3.0, SIWIS CC BY 4.0) relate to the Japanese and French voices, not af_heart."
+  },
+  "voice": {
+    "id": "af_heart",
+    "accent": "American English, female",
+    "file": "voices/af_heart.pt",
+    "sha256": "0ab5709b8ffab19bfd849cd11d98f75b60af7733253ad0d67b12382a102cb4ff",
+    "license": "Apache-2.0 (ships in the Kokoro-82M repo)",
+    "upstream_grade": "A (highest in VOICES.md)",
+    "auditioned": [
+      "af_heart",
+      "af_bella",
+      "bf_emma",
+      "am_michael",
+      "bm_george",
+      "bf_isabella",
+      "am_fenrir",
+      "bm_fable"
+    ]
+  },
+  "speed_default": 0.95,
+  "pronunciation": {
+    "MikeOSS": "input 'Mike OSS' -> mˈIk ˌOˌɛsˈɛs (Mike O-S-S)",
+    "MikeGC": "input 'Mike GC' -> mˈIk ʤˌisˈi (Mike G-C)",
+    "@MikeGC": "input 'at Mike GC' -> æt mˈIk ʤˌisˈi"
+  },
+  "post": {
+    "chain": "trim to 30 ms head/tail (threshold -50 dB re loudest 10 ms frame, 5 ms edge fades) -> 70 Hz 2nd-order Butterworth high-pass -> phase rotator (3 all-pass sections 120/250/400 Hz; flat magnitude, lowers crest factor) -> soxr VHQ resample 24 -> 48 kHz -> linear gain to -16.0 LUFS + look-ahead true-peak limiter (4x oversampled, ceiling -1.75 dBTP), gain iterated against ffmpeg ebur128 -> 48 kHz mono PCM 24-bit. No reverb, no EQ beyond the high-pass.",
+    "why_not_loudnorm": "Raw TTS peak-to-loudness ratio is 16-20 dB, above the 14.5 dB that -16 LUFS / -1.5 dBTP allows, so ffmpeg loudnorm linear mode fell back to dynamic mode (and missed the target on vo02). Linear gain + a brief true-peak limiter keeps the read uncompressed; limiter max gain reduction is listed per line.",
+    "measured_with": "ffmpeg ebur128 (peak=true)"
+  },
+  "word_timing_method": "From the engine itself: Kokoro's predicted per-phoneme durations (25 ms frames), grouped onto words with misaki's tokens, shifted 2 frames earlier (decoder output leads the alignment by ~55 ms, measured at pause boundaries), word edges next to pauses tightened to where the signal is above -45 dB, then offset by the trim so times are relative to the start of the final WAV. Script words are reported (MikeGC = 'Mike'+'GC', @MikeGC = 'at'+'Mike'+'GC'); punctuation is stripped. Checked against exact acoustic pause edges (within +/-30 ms) and Whisper small.en word timestamps (median |diff| ~50 ms).",
+  "lines": [
+    {
+      "file": "vo01.wav",
+      "text_spoken": "General Legal has sponsored Mike OSS to design Mike GC: a fork of Mike, built for in-house legal teams.",
+      "duration_s": 6.49,
+      "speed": 1.11,
+      "words": [
+        {
+          "word": "General",
+          "start_s": 0.035,
+          "end_s": 0.335
+        },
+        {
+          "word": "Legal",
+          "start_s": 0.385,
+          "end_s": 0.685
+        },
+        {
+          "word": "has",
+          "start_s": 0.735,
+          "end_s": 0.835
+        },
+        {
+          "word": "sponsored",
+          "start_s": 0.885,
+          "end_s": 1.31
+        },
+        {
+          "word": "MikeOSS",
+          "start_s": 1.385,
+          "end_s": 2.16
+        },
+        {
+          "word": "to",
+          "start_s": 2.21,
+          "end_s": 2.26
+        },
+        {
+          "word": "design",
+          "start_s": 2.31,
+          "end_s": 2.685
+        },
+        {
+          "word": "MikeGC",
+          "start_s": 2.71,
+          "end_s": 3.4
+        },
+        {
+          "word": "a",
+          "start_s": 3.91,
+          "end_s": 3.96
+        },
+        {
+          "word": "fork",
+          "start_s": 4.01,
+          "end_s": 4.21
+        },
+        {
+          "word": "of",
+          "start_s": 4.235,
+          "end_s": 4.31
+        },
+        {
+          "word": "Mike",
+          "start_s": 4.36,
+          "end_s": 4.675
+        },
+        {
+          "word": "built",
+          "start_s": 4.915,
+          "end_s": 5.085
+        },
+        {
+          "word": "for",
+          "start_s": 5.135,
+          "end_s": 5.235
+        },
+        {
+          "word": "in-house",
+          "start_s": 5.285,
+          "end_s": 5.685
+        },
+        {
+          "word": "legal",
+          "start_s": 5.71,
+          "end_s": 5.96
+        },
+        {
+          "word": "teams",
+          "start_s": 6.01,
+          "end_s": 6.455
+        }
+      ],
+      "text_script": "General Legal has sponsored MikeOSS to design MikeGC: a fork of Mike, built for in-house legal teams.",
+      "phonemes": "ʤˈɛnəɹəl lˈiɡəl hæz spˈɑnsəɹd mˈIk ˌOˌɛsˈɛs tə dəzˈIn mˈIk ʤˌisˈi: ɐ fˈɔɹk ʌv mˈIk, bˈɪlt fɔɹ ˌɪnhˈWs lˈiɡəl tˈimz.",
+      "budget_s": 6.6,
+      "air_s": 0.11,
+      "integrated_lufs": -16.0,
+      "true_peak_dbtp": -1.7,
+      "post": {
+        "pre_I": -25.6,
+        "pre_TP": -8.3,
+        "gain_db": 9.9,
+        "limiter_max_gr_db": 3.3,
+        "limiter_time_over_1db_pct": 2.5
+      },
+      "speed_note": "Raised from 0.95 for this line only: at 1.0 it runs 7.1 s, over the 6.6 s budget; 1.11 is the slowest that leaves ~0.1 s of air."
+    },
+    {
+      "file": "vo02.wav",
+      "text_spoken": "Its first feature is Intake.",
+      "duration_s": 1.68,
+      "speed": 0.95,
+      "words": [
+        {
+          "word": "Its",
+          "start_s": 0.03,
+          "end_s": 0.21
+        },
+        {
+          "word": "first",
+          "start_s": 0.26,
+          "end_s": 0.51
+        },
+        {
+          "word": "feature",
+          "start_s": 0.56,
+          "end_s": 0.885
+        },
+        {
+          "word": "is",
+          "start_s": 0.935,
+          "end_s": 1.06
+        },
+        {
+          "word": "Intake",
+          "start_s": 1.11,
+          "end_s": 1.64
+        }
+      ],
+      "text_script": "Its first feature is Intake.",
+      "phonemes": "ˌɪts fˈɜɹst fˈiʧəɹ ɪz ˈɪntˌAk.",
+      "context_after": "Email, Slack or Teams: wherever requests arrive, Intake brings them into one queue.",
+      "budget_s": 2.4,
+      "air_s": 0.72,
+      "integrated_lufs": -16.0,
+      "true_peak_dbtp": -1.8,
+      "post": {
+        "pre_I": -26.5,
+        "pre_TP": -11.2,
+        "gain_db": 10.5,
+        "limiter_max_gr_db": 1.04,
+        "limiter_time_over_1db_pct": 0.4
+      },
+      "context_note": "Rendered in one pass followed by the vo03 text, then cut in the silent gap after 'Intake.' Kokoro reads very short sentences with a rising end (it rose ~6 st on 'Intake' when rendered alone); in context it lands as a calm statement."
+    },
+    {
+      "file": "vo03.wav",
+      "text_spoken": "Email, Slack or Teams: wherever requests arrive, Intake brings them into one queue.",
+      "duration_s": 5.26,
+      "speed": 0.95,
+      "words": [
+        {
+          "word": "Email",
+          "start_s": 0.035,
+          "end_s": 0.51
+        },
+        {
+          "word": "Slack",
+          "start_s": 0.61,
+          "end_s": 0.985
+        },
+        {
+          "word": "or",
+          "start_s": 1.035,
+          "end_s": 1.135
+        },
+        {
+          "word": "Teams",
+          "start_s": 1.185,
+          "end_s": 1.68
+        },
+        {
+          "word": "wherever",
+          "start_s": 2.09,
+          "end_s": 2.41
+        },
+        {
+          "word": "requests",
+          "start_s": 2.46,
+          "end_s": 2.835
+        },
+        {
+          "word": "arrive",
+          "start_s": 2.86,
+          "end_s": 3.31
+        },
+        {
+          "word": "Intake",
+          "start_s": 3.485,
+          "end_s": 3.885
+        },
+        {
+          "word": "brings",
+          "start_s": 3.965,
+          "end_s": 4.21
+        },
+        {
+          "word": "them",
+          "start_s": 4.235,
+          "end_s": 4.36
+        },
+        {
+          "word": "into",
+          "start_s": 4.385,
+          "end_s": 4.585
+        },
+        {
+          "word": "one",
+          "start_s": 4.635,
+          "end_s": 4.835
+        },
+        {
+          "word": "queue",
+          "start_s": 4.91,
+          "end_s": 5.22
+        }
+      ],
+      "text_script": "Email, Slack or Teams: wherever requests arrive, Intake brings them into one queue.",
+      "phonemes": "ˈimˌAl, slˈæk ɔɹ tˈimz: wəɹˈɛvəɹ ɹəkwˈɛsts əɹˈIv, ˈɪntˌAk bɹˈɪŋz ðˌɛm ˈɪntu wˈʌn kjˈu.",
+      "budget_s": 7.2,
+      "air_s": 1.94,
+      "integrated_lufs": -16.0,
+      "true_peak_dbtp": -1.7,
+      "post": {
+        "pre_I": -25.3,
+        "pre_TP": -8.6,
+        "gain_db": 9.4,
+        "limiter_max_gr_db": 2.5,
+        "limiter_time_over_1db_pct": 1.2
+      }
+    },
+    {
+      "file": "vo04.wav",
+      "text_spoken": "Mention at Mike GC or email your intake address. Mike GC records the subject, the requester, the deadline and the documents.",
+      "duration_s": 8.65,
+      "speed": 0.95,
+      "words": [
+        {
+          "word": "Mention",
+          "start_s": 0.06,
+          "end_s": 0.41
+        },
+        {
+          "word": "@MikeGC",
+          "start_s": 0.46,
+          "end_s": 1.435
+        },
+        {
+          "word": "or",
+          "start_s": 1.535,
+          "end_s": 1.66
+        },
+        {
+          "word": "email",
+          "start_s": 1.735,
+          "end_s": 2.135
+        },
+        {
+          "word": "your",
+          "start_s": 2.185,
+          "end_s": 2.31
+        },
+        {
+          "word": "intake",
+          "start_s": 2.36,
+          "end_s": 2.71
+        },
+        {
+          "word": "address",
+          "start_s": 2.735,
+          "end_s": 3.24
+        },
+        {
+          "word": "MikeGC",
+          "start_s": 3.835,
+          "end_s": 4.51
+        },
+        {
+          "word": "records",
+          "start_s": 4.56,
+          "end_s": 5.01
+        },
+        {
+          "word": "the",
+          "start_s": 5.035,
+          "end_s": 5.085
+        },
+        {
+          "word": "subject",
+          "start_s": 5.16,
+          "end_s": 5.74
+        },
+        {
+          "word": "the",
+          "start_s": 5.975,
+          "end_s": 6.01
+        },
+        {
+          "word": "requester",
+          "start_s": 6.085,
+          "end_s": 6.86
+        },
+        {
+          "word": "the",
+          "start_s": 6.995,
+          "end_s": 7.06
+        },
+        {
+          "word": "deadline",
+          "start_s": 7.135,
+          "end_s": 7.66
+        },
+        {
+          "word": "and",
+          "start_s": 7.735,
+          "end_s": 7.81
+        },
+        {
+          "word": "the",
+          "start_s": 7.835,
+          "end_s": 7.885
+        },
+        {
+          "word": "documents",
+          "start_s": 7.96,
+          "end_s": 8.615
+        }
+      ],
+      "text_script": "Mention @MikeGC or email your intake address. MikeGC records the subject, the requester, the deadline and the documents.",
+      "phonemes": "mˈɛnʧᵊn æt mˈIk ʤˌisˈi ɔɹ ˈimˌAl jʊɹ ˈɪntˌAk ədɹˈɛs. mˈIk ʤˌisˈi ɹəkˈɔɹdz ðə sˈʌbʤɛkt, ðə ɹəkwˈɛstəɹ, ðə dˈɛdlˌIn ænd ðə dˈɑkjəmənts.",
+      "budget_s": 9.2,
+      "air_s": 0.55,
+      "integrated_lufs": -16.0,
+      "true_peak_dbtp": -1.7,
+      "post": {
+        "pre_I": -25.5,
+        "pre_TP": -8.4,
+        "gain_db": 9.7,
+        "limiter_max_gr_db": 3.03,
+        "limiter_time_over_1db_pct": 2.5
+      }
+    },
+    {
+      "file": "vo05.wav",
+      "text_spoken": "Your rules send it to the right lawyer, and Mike GC runs a first pass against your playbook before anyone opens it.",
+      "duration_s": 6.92,
+      "speed": 0.95,
+      "words": [
+        {
+          "word": "Your",
+          "start_s": 0.03,
+          "end_s": 0.18
+        },
+        {
+          "word": "rules",
+          "start_s": 0.255,
+          "end_s": 0.605
+        },
+        {
+          "word": "send",
+          "start_s": 0.705,
+          "end_s": 0.93
+        },
+        {
+          "word": "it",
+          "start_s": 0.955,
+          "end_s": 1.04
+        },
+        {
+          "word": "to",
+          "start_s": 1.105,
+          "end_s": 1.155
+        },
+        {
+          "word": "the",
+          "start_s": 1.205,
+          "end_s": 1.255
+        },
+        {
+          "word": "right",
+          "start_s": 1.305,
+          "end_s": 1.53
+        },
+        {
+          "word": "lawyer",
+          "start_s": 1.58,
+          "end_s": 1.995
+        },
+        {
+          "word": "and",
+          "start_s": 2.455,
+          "end_s": 2.53
+        },
+        {
+          "word": "MikeGC",
+          "start_s": 2.58,
+          "end_s": 3.405
+        },
+        {
+          "word": "runs",
+          "start_s": 3.48,
+          "end_s": 3.73
+        },
+        {
+          "word": "a",
+          "start_s": 3.755,
+          "end_s": 3.78
+        },
+        {
+          "word": "first",
+          "start_s": 3.88,
+          "end_s": 4.13
+        },
+        {
+          "word": "pass",
+          "start_s": 4.205,
+          "end_s": 4.505
+        },
+        {
+          "word": "against",
+          "start_s": 4.555,
+          "end_s": 4.83
+        },
+        {
+          "word": "your",
+          "start_s": 4.855,
+          "end_s": 4.93
+        },
+        {
+          "word": "playbook",
+          "start_s": 5.005,
+          "end_s": 5.465
+        },
+        {
+          "word": "before",
+          "start_s": 5.585,
+          "end_s": 5.855
+        },
+        {
+          "word": "anyone",
+          "start_s": 5.93,
+          "end_s": 6.255
+        },
+        {
+          "word": "opens",
+          "start_s": 6.305,
+          "end_s": 6.655
+        },
+        {
+          "word": "it",
+          "start_s": 6.73,
+          "end_s": 6.88
+        }
+      ],
+      "text_script": "Your rules send it to the right lawyer, and MikeGC runs a first pass against your playbook before anyone opens it.",
+      "phonemes": "jˌʊɹ ɹˈulz sˈɛnd ɪt tə ðə ɹˈIt lˈYəɹ, ænd mˈIk ʤˌisˈi ɹˈʌnz ɐ fˈɜɹst pˈæs əɡˈɛnst jʊɹ plˈAbˌʊk bəfˈɔɹ ˈɛniwˌʌn ˈOpᵊnz ɪt.",
+      "budget_s": 9.2,
+      "air_s": 2.28,
+      "integrated_lufs": -16.0,
+      "true_peak_dbtp": -1.7,
+      "post": {
+        "pre_I": -25.6,
+        "pre_TP": -9.3,
+        "gain_db": 9.7,
+        "limiter_max_gr_db": 2.14,
+        "limiter_time_over_1db_pct": 0.9
+      }
+    },
+    {
+      "file": "vo06.wav",
+      "text_spoken": "Ask follow-up questions, then send the answer and the redline back to the thread the request came from.",
+      "duration_s": 5.965,
+      "speed": 0.95,
+      "words": [
+        {
+          "word": "Ask",
+          "start_s": 0.045,
+          "end_s": 0.345
+        },
+        {
+          "word": "follow-up",
+          "start_s": 0.395,
+          "end_s": 0.84
+        },
+        {
+          "word": "questions",
+          "start_s": 0.905,
+          "end_s": 1.55
+        },
+        {
+          "word": "then",
+          "start_s": 1.945,
+          "end_s": 2.12
+        },
+        {
+          "word": "send",
+          "start_s": 2.195,
+          "end_s": 2.395
+        },
+        {
+          "word": "the",
+          "start_s": 2.42,
+          "end_s": 2.495
+        },
+        {
+          "word": "answer",
+          "start_s": 2.545,
+          "end_s": 2.995
+        },
+        {
+          "word": "and",
+          "start_s": 3.07,
+          "end_s": 3.145
+        },
+        {
+          "word": "the",
+          "start_s": 3.17,
+          "end_s": 3.245
+        },
+        {
+          "word": "redline",
+          "start_s": 3.295,
+          "end_s": 3.77
+        },
+        {
+          "word": "back",
+          "start_s": 3.82,
+          "end_s": 4.045
+        },
+        {
+          "word": "to",
+          "start_s": 4.095,
+          "end_s": 4.145
+        },
+        {
+          "word": "the",
+          "start_s": 4.195,
+          "end_s": 4.245
+        },
+        {
+          "word": "thread",
+          "start_s": 4.32,
+          "end_s": 4.72
+        },
+        {
+          "word": "the",
+          "start_s": 4.81,
+          "end_s": 4.845
+        },
+        {
+          "word": "request",
+          "start_s": 4.895,
+          "end_s": 5.345
+        },
+        {
+          "word": "came",
+          "start_s": 5.395,
+          "end_s": 5.62
+        },
+        {
+          "word": "from",
+          "start_s": 5.67,
+          "end_s": 5.925
+        }
+      ],
+      "text_script": "Ask follow-up questions, then send the answer and the redline back to the thread the request came from.",
+      "phonemes": "ˈæsk fˈɑlOˌʌp kwˈɛsʧᵊnz, ðˈɛn sˈɛnd ði ˈænsəɹ ænd ðə ɹˈɛdlˌIn bˈæk tə ðə θɹˈɛd ðə ɹəkwˈɛst kˈAm fɹʌm.",
+      "dur_caps": [
+        [
+          78,
+          5
+        ],
+        [
+          79,
+          2
+        ]
+      ],
+      "budget_s": 9.0,
+      "air_s": 3.035,
+      "integrated_lufs": -16.0,
+      "true_peak_dbtp": -1.7,
+      "post": {
+        "pre_I": -25.7,
+        "pre_TP": -8.6,
+        "gain_db": 9.9,
+        "limiter_max_gr_db": 3.05,
+        "limiter_time_over_1db_pct": 2.6
+      },
+      "prosody_note": "The model put a 0.33 s silence between 'thread' and 'the request came from' (no comma in the script). Capped the predicted duration of the final /d/ of 'thread' (12 -> 5 frames) and the following space (4 -> 2) so it reads as one phrase."
+    },
+    {
+      "file": "vo07.wav",
+      "text_spoken": "And see what's open, what's overdue and who's carrying the load.",
+      "duration_s": 3.46,
+      "speed": 0.95,
+      "words": [
+        {
+          "word": "And",
+          "start_s": 0.03,
+          "end_s": 0.13
+        },
+        {
+          "word": "see",
+          "start_s": 0.18,
+          "end_s": 0.33
+        },
+        {
+          "word": "what's",
+          "start_s": 0.38,
+          "end_s": 0.53
+        },
+        {
+          "word": "open",
+          "start_s": 0.58,
+          "end_s": 0.985
+        },
+        {
+          "word": "what's",
+          "start_s": 1.28,
+          "end_s": 1.455
+        },
+        {
+          "word": "overdue",
+          "start_s": 1.505,
+          "end_s": 2.055
+        },
+        {
+          "word": "and",
+          "start_s": 2.155,
+          "end_s": 2.23
+        },
+        {
+          "word": "who's",
+          "start_s": 2.255,
+          "end_s": 2.43
+        },
+        {
+          "word": "carrying",
+          "start_s": 2.48,
+          "end_s": 2.88
+        },
+        {
+          "word": "the",
+          "start_s": 2.905,
+          "end_s": 2.955
+        },
+        {
+          "word": "load",
+          "start_s": 3.005,
+          "end_s": 3.42
+        }
+      ],
+      "text_script": "And see what's open, what's overdue and who's carrying the load.",
+      "phonemes": "ˌænd sˈi wˌʌts ˈOpᵊn, wˌʌts ˌOvəɹdˈu ænd hˌuz kˈɛɹiɪŋ ðə lˈOd.",
+      "budget_s": 5.2,
+      "air_s": 1.74,
+      "integrated_lufs": -16.0,
+      "true_peak_dbtp": -1.7,
+      "post": {
+        "pre_I": -25.3,
+        "pre_TP": -8.9,
+        "gain_db": 9.6,
+        "limiter_max_gr_db": 2.47,
+        "limiter_time_over_1db_pct": 4.0
+      }
+    }
+  ]
+}

@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>MikeGC Intake launch film</title>
+<style>
+@font-face { font-family: "Inter"; font-weight: 100 900; src: url("assets/inter-latin.woff2") format("woff2"); }
+@font-face { font-family: "EB Garamond"; font-weight: 400 800; src: url("assets/eb-garamond-latin.woff2") format("woff2"); }
+:root {
+  --ink: #14140F;
+  --gc: #2563eb;
+  --sans: "Inter", system-ui, sans-serif;
+  --serif: "EB Garamond", Georgia, serif;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { background: #DADDE2; overflow: hidden; }
+#stage { position: relative; overflow: hidden; color: var(--ink); font-family: var(--sans); }
+.abs { position: absolute; left: 0; top: 0; will-change: transform, opacity; }
+#bg { position: absolute; inset: -20%; background: linear-gradient(135deg, #F5F6F8 0%, #EEF0F3 22%, #DADDE2 52%, #C9CDD4 76%, #B9BEC6 100%); }
+#bg2 { position: absolute; inset: -30%; background: radial-gradient(ellipse at 30% 30%, rgba(255,255,255,0.55), rgba(255,255,255,0) 55%); }
+#white { position: absolute; inset: 0; background: #fff; }
+
+/* Type */
+.serif { font-family: var(--serif); font-weight: 400; letter-spacing: -0.005em; }
+.label { font-family: var(--sans); font-weight: 500; }
+.caption { font-family: var(--sans); font-weight: 500; text-align: center; line-height: 1.25; white-space: nowrap; }
+.foot { font-family: var(--sans); font-weight: 400; text-align: center; opacity: 0.72; white-space: nowrap; }
+.gc { color: var(--gc); }
+
+/* Wordmark */
+.wordmark { display: flex; align-items: center; white-space: nowrap; transform-origin: 50% 50%; }
+.wordmark .icon { position: relative; flex: none; }
+.wordmark .icon img { position: absolute; inset: 0; width: 100%; height: 100%; }
+.wordmark .word { font-family: var(--serif); font-weight: 400; line-height: 1; }
+
+/* Glass */
+.glass {
+  border-radius: 24px; overflow: hidden; background: rgba(255,255,255,0.55);
+  box-shadow: 0 40px 90px -20px rgba(20,20,15,0.32), 0 14px 32px -12px rgba(20,20,15,0.18);
+}
+.edge { position: absolute; inset: 0; border-radius: 24px; border: 1.5px solid rgba(255,255,255,0.4); pointer-events: none; }
+.cam { position: absolute; left: 0; top: 0; width: 1600px; height: 1000px; transform-origin: 0 0; }
+.cam img.shot { position: absolute; left: 0; top: 0; width: 1600px; height: 1000px; }
+.glow { position: absolute; border-radius: 12px; background: rgba(37,99,235,0.05);
+  box-shadow: 0 0 0 2.5px rgba(37,99,235,0.45), 0 0 28px 6px rgba(37,99,235,0.30); }
+.cursor { position: absolute; width: 22px; height: 30px; transform-origin: 2px 2px; }
+.ring { position: absolute; width: 44px; height: 44px; margin: -22px 0 0 -22px; border-radius: 50%; border: 2.5px solid rgba(37,99,235,0.7); }
+.toastlayer { position: absolute; background-size: 1600px 1000px; border-radius: 14px;
+  box-shadow: 0 18px 40px -12px rgba(20,20,15,0.35); }
+
+/* Channels */
+.chan { display: flex; align-items: center; justify-content: center; }
+.chan img { width: 100%; height: 100%; object-fit: contain; }
+.bubble { background: rgba(255,255,255,0.78); border-radius: 22px; padding: 18px 22px; font-family: var(--sans); font-weight: 400;
+  line-height: 1.3; box-shadow: 0 18px 40px -16px rgba(20,20,15,0.28); border: 1.5px solid rgba(255,255,255,0.6); }
+.bubble b { font-weight: 500; color: var(--gc); }
+.queue { background: rgba(255,255,255,0.7); }
+.queue .head { position: absolute; left: 36px; top: 26px; font-weight: 500; }
+.row { position: absolute; left: 0; right: 0; display: flex; align-items: center; }
+.row .msg { font-weight: 400; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.row .who { color: rgba(20,20,15,0.55); white-space: nowrap; }
+.row .st { display: flex; align-items: center; gap: 10px; white-space: nowrap; }
+.row .dot { width: 10px; height: 10px; border-radius: 50%; background: #3b82f6; }
+.rule { position: absolute; left: 36px; right: 36px; height: 1px; background: rgba(20,20,15,0.08); }
+
+/* Chat thread (a neutral stand-in for the Slack thread, not Slack's own UI) */
+.thread { position: absolute; left: 0; top: 0; width: 1200px; transform-origin: 0 0; font-family: var(--sans); background: #fff; }
+.thread .bar { height: 84px; display: flex; align-items: center; gap: 16px; padding: 0 36px; border-bottom: 1px solid #ececef; }
+.thread .bar img { width: 34px; height: 34px; }
+.thread .bar .ch { font-weight: 700; font-size: 26px; }
+.thread .bar .sub { font-size: 20px; color: #6b6b70; }
+.thread .body { position: absolute; left: 0; right: 0; top: 84px; bottom: 0; overflow: hidden; }
+.thread .scroll { position: absolute; left: 0; right: 0; top: 0; padding: 28px 36px; }
+.msgx { display: flex; gap: 18px; margin-bottom: 30px; }
+.msgx .av { flex: none; width: 52px; height: 52px; border-radius: 12px; display: flex; align-items: center; justify-content: center;
+  color: #fff; font-weight: 600; font-size: 19px; }
+.msgx .av img { width: 46px; height: 46px; }
+.msgx .nm { font-weight: 700; font-size: 22px; }
+.msgx .tm { font-size: 17px; color: #85858b; margin-left: 10px; font-weight: 400; }
+.msgx .app { font-size: 13px; font-weight: 700; color: #6b6b70; background: #ececef; border-radius: 4px; padding: 2px 5px; margin-left: 8px; vertical-align: 3px; }
+.msgx .tx { font-size: 23px; line-height: 1.42; margin-top: 4px; }
+.mention { color: #1264a3; background: rgba(29,155,209,0.12); border-radius: 4px; padding: 0 3px; font-weight: 500; }
+.lnk { color: #1264a3; }
+.file { display: inline-flex; align-items: center; gap: 14px; margin-top: 12px; border: 1px solid #e3e3e6; border-radius: 12px; padding: 12px 20px 12px 14px; }
+.file .fi { width: 40px; height: 40px; border-radius: 8px; background: #2b6fd6; color: #fff; display: flex; align-items: center; justify-content: center; }
+.file .fn { font-size: 20px; font-weight: 600; }
+.file .fk { font-size: 16px; color: #85858b; }
+.divider { display: flex; align-items: center; gap: 14px; color: #85858b; font-size: 17px; margin: 4px 0 26px; }
+.divider:after { content: ""; flex: 1; height: 1px; background: #ececef; }
+</style>
+</head>
+<body>
+<div id="stage"></div>
+<script src="gl.js"></script>
+<script src="film.js"></script>
+</body>
+</html>

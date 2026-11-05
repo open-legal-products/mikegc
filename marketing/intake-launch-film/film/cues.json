@@ -1,0 +1,61 @@
+{
+  "url": "github.com/open-legal-products/mikegc",
+  "music_start_file_s": 2.527,
+  "music_ending_in_file_s": 482.107,
+  "vo": [
+    0.6,
+    7.25,
+    12.04,
+    18.05,
+    28.1,
+    38.0,
+    48.2
+  ],
+  "vo_files": [
+    "vo01.wav",
+    "vo02.wav",
+    "vo03.wav",
+    "vo04.wav",
+    "vo05.wav",
+    "vo06.wav",
+    "vo07.wav"
+  ],
+  "vo_durations": [
+    6.49,
+    1.68,
+    5.26,
+    8.65,
+    6.92,
+    5.965,
+    3.46
+  ],
+  "chords": [
+    10.986,
+    11.21,
+    12.63,
+    13.201
+  ],
+  "glIn": 0.25,
+  "sponsorsIn": 1.18,
+  "swap": 1.98,
+  "mikeIn": 2.26,
+  "gcType": 3.29,
+  "subIn": 4.46,
+  "b2": 7.0,
+  "featureIn": 7.23,
+  "intakeIn": 7.91,
+  "queueIn": 15.9,
+  "g4": {
+    "subject": 23.09,
+    "requester": 24.02,
+    "deadline": 25.07,
+    "documents": 25.89
+  },
+  "d7": {
+    "open": 48.63,
+    "overdue": 49.56,
+    "load": 50.58
+  },
+  "endcard": 54.248,
+  "end": 60.248
+}

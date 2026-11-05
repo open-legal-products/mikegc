@@ -1,0 +1,12 @@
+# Scratch voiceover (Kokoro-82M). Python 3.12; CPU torch from
+# https://download.pytorch.org/whl/cpu. The spaCy model en_core_web_sm 3.7.1
+# must be installed separately (from Hugging Face if GitHub is unreachable).
+kokoro==0.9.4
+misaki==0.9.4
+torch==2.15.0
+spacy==3.7.5
+numpy<2
+scipy==1.14.1
+transformers==4.49.0
+soundfile
+soxr
