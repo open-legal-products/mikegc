@@ -1,7 +1,8 @@
 import type { IntakeChannel } from "@mike/contracts";
-import { internalFailure, ok, type ServiceResult } from "../../lib/serviceResult";
+import { internalFailure, ok } from "../../lib/serviceResult";
 import type { Db } from "../../lib/supabase";
 import type { AutomationRow } from "./intake.settingsRow";
+import { insertInbound, type InboundStoreResult } from "./intake.inboundStore";
 import { intakeRpc } from "./intake.shared";
 
 /**
@@ -263,23 +264,23 @@ export async function routeThreadMessage(
     payload: Record<string, unknown>;
     dispatch: (db: Db, orgId: string, inboundId: string) => Promise<void>;
   },
-): Promise<ServiceResult<"received" | "duplicate">> {
-  const { data, error } = await db
-    .from("intake_inbound")
-    .insert({
-      org_id: args.orgId,
-      source: args.source,
-      kind: "reply",
-      external_id: args.externalId,
-      status: "pending",
-      request_id: args.requestId,
-      payload: args.payload,
-    })
-    .select("id")
-    .single();
-  let inboundId: string | null = null;
+): Promise<InboundStoreResult<"received" | "duplicate">> {
+  const stored = await insertInbound(db, {
+    org_id: args.orgId,
+    source: args.source,
+    kind: "reply",
+    external_id: args.externalId,
+    status: "pending",
+    request_id: args.requestId,
+    payload: args.payload,
+  });
+  if (!stored.ok) return stored;
+  // Ownership follows the INSERT, not whether its subsequent job dispatch
+  // succeeds. A duplicate's newly staged payload was never stored.
+  const payloadOwnership = stored.payloadOwnership;
+  let inboundId = stored.data;
   let status: "received" | "duplicate" = "received";
-  if (error && (error as { code?: string }).code === "23505") {
+  if (inboundId === null) {
     status = "duplicate";
     const existing = await db
       .from("intake_inbound")
@@ -288,20 +289,16 @@ export async function routeThreadMessage(
       .eq("source", args.source)
       .eq("external_id", args.externalId)
       .maybeSingle();
-    if (existing.error) return internalFailure(existing.error);
+    if (existing.error) return Object.assign(internalFailure(existing.error), { payloadOwnership });
     const row = existing.data as { id: string; status: string } | null;
     if (row?.status === "pending") inboundId = row.id;
-  } else if (error || !data) {
-    return internalFailure(error);
-  } else {
-    inboundId = (data as { id: string }).id;
   }
   if (inboundId) {
     try {
       await args.dispatch(db, args.orgId, inboundId);
     } catch (cause) {
-      return internalFailure(cause);
+      return Object.assign(internalFailure(cause), { payloadOwnership });
     }
   }
-  return ok(status);
+  return Object.assign(ok(status), { payloadOwnership });
 }
