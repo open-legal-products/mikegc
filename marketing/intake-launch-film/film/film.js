@@ -216,7 +216,9 @@ function show(c, t0, t1, enter = "fade", leave = "fade") {
     else o.push([t0, 0], [t0 + 0.3, 1, "io"]);
     if (leave === "push") { o.push([t1 - 0.45, 1], [t1, 0, "io"]); x.push([t1 - 0.5, 0], [t1, -140, "i"]); }
     else if (leave === "fall") { o.push([t1 - 0.35, 1], [t1, 0, "io"]); s.push([t1 - 0.4, 1], [t1, 0.97, "io"]); }
-    else o.push([t1 + 0.3, 1], [t1 + 0.31, 0, "h"]);
+    // Once the next card is fully in, ease this one out underneath it so its
+    // shadow fades rather than vanishing in one frame.
+    else o.push([t1 + 0.3, 1], [t1 + 0.52, 0, "io"]);
     A(c, "o", o);
     if (x.length) A(c, "x", x);
     if (y.length) A(c, "y", y);
@@ -459,7 +461,7 @@ function buildTimeline() {
     fadeIn(feature, featureIn, 0.45, 12);
     A(intake, "o", [[intakeIn, 0], [intakeIn + 0.6, 1, "o"]]);
     A(intake, "y", [[intakeIn, 46], [intakeIn + 0.65, 0, "o"]]);
-    const b2out = C.chords[0] - 0.62;
+    const b2out = C.b2out != null ? C.b2out : C.chords[0] - 0.62;
     fadeOut(feature, b2out, 0.38, -30);
     fadeOut(intake, b2out, 0.38, -30);
 
@@ -494,173 +496,163 @@ function buildTimeline() {
         A(b, "s", [[tq + d, 1], [tq + d + 0.55, 0.85, "io"]]);
         A(rowEls[i], "o", [[tq + d + 0.3, 0], [tq + d + 0.7, 1, "o"]]);
     });
-    const b3end = C.at[3] - 0.1;
+    // From here on every cut, entrance, pop-in and click lands on a musical
+    // hit in C.hits (see make_cues.py): a cut is centred on its hit.
+    const H = C.hits;
+    const LEAD = { fade: 0.1, push: 0.05, rise: 0.05 };
+    // Show card `c` entering on hit `h`; it leaves as the next card enters on hit `n`.
+    function onBeat(c, h, n, enter = "fade", nextEnter = "fade", leave = "fade") {
+        const t0 = h - LEAD[enter];
+        const t1 = leave === "push" ? n + 0.2 : leave === "fall" ? n + 0.15 : n - LEAD[nextEnter];
+        show(c, t0, t1, enter, leave);
+        return t0;
+    }
+    // The cursor glides to (x, y) and clicks on hit `t`.
+    function clickOn(cam, from, to, t, travel = 0.55) {
+        cursor(cam, [[t - travel - 0.6, ...from], [t - travel - 0.13, ...from], [t - 0.13, ...to]], [[t, ...to]]);
+    }
+
+    const b3end = H.thread - 0.05;
     T.b4 = b3end;
     A(queue, "o", [[b3end - 0.4, 1], [b3end, 0, "io"]]);
     A(queue, "s", [[b3end - 0.4, 1], [b3end, 0.97, "io"]]);
     logos.forEach((lg) => A(lg, "o", [[b3end - 0.4, 1], [b3end, 0, "io"]]));
 
-    // --- Beat 4: capture (Slack thread, then the request MikeGC recorded)
-    const t4 = b3end - 0.1;
+    // --- Beat 4: capture. The thread rises on bar 11; the request page arrives on the fermata chord.
     const th1 = thread([M_JORDAN, { divider: "1 reply" }, M_ACK]);
-    show(th1, t4, t4 + 4.35, "rise", "push");
+    onBeat(th1, H.thread, H.request, "rise", "push", "push");
     const [mJ, dv, mA] = th1.__els;
-    fadeIn(mJ, t4 + 0.45, 0.4, 18);
-    fadeIn(dv, t4 + 1.75, 0.3, 0);
-    fadeIn(mA, t4 + 1.95, 0.4, 18);
-    caption("Recorded from Slack", t4 + 0.5, C.at[4] - 0.25);
-    const s4t = t4 + 3.95;
+    fadeIn(mJ, H.jordan - 0.05, 0.4, 18);
+    fadeIn(dv, H.ack - 0.25, 0.3, 0);
+    fadeIn(mA, H.ack - 0.05, 0.4, 18);
+    caption("Recorded from Slack", H.thread + 0.45, H.rules - 0.1);
     const s4 = card([img("s4_request")]);
-    show(s4, s4t, C.at[4] - 0.15, "push", "fade");
+    const s4t = onBeat(s4, H.request, H.rules, "push", "fade");
     const req = { title: { x: 410, y: 84, w: 210, h: 34 }, reviewer: { x: 1171, y: 216, w: 266, h: 60 }, requester: { x: 1171, y: 286, w: 266, h: 60 },
         target: { x: 1171, y: 356, w: 266, h: 60 }, documents: { x: 425, y: 336, w: 702, h: 30 }, created: { x: 1171, y: 484, w: 266, h: 56 } };
-    // "MikeGC records the subject, the requester, the deadline and the documents."
-    const v4 = C.at[3];
-    const g4 = C.g4 || { subject: v4 + 5.0, requester: v4 + 5.9, deadline: v4 + 7.0, documents: v4 + 7.8 };
-    glow(s4.__cam, req.title, g4.subject, g4.requester + 0.5);
-    glow(s4.__cam, req.requester, g4.requester, g4.deadline + 0.5);
-    glow(s4.__cam, req.target, g4.deadline, g4.documents + 0.5);
-    glow(s4.__cam, req.documents, g4.documents, g4.documents + 1.1);
-    const punch4 = Math.max(g4.documents + 0.8, s4t + 3.2);
-    camKeys(s4, [[s4t, [800, 500, "w"]], [punch4, [800, 500, "w"]], [punch4 + 0.6, [1304, 380, "p"]]]);
-    glow(s4.__cam, req.reviewer, punch4 + 0.45, C.at[4] - 0.2);
-    glow(s4.__cam, req.created, punch4 + 0.75, C.at[4] - 0.2);
+    glow(s4.__cam, req.title, H.subject, H.punch);
+    glow(s4.__cam, req.documents, H.documents, H.punch + 0.2);
+    camKeys(s4, [[s4t, [800, 500, "w"]], [H.punch - 0.1, [800, 500, "w"]], [H.punch + 0.45, [1304, 380, "p"]]]);
+    glow(s4.__cam, req.reviewer, H.requester - 0.1, H.rules);
+    glow(s4.__cam, req.requester, H.requester, H.rules);
+    glow(s4.__cam, req.target, H.deadline, H.rules);
+    glow(s4.__cam, req.created, H.created, H.rules);
 
-    // --- Beat 5: triage and first pass
-    const t5 = C.at[4] - 0.2;
-    T.b5 = t5;
+    // --- Beat 5: triage and first pass. Rules on wave 6; the toast on wave 7.
+    T.b5 = H.rules;
     const rules = card([img("s5_rules")]);
-    show(rules, t5, t5 + 2.9, "fade", "fade");
+    const t5 = onBeat(rules, H.rules, H.queue);
     const ruleRow = { x: 288, y: 166, w: 1284, h: 38 };
-    camKeys(rules, [[t5, [800, 300, "w"]], [t5 + 0.9, [800, 300, "w"]], [t5 + 1.5, [760, 210, "p"]]]);
-    glow(rules.__cam, ruleRow, t5 + 0.55);
-    caption("Routed by your rules", t5 + 0.35, t5 + 2.95);
-    const tq5 = t5 + 2.9;
-    T.toast = tq5 + 0.55;
+    camKeys(rules, [[t5, [800, 300, "w"]], [H.rule + 0.3, [800, 300, "w"]], [H.rule + 0.9, [760, 210, "p"]]]);
+    glow(rules.__cam, ruleRow, H.rule - 0.1);
+    caption("Routed by your rules", H.rules + 0.25, H.queue);
+    T.toast = H.toast - 0.12;
     const toast = h("div", { class: "toastlayer", style: { left: "556px", top: "20px", width: "488px", height: "94px", backgroundImage: "url(shots/s5_toast.png)", backgroundPosition: "-556px -20px" } });
     const queueShot = card([img("s5_queue_base"), toast]);
-    show(queueShot, tq5, tq5 + 2.2, "fade", "fade");
-    A(toast, "o", [[T.toast - 0.05, 0], [T.toast + 0.3, 1, "o"]]);
-    A(toast, "y", [[T.toast - 0.05, -36], [T.toast + 0.4, 0, "o"]]);
-    camKeys(queueShot, [[tq5, [800, 500, "w"]], [T.toast + 0.35, [800, 500, "w"]], [T.toast + 0.95, [800, 160, "p"]]]);
-    cursor(queueShot.__cam, [[tq5, 1180, 420], [T.toast + 0.6, 1180, 420], [T.toast + 1.25, 1008, 92]], [[T.toast + 1.4, 1008, 92]]);
-    const ta = tq5 + 2.2;
+    const tq5 = onBeat(queueShot, H.queue, H.activity);
+    A(toast, "o", [[T.toast, 0], [T.toast + 0.25, 1, "o"]]);
+    A(toast, "y", [[T.toast, -36], [T.toast + 0.3, 0, "o"]]);
+    camKeys(queueShot, [[tq5, [800, 500, "w"]], [H.toast + 0.2, [800, 500, "w"]], [H.toast + 0.75, [800, 160, "p"]]]);
+    clickOn(queueShot.__cam, [1180, 420], [1008, 92], H.open);
     const act = card([img("s5_activity")]);
-    show(act, ta, ta + 2.55, "fade", "fade");
-    camKeys(act, [[ta, [780, 640, "w"]], [ta + 0.3, [780, 640, "w"]], [ta + 0.9, [790, 790, "p"]]]);
-    glow(act.__cam, { x: 462, y: 657, w: 664, h: 350 }, ta + 0.85);
-    const t6 = C.at[5] - 0.2;
-    caption("First pass against your playbook", ta + 0.1, t6);
-    const td = ta + 2.55;
+    const ta = onBeat(act, H.activity, H.doc);
+    camKeys(act, [[ta, [780, 640, "w"]], [H.note - 0.6, [780, 640, "w"]], [H.note, [790, 790, "p"]]]);
+    glow(act.__cam, { x: 462, y: 657, w: 664, h: 350 }, H.note - 0.1);
+    caption("First pass against your playbook", H.activity, H.ask - 0.1);
     const doc = card([img("s5_doc")]);
-    show(doc, td, t6, "fade", "fade");
+    const td = onBeat(doc, H.doc, H.ask);
     const ndaBlocks = revisionBlocks("s5_doc", 4);
     const ndaFocus = ndaBlocks.length ? [940, Math.min(520, ndaBlocks[0].y + 220)] : [940, 360];
-    camKeys(doc, [[td, [940, 420, "w"]], [td + 0.25, [940, 420, "w"]], [td + 0.85, [...ndaFocus, 1.45 * (L.zp / 1.3)]]]);
-    ndaBlocks.forEach((b, i) => glow(doc.__cam, b, td + 0.9 + i * 0.25, null, 4));
+    camKeys(doc, [[td, [940, 420, "w"]], [H.redline - 0.5, [940, 420, "w"]], [H.redline + 0.1, [...ndaFocus, 1.45 * (L.zp / 1.3)]]]);
+    ndaBlocks.forEach((b, i) => glow(doc.__cam, b, H.redline + i * 0.22, null, 4));
 
     // --- Beat 6: requester loop
+    const t6 = H.ask - LEAD.fade;
     T.b6 = t6;
     const typeFrames = h("div", {}, ...Array.from({ length: 10 }, (_, i) => img(`s6_type_${String(i).padStart(2, "0")}`, { "data-i": i })));
     const ask = card([typeFrames]);
-    show(ask, t6, t6 + 2.6, "fade", "push");
-    A(typeFrames, "frame", [[t6 + 0.25, 0], [t6 + 1.55, 9, "l"]]);
+    onBeat(ask, H.ask, H.thread2, "fade", "push", "push");
+    A(typeFrames, "frame", [[t6 + 0.2, 0], [H.askClick - 0.65, 9, "l"]]);
     camKeys(ask, [[t6, [776, 440, "p"]]]);
-    cursor(ask.__cam, [[t6, 1250, 560], [t6 + 1.6, 1250, 560], [t6 + 2.05, 1058, 482]], [[t6 + 2.18, 1058, 482]]);
-    caption("Ask the requester", t6 + 0.3, t6 + 4.75);
-    const tt = t6 + 2.2;
+    clickOn(ask.__cam, [1250, 560], [1058, 482], H.askClick, 0.45);
+    caption("Ask the requester", H.ask + 0.2, H.resolveTyped - 0.1);
     const th2 = thread([M_JORDAN, { divider: "3 replies" }, M_ACK, M_ASK, M_REPLY]);
-    show(th2, tt, tt + 2.6, "push", "push");
+    onBeat(th2, H.thread2, H.newReply, "push", "push", "push");
     const [, , , mAsk, mRep] = th2.__els;
-    fadeIn(mAsk, tt + 0.45, 0.4, 18);
-    fadeIn(mRep, tt + 1.45, 0.4, 18);
-    const tr = tt + 2.2;
+    fadeIn(mAsk, H.question - 0.05, 0.4, 18);
+    fadeIn(mRep, H.reply - 0.05, 0.4, 18);
+    autoscroll(th2, 4, H.reply - 0.2);
     const qr = card([img("s6_queue_reply")]);
-    show(qr, tr, tr + 1.75, "push", "fade");
-    camKeys(qr, [[tr, [800, 400, "w"]], [tr + 0.55, [800, 400, "w"]], [tr + 1.1, [560, 190, "p"]]]);
-    glow(qr.__cam, { x: 290, y: 167, w: 1280, h: 36 }, tr + 0.5);
-    const trs = tr + 1.75;
+    const tr = onBeat(qr, H.newReply, H.resolveTyped, "push", "fade");
+    camKeys(qr, [[tr, [800, 400, "w"]], [H.newReply + 0.25, [800, 400, "w"]], [H.newReply + 0.75, [560, 190, "p"]]]);
+    glow(qr.__cam, { x: 290, y: 167, w: 1280, h: 36 }, H.newReply + 0.3);
     const rt = card([img("s6_resolve_typed")]);
-    show(rt, trs, trs + 1.3, "fade", "fade");
+    const trs = onBeat(rt, H.resolveTyped, H.dialog);
     camKeys(rt, [[trs, [780, 860, "p"]]]);
-    cursor(rt.__cam, [[trs, 1180, 700], [trs + 0.25, 1180, 700], [trs + 0.8, 984, 930]], [[trs + 0.95, 984, 930]]);
-    caption("Answer in the thread", trs + 0.05, C.at[6] - 0.2);
-    const tdg = trs + 1.3;
-    T.resolve = tdg + 0.9;
+    clickOn(rt.__cam, [1180, 700], [984, 930], H.resolveClick, 0.5);
+    caption("Answer in the thread", H.resolveTyped, H.email - 0.1);
+    T.resolve = H.resolve;
     const dlg = card([img("s6_resolve_dialog")]);
-    show(dlg, tdg, tdg + 1.35, "fade", "push");
+    const tdg = onBeat(dlg, H.dialog, H.thread3, "fade", "push", "push");
     camKeys(dlg, [[tdg, [800, 500, "p"]]]);
-    cursor(dlg.__cam, [[tdg, 760, 760], [tdg + 0.2, 760, 760], [tdg + 0.75, 936, 684]], [[T.resolve, 936, 684]]);
-    const tf = tdg + 1.15;
+    clickOn(dlg.__cam, [760, 760], [936, 684], H.resolve);
     const th3 = thread([M_JORDAN, { divider: "4 replies" }, M_ACK, M_ASK, M_REPLY, M_RESOLVE]);
-    show(th3, tf, C.at[6] - 0.15, "push", "push");
-    fadeIn(th3.__els[5], tf + 0.5, 0.45, 18);
-    autoscroll(th3, 5, tf + 0.35);
-    autoscroll(th2, 4, tt + 1.25);
+    onBeat(th3, H.thread3, H.email, "push", "push", "push");
+    fadeIn(th3.__els[5], H.resolution - 0.05, 0.45, 18);
+    autoscroll(th3, 5, H.resolution - 0.15);
 
     // --- The email scenario: recorded from Gmail, processed in the Assistant.
-    const tE = C.at[6] - 0.25;
-    T.email = tE;
+    T.email = H.email;
     const mail = mailCard();
-    show(mail, tE, tE + 2.2, "push", "push");
-    fadeIn(mail.__m[0], tE + 0.35, 0.4, 18);
-    fadeIn(mail.__m[1], tE + 1.2, 0.4, 18);
-    caption("Or by email", tE + 0.3, tE + 4.0);
-    const tq2 = tE + 1.8;
+    onBeat(mail, H.email, H.emailRequest, "push", "push", "push");
+    fadeIn(mail.__m[0], H.emailMsg - 0.05, 0.4, 18);
+    fadeIn(mail.__m[1], H.emailAck - 0.05, 0.4, 18);
+    caption("Or by email", H.email + 0.2, H.composer - 0.1);
     const er = card([img("e_request")]);
-    show(er, tq2, tq2 + 2.15, "push", "fade");
-    camKeys(er, [[tq2, [800, 500, "w"]], [tq2 + 0.55, [800, 500, "w"]], [tq2 + 1.05, [1200, 300, "p"]]]);
-    glow(er.__cam, { x: 1171, y: 428, w: 266, h: 70 }, tq2 + 0.75, tq2 + 2.3);
-    glow(er.__cam, { x: 1171, y: 502, w: 266, h: 46 }, tq2 + 0.95, tq2 + 2.3);
-    cursor(er.__cam, [[tq2, 1050, 640], [tq2 + 1.15, 1050, 640], [tq2 + 1.75, 1393, 36]], [[tq2 + 1.88, 1393, 36]]);
-    const tc = tq2 + 2.15;
+    const tq2 = onBeat(er, H.emailRequest, H.composer, "push", "fade");
+    camKeys(er, [[tq2, [800, 500, "w"]], [H.emailGlow - 0.35, [800, 500, "w"]], [H.emailGlow + 0.15, [1200, 300, "p"]]]);
+    glow(er.__cam, { x: 1171, y: 428, w: 266, h: 70 }, H.emailGlow, H.composer);
+    glow(er.__cam, { x: 1171, y: 502, w: 266, h: 46 }, H.emailGlow + 0.2, H.composer);
+    clickOn(er.__cam, [1050, 640], [1393, 36], H.process, 0.6);
     const ec = card([img("e_composer")]);
-    show(ec, tc, tc + 1.5, "fade", "fade");
+    const tc = onBeat(ec, H.composer, H.chat);
     camKeys(ec, [[tc, [930, 500, L.zChat]]]);
-    glow(ec.__cam, { x: 524, y: 446, w: 186, h: 24 }, tc + 0.25, tc + 1.6, 4);
-    cursor(ec.__cam, [[tc, 1150, 700], [tc + 0.5, 1150, 700], [tc + 1.05, 1322, 539]], [[tc + 1.18, 1322, 539]]);
-    caption("Analyse it in the Assistant", tc + 0.05, tc + 3.0);
-    const tt2 = tc + 1.5;
+    glow(ec.__cam, { x: 524, y: 446, w: 186, h: 24 }, H.composer + 0.15, H.chat, 4);
+    clickOn(ec.__cam, [1150, 700], [1322, 539], H.send, 0.5);
+    caption("Analyse it in the Assistant", H.composer, H.changes - 0.1);
     const et = card([img("e_chat_top")]);
-    show(et, tt2, tt2 + 1.5, "fade", "fade");
-    camKeys(et, [[tt2, [930, 330, L.zChat]], [tt2 + 1.5, [930, 430, L.zChat]]]);
-    glow(et.__cam, { x: 508, y: 420, w: 842, h: 128 }, tt2 + 0.45, tt2 + 1.6);
-    const tg = tt2 + 1.5;
+    const tt2 = onBeat(et, H.chat, H.changes);
+    camKeys(et, [[tt2, [930, 330, L.zChat]], [H.changes, [930, 430, L.zChat]]]);
+    glow(et.__cam, { x: 508, y: 420, w: 842, h: 128 }, H.chat + 0.4, H.changes + 0.1);
     const eg = card([img("e_chat_changes")]);
-    show(eg, tg, tg + 1.25, "fade", "fade");
+    const tg = onBeat(eg, H.changes, H.dpa);
     // The first change's own View opens the document at that change.
     const egMeta = shotMeta.e_chat_changes || {};
     const v1 = egMeta.view ? [egMeta.view.x + egMeta.view.w / 2, egMeta.view.y + egMeta.view.h / 2] : [1310, 395];
     camKeys(eg, [[tg, [930, Math.max(500, v1[1] - 60), L.zChat]]]);
-    if (egMeta.view) glow(eg.__cam, { x: 524, y: v1[1] - 150, w: 812, h: 175 }, tg + 0.2, tg + 1.3);
-    cursor(eg.__cam, [[tg, 1120, v1[1] + 160], [tg + 0.35, 1120, v1[1] + 160], [tg + 0.9, ...v1]], [[tg + 1.03, ...v1]]);
-    caption("Redline with tracked changes", tg + 0.05, C.at[7] - 0.2);
-    const td2 = tg + 1.25;
+    if (egMeta.view) glow(eg.__cam, { x: 524, y: v1[1] - 150, w: 812, h: 175 }, H.changes + 0.2, H.dpa);
+    clickOn(eg.__cam, [1120, v1[1] + 160], v1, H.view, 0.55);
+    caption("Redline with tracked changes", H.changes, H.dashboard - 0.1);
     const edoc = card([img("e_doc")]);
-    show(edoc, td2, C.at[7] - 0.15, "fade", "push");
+    const td2 = onBeat(edoc, H.dpa, H.dashboard, "fade", "push", "push");
     const dpaBlocks = revisionBlocks("e_doc", 3);
     const dpaFocus = dpaBlocks.length ? [1202, dpaBlocks[0].y + dpaBlocks[0].h / 2 + 120] : [1202, 430];
-    camKeys(edoc, [[td2, [1200, 450, "w"]], [td2 + 0.2, [1200, 450, "w"]], [td2 + 0.8, [...dpaFocus, 1.45 * (L.zp / 1.3)]]]);
-    dpaBlocks.forEach((b, i) => glow(edoc.__cam, b, td2 + 0.75 + i * 0.2, null, 4));
+    camKeys(edoc, [[td2, [1200, 450, "w"]], [H.dpaGlow - 0.45, [1200, 450, "w"]], [H.dpaGlow + 0.1, [...dpaFocus, 1.45 * (L.zp / 1.3)]]]);
+    dpaBlocks.forEach((b, i) => glow(edoc.__cam, b, H.dpaGlow + i * 0.18, null, 4));
 
-    // --- Beat 7: oversight
-    const t7 = C.at[7] - 0.2;
-    T.b7 = t7;
+    // --- Beat 7: oversight. The counts, then the workload, into the end card's downbeat.
     const dash = card([img("s7_dashboard")]);
-    show(dash, t7, C.endcard + 0.15, "push", "fall");
-    const v7 = C.at[7];
-    const d7 = C.d7 || { open: v7 + 0.45, overdue: v7 + 1.35, load: v7 + 2.4 };
-    // Counts on "open" and "overdue", across the weekly chart, then the workload on "carrying the load".
+    const t7 = onBeat(dash, H.dashboard, C.endcard, "push", "fade", "fall");
+    T.b7 = t7;
     camKeys(dash, [
-        [t7, [800, 500, "w"]], [d7.open - 0.55, [800, 500, "w"]],
-        [d7.open + 0.05, [604, 160, "p"]], [d7.overdue + 0.45, [604, 160, "p"]],
-        [d7.load + 0.15, [1256, 330, "p"]], [d7.load + 0.45, [1256, 330, "p"]],
-        [d7.load + 1.25, L.dashEnd],
+        [t7, [800, 500, "w"]], [H.counts - 0.35, [800, 500, "w"]],
+        [H.counts + 0.15, [604, 160, "p"]], [H.workload - 0.1, [604, 160, "p"]],
+        [H.workload + 0.6, L.dashEnd],
     ]);
-    glow(dash.__cam, { x: 287, y: 77, w: 199, h: 102 }, d7.open, d7.overdue + 0.9);
-    glow(dash.__cam, { x: 722, y: 77, w: 199, h: 102 }, d7.overdue, d7.overdue + 1.0);
-    glow(dash.__cam, { x: 287, y: 489, w: 1286, h: 178 }, d7.load + 1.05);
-    caption("See the whole queue", t7 + 0.35, C.endcard - 0.05);
+    glow(dash.__cam, { x: 287, y: 77, w: 199, h: 102 }, H.counts, H.workload + 0.2);
+    glow(dash.__cam, { x: 722, y: 77, w: 199, h: 102 }, H.overdue, H.workload + 0.2);
+    glow(dash.__cam, { x: 287, y: 489, w: 1286, h: 178 }, H.load - 0.1);
+    caption("See the whole queue", H.dashboard + 0.2, C.endcard - 0.05);
 
     // --- Beat 8: end card. The MikeGC wordmark, "Sponsored by" and General Legal's logo.
     const e = C.endcard;

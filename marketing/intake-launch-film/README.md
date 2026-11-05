@@ -24,9 +24,34 @@ the steps below.
 | 8. Oversight | 0:58 | The dashboard: counts, the weekly chart and the workload table |
 | 9. End card | 1:03 | The MikeGC wordmark, with *Sponsored by* and General Legal's logo beneath it |
 
-`film/cues.json` holds the exact times: the beat schedule, the four chord
-landings, the highlight cues, the end-card splice and the film's length
-(1:09.55).
+`film/cues.json` holds the exact times: the four chord landings, the end-card
+splice, the film's length (1:09.55) and `hits`, the musical moment each cut,
+entrance, message and click lands on.
+
+## Timed to the music
+
+Every change of shot, every message that pops in and every cursor click lands
+on something you can hear. `audio/scripts/accents.py` finds the recording's
+accents (onsets whose level jumps by 5 dB or more), `audio/scripts/beat_grid.py`
+places every beat of bars 1 to 44 from the score alignment
+(`audio/music/score_alignment.json`), and `film/make_cues.py` snaps each
+planned moment to the nearest of those or of the chords and downbeats the
+analysis confirmed, failing if none is within 0.12 seconds. For example:
+
+| Moment | Time | In the music |
+| --- | --- | --- |
+| The Mike logo lands | 0:02.90 | Wave 1's first accented chord |
+| "Intake" lands | 0:09.37 | Wave 3's first chord |
+| The channel logos | 0:10.99–0:13.20 | Waves 4 and 5's chords, then bar 9's forte chord |
+| The request page | 0:22.91 | The sforzando chord under bar 14's fermata |
+| The triage rules, then their glow | 0:27.93, 0:28.15 | Wave 6's two chords |
+| The New Intake Request toast | 0:31.12 | Wave 7's first chord |
+| The email arrives | 0:48.92 | Accent at bar 29 |
+| The dashboard | 0:59.90 | Bar 35's downbeat |
+| The end card | 1:03.55 | Bar 37's downbeat, cut to bar 199 |
+
+A cut is centred on its hit: a crossfade starts 0.1 s before it and a push
+0.05 s before. The cursor arrives 0.13 s early so the click lands on the beat.
 `film/make_cues.py` writes it from the music analysis and the schedule.
 
 ## Where it departs from the script
