@@ -315,6 +315,12 @@ cancelled they are read-only again, except to whoever uploaded them. A new
 version of a document MikeGC recorded stays under the organization's
 `intake-<organization ID>` folder.
 
+Queued preprocessing skips resolved or
+cancelled requests. If the request changes while a model is working, its stale
+results are discarded. Automatic document edits and closure serialize in the
+database: an edit commits completely before closure, or a closure that commits
+first prevents the edit. Reopening does not authorize results from before closure.
+
 ### Processing a request in the Assistant
 
 **Process in Assistant**, in the request page's header, opens a new Assistant
@@ -640,3 +646,5 @@ raw body Slack signs, so `API_PUBLIC_URL` can be the usual same-origin
 gateway. For local development, run a tunnel and set
 `API_PUBLIC_URL` to it, as for the Slack connector in
 [connectors.md](connectors.md).
+
+The guarded preprocessing edit commit is installed by migration `20261105_01_intake_preprocess_edits.sql`, after the intake notification migration.

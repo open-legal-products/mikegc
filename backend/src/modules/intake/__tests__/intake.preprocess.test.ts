@@ -106,6 +106,8 @@ beforeEach(() => {
           org_id: org,
           subject: "Review the Supplier Co NDA",
           description: "Jane needs the NDA reviewed before Friday.",
+          state: "submitted",
+          version: 1,
         },
       ],
       intake_request_documents: [
@@ -465,5 +467,45 @@ describe("what preprocessing reads of a long thread", () => {
     expect(playbookContext({ subject: "S", description: "D", thread: "T" })).toBe(
       "Subject: S\n\nD\n\n--- Thread with the requester ---\nT",
     );
+  });
+});
+
+describe("closed and superseded preprocessing", () => {
+  it.each(["resolved", "cancelled"])("skips a queued %s request before model or document reads", async (state) => {
+    Object.assign(memory.rows("intake_requests")[0]!, { state, version: 2 });
+    mocks.completeText.mockResolvedValue(JSON.stringify({ answer: "Late result", edits: [] }));
+    expect(await handleIntakePreprocess(memory.db, job({ kind: "workflow", id: "wf-1" })))
+      .toMatchObject({ skipped: "closed" });
+    expect(mocks.getEffectiveApiKeys).not.toHaveBeenCalled();
+    expect(mocks.loadOrgDocument).not.toHaveBeenCalled();
+    expect(mocks.completeText).not.toHaveBeenCalled();
+    expect(mocks.applyOrgTrackedEdits).not.toHaveBeenCalled();
+    expect(memory.rows("intake_messages")).toHaveLength(0);
+  });
+
+  it.each(["resolved", "cancelled", "reopened"])("discards a model result after request is %s", async (state) => {
+    mocks.completeText.mockImplementation(async () => {
+      Object.assign(memory.rows("intake_requests")[0]!, {
+        state: state === "reopened" ? "submitted" : state,
+        version: state === "reopened" ? 3 : 2,
+      });
+      return JSON.stringify({ answer: "Shorten term", edits: [{ document: 1, find: "five years", replace: "two years" }] });
+    });
+    expect(await handleIntakePreprocess(memory.db, job({ kind: "workflow", id: "wf-1" })))
+      .toMatchObject({ skipped: "superseded" });
+    expect(mocks.completeText).toHaveBeenCalledTimes(1);
+    expect(mocks.applyOrgTrackedEdits).not.toHaveBeenCalled();
+    expect(memory.rows("intake_messages")).toHaveLength(0);
+  });
+
+  it("stops a playbook run after closure instead of editing or reviewing later documents", async () => {
+    mocks.reviewWithPlaybook.mockImplementation(async () => {
+      Object.assign(memory.rows("intake_requests")[0]!, { state: "resolved", version: 2 });
+      return { summary: "Shorten term", findings: [] };
+    });
+    expect(await handleIntakePreprocess(memory.db, job({ kind: "playbook", id: "pb-1" })))
+      .toMatchObject({ skipped: "superseded" });
+    expect(mocks.reviewWithPlaybook).toHaveBeenCalledTimes(1);
+    expect(mocks.applyOrgTrackedEdits).not.toHaveBeenCalled();
   });
 });

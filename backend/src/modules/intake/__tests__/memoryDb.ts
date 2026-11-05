@@ -456,7 +456,7 @@ export function requesterLoopRpc(): Record<string, RpcHandler> {
         request.state === "needs_information" ? (assignee ? "in_review" : "submitted") : request.state;
       if (assignee !== (request.assignee_id ?? null))
         event(memory, { request_id: request.id, kind: "assign", automated: true, assignee_id: assignee, to_state: state });
-      Object.assign(request, { clarify_stage: null, assignee_id: assignee, state });
+      Object.assign(request, { clarify_stage: null, assignee_id: assignee, state, version: Number(request.version ?? 1) + 1 });
       return { data: true, error: null };
     },
     intake_reply_automated: (args, memory) => {

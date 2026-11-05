@@ -115,7 +115,7 @@ describe("organization-owned documents", () => {
       versionCount: 1,
     };
     const edits = [{ find: "five", replace: "two", context_before: "", context_after: "" }];
-    await applyOrgTrackedEdits({ db, orgId: org, doc, author: "MikeGC", edits });
+    await applyOrgTrackedEdits({ db, orgId: org, request: { id: "request", version: 1 }, doc, author: "MikeGC", edits });
     expect(mocks.writeTrackedEdits).toHaveBeenCalledWith({
       documentId: "doc",
       storageOwner: "intake-org-a",
@@ -123,6 +123,7 @@ describe("organization-owned documents", () => {
       edits,
       db,
       expectedVersion: { id: "v1", storagePath: "path" },
+      intakeRequest: { orgId: org, id: "request", version: 1 },
     });
   });
 });
