@@ -155,6 +155,8 @@ describe.skipIf(!container)("intake real PostgreSQL transactions", () => {
     sql(migration("20261104_07_intake_delivery_message.sql"));
     sql(migration("20261104_08_intake_notifications.sql"));
     sql(migration("20261104_08_intake_notifications.sql"));
+    sql(migration("20261104_09_intake_edit_preserves_unread.sql"));
+    sql(migration("20261104_09_intake_edit_preserves_unread.sql"));
   }, 90000);
   afterAll(() => {
     execFileSync("docker", [
@@ -1067,6 +1069,7 @@ describe.skipIf(!container)("intake real PostgreSQL transactions", () => {
     sql(migration("20261104_06_intake_always_clarify.sql"));
     sql(migration("20261104_07_intake_delivery_message.sql"));
     sql(migration("20261104_08_intake_notifications.sql"));
+    sql(migration("20261104_09_intake_edit_preserves_unread.sql"));
   };
   it("backfills legacy requests from their creator's profile", () => {
     beforeReplay();
@@ -1429,6 +1432,95 @@ describe.skipIf(!container)("intake real PostgreSQL transactions", () => {
     ).toBe("f");
     // The acknowledgement goes once, with the questions.
     expect(sql(`select public.intake_acknowledge_automated(${q(10)},${q(21)},${q(320)})`)).toBe(uid(300));
+  });
+  it.each([
+    { field: "date", stage: "rule" },
+    { field: "details", stage: "readiness" },
+  ])("metadata edits ($field) preserve unread replies while stopping the $stage stage", ({ field, stage }) => {
+    thread(21, 70, q(3));
+    ask(300, stage);
+    reply(400, 410);
+    const before = view();
+    expect(before).toMatchObject({ new_reply: true, state: "needs_information", clarify_stage: stage });
+    expect(list(2).requests[0]).toMatchObject({ new_reply: true, unread_replies: 1 });
+    const seen = sql(`select coalesce(reply_seen_at::text,'-') from public.intake_requests where id=${q(21)}`);
+    const text = (value: string | null) => value === null ? "null" : `'${value.replaceAll("'", "''")}'`;
+    const edit = `select public.intake_edit_request(${q(10)},${q(3)},${q(500)},${q(21)},${before.version},` +
+      `${text(before.subject)},${text(field === "details" ? "Corrected description" : before.description)},` +
+      `${text(before.requester_name)},${text(before.requester_email)},${text(before.requester_team)},'2026-12-01');`;
+    expect(json(edit)).toMatchObject({ applied_version: before.version + 1, preprocess: stage === "readiness" });
+    expect(view()).toMatchObject({ new_reply: true, state: "in_review", clarify_stage: null });
+    expect(clarify()).toBe("-:1:true");
+    expect(ask(320, stage)).toBe("f");
+    expect(sql(`select coalesce(reply_seen_at::text,'-') from public.intake_requests where id=${q(21)}`)).toBe(seen);
+    expect(list(2).requests[0]).toMatchObject({ new_reply: true, unread_replies: 1 });
+    expect(list(2, ",p_new_reply=>true").requests.map((r: { id: string }) => r.id)).toEqual([uid(21)]);
+    // Replaying the metadata command must neither clear unread nor stop twice.
+    expect(json(edit)).toMatchObject({ replayed: true, applied_version: before.version + 1 });
+    expect(sql(`select count(*) from public.intake_events where request_id=${q(21)} and kind='edited'`)).toBe("1");
+    expect(sql(`select count(*) from public.intake_events where request_id=${q(21)} and kind='stop_asking'`)).toBe("1");
+    expect(list(2).requests[0]).toMatchObject({ new_reply: true, unread_replies: 1 });
+  });
+  it("metadata command retries preserve a newer reply until its explicit seen watermark", () => {
+    thread();
+    reply(400, 410);
+    const first = view();
+    const edit = `select public.intake_edit_request(${q(10)},${q(3)},${q(500)},${q(21)},${first.version},` +
+      `'Supplier NDA','Summary','Jane Business',null,null,'2026-12-01');`;
+    json(edit);
+    // A reply arrives after the Messages panel's snapshot was read.
+    reply(401, 411, 21, "The deadline has changed.");
+    const latest = view();
+    expect(latest.last_reply_at).not.toBe(first.last_reply_at);
+    expect(json(edit)).toMatchObject({ replayed: true });
+    expect(list(2).requests[0]).toMatchObject({ new_reply: true, unread_replies: 2 });
+    sql(`select public.intake_mark_reply_seen(${q(10)},${q(3)},${q(21)},'${first.last_reply_at}')`);
+    expect(view()).toMatchObject({ new_reply: true });
+    expect(list(2).requests[0]).toMatchObject({ new_reply: true, unread_replies: 1 });
+    sql(`select public.intake_mark_reply_seen(${q(10)},${q(3)},${q(21)},'${latest.last_reply_at}')`);
+    expect(view()).toMatchObject({ new_reply: false });
+    expect(list(2).requests[0]).toMatchObject({ new_reply: false, unread_replies: 0 });
+    // A delayed older seen request cannot move the watermark backwards.
+    sql(`select public.intake_mark_reply_seen(${q(10)},${q(3)},${q(21)},'${first.last_reply_at}')`);
+    expect(json(edit)).toMatchObject({ replayed: true });
+    expect(view()).toMatchObject({ new_reply: false });
+    expect(sql(`select reply_seen_at=last_reply_at from public.intake_requests where id=${q(21)}`)).toBe("t");
+  });
+  it("unread watermark races keep a newer reply new across concurrent PostgreSQL connections", async () => {
+    thread();
+    reply(400, 410);
+    const first = view();
+    sql(`select public.intake_edit_request(${q(10)},${q(3)},${q(500)},${q(21)},1,'Supplier NDA','Summary','Jane Business',null,null,'2026-12-01');`);
+    sql(`insert into public.intake_inbound(id,org_id,source,kind,external_id,payload,request_id)
+      values(${q(401)},${q(10)},'slack','reply','C1:401','{}',${q(21)})`);
+    const results = await Promise.all([
+      parallel(`select public.intake_reply_automated(${q(10)},${q(401)},${q(411)},'Updated deadline','{}')`),
+      parallel(`select public.intake_mark_reply_seen(${q(10)},${q(3)},${q(21)},'${first.last_reply_at}')`),
+    ]);
+    expect(results.map((r) => r.code)).toEqual([0, 0]);
+    expect(list(2).requests[0]).toMatchObject({ new_reply: true, unread_replies: 1 });
+    expect(sql(`select reply_seen_at<last_reply_at from public.intake_requests where id=${q(21)}`)).toBe("t");
+  });
+  it("unread edit boundaries still reject closed, foreign and stale edits", () => {
+    thread();
+    reply(400, 410);
+    const edit = (actor = 3, version = 1, request = 21) =>
+      `select public.intake_edit_request(${q(10)},${q(actor)},${q(500)},${q(request)},${version},'Supplier NDA','Summary','Jane Business',null,null,null);`;
+    expect(() => sql(edit(6))).toThrow(/P0002/);
+    expect(() => sql(edit(3, 1, 99))).toThrow(/P0002/);
+    expect(() => sql(edit(3, 0))).toThrow(/P0001/);
+    expect(() => sql(`select public.intake_mark_reply_seen(${q(10)},${q(6)},${q(21)})`)).toThrow(/P0002/);
+    expect(view()).toMatchObject({ new_reply: true });
+    const first = view();
+    sql(`select public.intake_mark_reply_seen(${q(10)},${q(3)},${q(21)},'${first.last_reply_at}')`);
+    expect(view()).toMatchObject({ new_reply: false });
+    // Closing a request keeps the existing edit rejection; later replies do not reopen it.
+    sql(cmd("resolve", 3, 501, 1, ",'Done'", 21));
+    reply(401, 411);
+    expect(() => sql(edit(3, 2))).toThrow(/P0001/);
+    expect(() => sql(edit(3, 1))).toThrow(/P0001/);
+    expect(view()).toMatchObject({ new_reply: true, state: "resolved", version: 2 });
+    expect(sql(`select count(*) from public.intake_commands where command_id=${q(500)}`)).toBe("0");
   });
   it("asks at most two rounds, and never once a lawyer has acted", () => {
     thread();

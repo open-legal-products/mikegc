@@ -11371,13 +11371,13 @@ begin
   perform public.intake_check_details(p_subject, p_description, p_requester_name,
     p_requester_email, p_requester_team);
   -- Editing stops MikeGC asking; a request only it was waiting on goes back
-  -- to work, as Stop asking does.
+  -- to work, as Stop asking does. Metadata changes do not mean the
+  -- requester replies were read; their explicit seen watermark stays intact.
   next_state := case when r.clarify_stage is not null and r.state = 'needs_information'
     then case when r.assignee_id is null then 'submitted' else 'in_review' end else r.state end;
   update public.intake_requests set subject = p_subject, description = p_description,
     requester_name = p_requester_name, requester_email = p_requester_email, requester_team = p_requester_team,
     requested_by_date = p_date, clarify_stage = null, clarify_stopped = true, state = next_state,
-    reply_seen_at = case when last_reply_at is null then reply_seen_at else now() end,
     version = version + 1, updated_at = now()
     where id = p_request;
   insert into public.intake_events(org_id, request_id, actor_id, kind, from_state, to_state, assignee_id)
@@ -12912,5 +12912,6 @@ insert into public.schema_migrations (filename) values
   ('20261104_05_intake_unread_reply_count.sql'),
   ('20261104_06_intake_always_clarify.sql'),
   ('20261104_07_intake_delivery_message.sql'),
-  ('20261104_08_intake_notifications.sql')
+  ('20261104_08_intake_notifications.sql'),
+  ('20261104_09_intake_edit_preserves_unread.sql')
 on conflict (filename) do nothing;
