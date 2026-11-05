@@ -2,12 +2,19 @@
 // document here is fictional. The state is mutable so a capture can move the
 // Acme request through the requester loop.
 
-const ORG = "org-legal";
+const ORG = "org-alia";
 const NOW = new Date("2026-11-09T10:16:00Z"); // Mon 9 Nov 2026, London
 
-const PRIYA = { user_id: "u-priya", display_name: "Priya Shah", email: "priya.shah@example.com", profile_photo: null };
-const SAM = { user_id: "u-sam", display_name: "Sam Ortiz", email: "sam.ortiz@example.com", profile_photo: null };
-const DANA = { user_id: "u-dana", display_name: "Dana Kim", email: "dana.kim@example.com", profile_photo: null };
+// Profile photos: public-domain, AI-generated faces in avatars/ (see avatars/avatars.json).
+const fs = require("fs");
+const path = require("path");
+const photo = (key) => {
+    const file = path.join(__dirname, "avatars", `${key}.jpg`);
+    return fs.existsSync(file) ? `data:image/jpeg;base64,${fs.readFileSync(file).toString("base64")}` : null;
+};
+const PRIYA = { user_id: "u-priya", display_name: "Priya Shah", email: "priya@alia.ai", profile_photo: photo("priya") };
+const SAM = { user_id: "u-sam", display_name: "Sam Ortiz", email: "sam@alia.ai", profile_photo: photo("sam") };
+const DANA = { user_id: "u-dana", display_name: "Dana Kim", email: "dana@alia.ai", profile_photo: photo("dana") };
 const MEMBERS = [PRIYA, SAM, DANA];
 
 const iso = (d) => d.toISOString();
@@ -67,7 +74,8 @@ const CLOSED = [
     ["Duplicate: Acme NDA", "Jordan Lee", "Sales", "cancelled", null, 35],
 ];
 
-const email = (name) => name.toLowerCase().replace(/[^a-z ]/g, "").replace(/ /g, ".") + "@example.com";
+// Everyone works at Alia, a fictional AI startup: first name @alia.ai.
+const email = (name) => name.split(" ")[0].toLowerCase() + "@alia.ai";
 
 let requests = [];
 let n = 0;
@@ -97,7 +105,7 @@ const ACME_CREATED = new Date("2026-11-09T10:14:00Z");
 const acme = {
     id: ACME_ID, org_id: ORG, subject: "Review Acme's NDA",
     description: "Can someone review Acme's NDA by Friday? It's attached.\n\nPosted by Jordan Lee in #legal-requests.",
-    requester_name: "Jordan Lee", requester_email: "jordan.lee@example.com", requester_team: "Sales",
+    requester_name: "Jordan Lee", requester_email: "jordan@alia.ai", requester_team: "Sales",
     requested_by_date: "2026-11-13", state: "in_review", version: 2,
     assignee_id: PRIYA.user_id, assignee_name: PRIYA.display_name,
     created_at: iso(ACME_CREATED), updated_at: iso(new Date("2026-11-09T10:15:20Z")),
@@ -106,7 +114,7 @@ const acme = {
     clarify_rounds: 0, clarify_max_rounds: 2, last_reply_at: null,
     conversation: {
         source: "slack", channel_name: "legal-requests", team_name: null,
-        permalink: "https://example.slack.com/archives/C000/p000", mailbox: null, to: [], cc: [],
+        permalink: "https://alia.slack.com/archives/C000/p000", mailbox: null, to: [], cc: [],
         max_attachment_bytes: null, documents: true,
     },
 };
@@ -116,8 +124,8 @@ requests.unshift(acme);
 const BW_ID = "req-bw-dpa";
 const brightwater = {
     id: BW_ID, org_id: ORG, subject: "Brightwater DPA sign-off",
-    description: "Hi Legal,\n\nBrightwater sent over their DPA for the analytics rollout (attached). We need sign-off this week so they can start on Monday.\n\nThanks,\nMaya",
-    requester_name: "Maya Chen", requester_email: "maya.chen@example.com", requester_team: "Procurement",
+    description: "Hi Legal,\n\nBrightwater sent over their DPA for the product analytics rollout (attached). We need sign-off this week so they can start on Monday.\n\nThanks,\nMaya",
+    requester_name: "Maya Chen", requester_email: "maya@alia.ai", requester_team: "Procurement",
     requested_by_date: "2026-11-13", state: "in_review", version: 2,
     assignee_id: PRIYA.user_id, assignee_name: PRIYA.display_name,
     created_at: "2026-11-09T09:42:00Z", updated_at: "2026-11-09T09:42:30Z",
@@ -126,7 +134,7 @@ const brightwater = {
     clarify_rounds: 0, clarify_max_rounds: 2, last_reply_at: null,
     conversation: {
         source: "gmail", channel_name: null, team_name: null, permalink: null,
-        mailbox: "legal@example.com", to: ["maya.chen@example.com"], cc: [],
+        mailbox: "legal@alia.ai", to: ["maya@alia.ai"], cc: [],
         max_attachment_bytes: 25000000, documents: true,
     },
 };
@@ -136,18 +144,20 @@ const bwEvents = [
     { id: 12, kind: "assign", from_state: "submitted", to_state: "in_review", actor_id: null, actor_name: "MikeGC", assignee_name: "Priya Shah", created_at: "2026-11-09T09:42:04Z" },
 ];
 const bwDocuments = [{
-    document_id: "doc-bw-dpa", filename: "Brightwater_DPA.docx", file_type: "docx", size_bytes: 61440, status: "ready",
+    document_id: "doc-bw-dpa", filename: "Brightwater_DPA.docx", file_type: "docx", size_bytes: 71268, status: "ready",
     added_by_name: "Maya Chen", created_at: "2026-11-09T09:42:01Z", message_id: null, revised: false,
 }];
 
 const PREPROCESS_NOTE = [
     "I reviewed Acme_NDA.docx against the NDA playbook and marked it up with tracked changes.",
     "",
-    "Mutuality: the draft protects only Acme's information. The playbook asks for a mutual NDA when both sides share information, so I made the obligations mutual. Worth confirming with Jordan what we'll share.",
+    "Mutuality: Acme's form is one-way and protects only Acme's information. The playbook asks for a mutual NDA when both sides share information, so I made the obligations mutual throughout (sections 1 to 13). Worth confirming with Jordan what we'll share.",
     "",
-    "Term: confidentiality runs for 7 years. The playbook allows 3, so I changed it to 3.",
+    "Term: obligations run for 7 years after the last disclosure (section 8.2). The playbook allows 3, so I changed it to 3. Trade secrets stay protected for as long as they're trade secrets.",
     "",
-    "Residuals: clause 6 lets Acme use anything its people remember. The playbook rejects residuals clauses, so I deleted it.",
+    "Residuals: section 6 lets Acme use anything its people remember from our discussions. The playbook rejects residuals clauses, so I deleted it.",
+    "",
+    "No change needed: Delaware law and courts (section 12) and the ban on training models with the other side's information (section 2.1(d)) are within the playbook.",
 ].join("\n");
 
 let messages = [
@@ -163,7 +173,7 @@ let events = [
 ];
 const ORIGINAL_DOC = {
     document_id: "doc-acme-nda", filename: "Acme_NDA.docx",
-    file_type: "docx", size_bytes: 48213, status: "ready",
+    file_type: "docx", size_bytes: 52416, status: "ready",
     added_by_name: "Jordan Lee", created_at: "2026-11-09T10:14:02Z", message_id: null, revised: true,
 };
 let documents = [ORIGINAL_DOC];
@@ -180,7 +190,7 @@ function dashboard() {
     const per = (m) => {
         const mine = open.filter((r) => r.assignee_id === m.user_id);
         return {
-            assignee_id: m.user_id, name: m.display_name, photo: null,
+            assignee_id: m.user_id, name: m.display_name, photo: m.profile_photo,
             open: mine.length,
             waiting: mine.filter((r) => r.state === "needs_information").length,
             overdue: mine.filter((r) => r.requested_by_date && r.requested_by_date < today).length,
@@ -210,14 +220,14 @@ const RULES = [
 ];
 const automation = () => ({
     email: {
-        enabled: true, provider: "gmail", mailbox: "legal@example.com", allowed_domains: ["example.com"], from_name: "Legal",
+        enabled: true, provider: "gmail", mailbox: "legal@alia.ai", allowed_domains: ["alia.ai"], from_name: "Legal",
         graph: { tenant_id: null, client_id: null, secret_set: false }, notification_url: "",
         gmail: { client_id: "1234567890", key_set: true, deployment_key: true },
         status: { subscription_expires_at: null, last_read_at: "2026-11-09T10:15:00Z", error: null },
         needs_reconnect: false,
     },
-    slack: { enabled: true, events_url: "https://mikegc.example.com/api/intake/slack/events", configured: true, team_id: "T000", team_name: "Example", bot_user_id: "U000", missing_scopes: [], message_events_seen: true },
-    teams: { enabled: true, events_url: "https://mikegc.example.com/api/intake/teams/messages", configured: true, app_id: "app", tenant_id: "tenant", files_access: true },
+    slack: { enabled: true, events_url: "https://mikegc.alia.ai/api/intake/slack/events", configured: true, team_id: "T000", team_name: "Alia", bot_user_id: "U000", missing_scopes: [], message_events_seen: true },
+    teams: { enabled: true, events_url: "https://mikegc.alia.ai/api/intake/teams/messages", configured: true, app_id: "app", tenant_id: "tenant", files_access: true },
     models: { available: ["claude-haiku-5-5", "claude-sonnet-5-5"], triage: "claude-haiku-5-5", triage_available: true, preprocessing: "claude-sonnet-5-5", preprocessing_available: true },
     rules: RULES,
     recent: [],
@@ -227,7 +237,7 @@ const automation = () => ({
 let pendingNotifications = [];
 function queueNewRequestToast() {
     pendingNotifications.push({
-        workspace: ORG, workspace_name: "Legal", request_id: ACME_ID, subject: acme.subject,
+        workspace: ORG, workspace_name: "Alia", request_id: ACME_ID, subject: acme.subject,
         kind: "new_request", change: "assign", actor_name: null, automated: true, channel: null,
         more: 0, created_at: "2026-11-09T10:15:21Z",
     });
@@ -255,7 +265,7 @@ const steps = {
         messages.push({
             id: "msg-r", kind: "reply", body: "Mutual. We're sharing roadmaps.",
             author_id: null, author_name: "Jordan Lee", created_at: "2026-11-09T10:24:00Z",
-            external_author: { name: "Jordan Lee", email: "jordan.lee@example.com", source: "slack", user_id: "U-JORDAN" },
+            external_author: { name: "Jordan Lee", email: "jordan@alia.ai", source: "slack", user_id: "U-JORDAN" },
             delivery: null,
         });
         events.push({ id: 4, kind: "resume", from_state: "needs_information", to_state: "in_review", actor_id: null, actor_name: null, assignee_name: null, created_at: "2026-11-09T10:24:00Z" });
@@ -303,8 +313,8 @@ function summary(r) {
 }
 
 const PROFILE = {
-    displayName: "Priya Shah", organisation: "Example", jurisdiction: "England and Wales",
-    practiceSetting: "in_house", professionalTitle: null, practiceAreas: ["Commercial"], profilePhoto: null,
+    displayName: "Priya Shah", organisation: "Alia", jurisdiction: "England and Wales",
+    practiceSetting: "in_house", professionalTitle: null, practiceAreas: ["Commercial"], profilePhoto: PRIYA.profile_photo,
     onboardingVersion: 99, onboardingComplete: true, passwordSet: true, messageCreditsUsed: 0,
     creditsResetDate: "2026-12-01", creditsRemaining: 100, tier: "pro", titleModel: null, tabularModel: null,
     memoryCuratorModel: null, subagentModel: null, subagentReasoning: null, lastSelectedChatModel: "claude-opus-5-5",
@@ -333,20 +343,20 @@ const BW_MESSAGES = [
         content: [
             { type: "doc_read", filename: "Brightwater_DPA.docx", document_id: "doc-bw-dpa", version_id: "v1", version_number: 1 },
             { type: "content", text: [
-                "**What's being asked.** Maya needs sign-off on Brightwater's DPA for the analytics rollout by Friday 13 November, so Brightwater can start on Monday.",
+                "**What's being asked.** Maya needs sign-off on Brightwater's data processing addendum for the product analytics rollout by Friday 13 November, so Brightwater can start on Monday.",
                 "",
                 "**Main issues**",
-                "1. **Sub-processors (clause 2).** Brightwater can add sub-processors at its discretion. We should get notice and a right to object.",
-                "2. **Breach notice (clause 3).** \"Without undue delay\" has no outer limit. 48 hours gives us time to meet our own 72-hour deadline.",
-                "3. **Liability (clause 5).** Data protection claims fall under the services agreement's general cap. A separate cap of twice the annual fees is more usual.",
+                "1. **Sub-processors (section 6.2).** Brightwater can add sub-processors at its discretion. We should get 30 days' notice, a right to object and a way out if we can't agree.",
+                "2. **Breach notice (section 8.1).** \"Without undue delay\" has no outer limit. 48 hours leaves us time to meet our own 72-hour deadline under the GDPR.",
+                "3. **Liability (section 13.1).** Data protection claims fall under the Agreement's general cap. A separate cap of twice the annual fees is more usual for analytics data.",
                 "",
-                "International transfers (clause 4) rely on the Standard Contractual Clauses, which is fine as drafted.",
+                "International transfers (section 10) use the Standard Contractual Clauses and the UK Addendum, and the security measures in Annex 2 include SOC 2 Type II, encryption and MFA. Both are fine as drafted.",
             ].join("\n") },
             { type: "doc_edited", filename: "Brightwater_DPA.docx", document_id: "doc-bw-dpa", version_id: "v2", version_number: 2, download_url: "",
               annotations: [
-                ann(1, "at its discretion", "after giving the Customer at least 30 days' written notice, during which the Customer may object on reasonable grounds", "The Processor may engage sub-processors ", ".", "Notice and a right to object"),
-                ann(2, "", " and in any event within 48 hours", "Personal Data Breach without undue delay", " after becoming aware of it.", "A fixed outer limit"),
-                ann(3, "is subject to the limitations in the Services Agreement", "for breach of this Agreement is capped at twice the fees paid in the 12 months before the claim", "The Processor's liability ", ".", "A separate cap for data protection"),
+                ann(1, "additional Sub-processors at its discretion", "an additional or replacement Sub-processor after giving Customer at least thirty (30) days' prior written notice, during which Customer may object on reasonable grounds relating to data protection. If Customer objects, the parties shall discuss its concerns in good faith and, if they cannot resolve them, Customer may terminate the affected Services without penalty", "Brightwater may engage ", ".", "Notice and a right to object"),
+                ann(2, "", ", and in any event within forty-eight (48) hours,", "Brightwater shall notify Customer without undue delay", " after becoming aware of a Personal Data Breach.", "A fixed outer limit"),
+                ann(3, "Each party's liability arising out of or in connection with this Addendum is subject to the limitations and exclusions of liability in the Agreement.", "Brightwater's aggregate liability arising out of or in connection with this Addendum shall not exceed two times (2x) the fees paid or payable by Customer under the Agreement in the twelve (12) months preceding the event giving rise to the claim. This limit is separate from, and in addition to, any limitation of liability in the Agreement.", "", "", "A separate cap for data protection"),
               ] },
             { type: "content", text: [
                 "I've made these three changes as tracked changes in Brightwater_DPA.docx.",
@@ -366,7 +376,7 @@ function handle(method, path, query, body) {
     const p = path.replace(/^\/api/, "");
     if (p === "/auth/session") return [200, { user: { id: PRIYA.user_id, email: PRIYA.email } }];
     if (p === "/user/profile") return [200, PROFILE];
-    if (p === "/orgs") return [200, [{ id: ORG, name: "Legal", created_by: PRIYA.user_id, role: "owner", member_count: 3, logo_updated_at: null }]];
+    if (p === "/orgs") return [200, [{ id: ORG, name: "Alia", created_by: PRIYA.user_id, role: "owner", member_count: 3, logo_updated_at: null }]];
     if (p === "/intake/notifications/claim") {
         const out = pendingNotifications;
         pendingNotifications = [];
@@ -412,15 +422,15 @@ function handle(method, path, query, body) {
         const name = dpa ? "Brightwater_DPA.docx" : "Acme_NDA.docx";
         const doc = {
             id: dm[1], user_id: PRIYA.user_id, project_id: null, filename: name, file_type: "docx",
-            storage_path: "x", pdf_storage_path: null, size_bytes: dpa ? 61440 : 48213, page_count: 1, structure_tree: null, status: "ready",
+            storage_path: "x", pdf_storage_path: null, size_bytes: dpa ? 71268 : 52416, page_count: dpa ? 7 : 4, structure_tree: null, status: "ready",
             created_at: dpa ? "2026-11-09T09:42:01Z" : "2026-11-09T10:14:02Z", updated_at: dpa ? "2026-11-09T10:19:40Z" : "2026-11-09T10:15:20Z",
             current_version_id: "v2", active_version_number: 2, latest_version_number: 2, can_edit: true, can_delete: false,
             owner_display_name: dpa ? "Maya Chen" : "Jordan Lee",
         };
         if (t === "") return [200, doc];
         if (t === "/versions") return [200, { current_version_id: "v2", versions: [
-            { id: "v2", version_number: 2, source: "assistant_edit", created_at: dpa ? "2026-11-09T10:19:40Z" : "2026-11-09T10:15:20Z", filename: name, file_type: "docx", size_bytes: dpa ? 61440 : 48213, page_count: 1 },
-            { id: "v1", version_number: 1, source: "upload", created_at: dpa ? "2026-11-09T09:42:01Z" : "2026-11-09T10:14:02Z", filename: name, file_type: "docx", size_bytes: dpa ? 58900 : 46120, page_count: 1 },
+            { id: "v2", version_number: 2, source: "assistant_edit", created_at: dpa ? "2026-11-09T10:19:40Z" : "2026-11-09T10:15:20Z", filename: name, file_type: "docx", size_bytes: dpa ? 71268 : 52416, page_count: dpa ? 7 : 4 },
+            { id: "v1", version_number: 1, source: "upload", created_at: dpa ? "2026-11-09T09:42:01Z" : "2026-11-09T10:14:02Z", filename: name, file_type: "docx", size_bytes: dpa ? 70112 : 49870, page_count: dpa ? 7 : 4 },
         ] }];
         if (t.startsWith("/file")) return [200, require("fs").readFileSync(require("path").join(__dirname, "docx", name)), "application/vnd.openxmlformats-officedocument.wordprocessingml.document"];
         if (t.startsWith("/url")) return [200, { url: "/api/single-documents/doc-acme-nda/file" }];

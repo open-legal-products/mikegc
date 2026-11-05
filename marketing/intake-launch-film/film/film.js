@@ -26,8 +26,8 @@ const LAYOUTS = {
         capY: 984, capSize: 36,
         wmSize: 120, sponsorsSize: 36, subSize: 36, subDy: 112,
         featureSize: 34, intakeSize: 120,
-        logoSize: 112, logoY: 300, logoXs: [330, 750, 1170, 1590],
-        bubble: { mode: "under", w: 380, font: 25, top: 392 },
+        logoSize: 112, logoY: 300, logoXs: [300, 740, 1180, 1620],
+        bubble: { mode: "under", w: 428, font: 25, top: 392 },
         queue: { w: 1180, rowH: 96, top: 300, font: 26 },
         thread: { w: 1200 },
         end: { wmY: 470, byY: 602, bySize: 24, glY: 656, glH: 44 },
@@ -234,6 +234,26 @@ function glow(cam, r, t0, t1, pad = 6) {
     A(g, "o", t1 ? [[t0, 0], [t0 + 0.4, 1, "o"], [t1 - 0.4, 1], [t1, 0]] : [[t0, 0], [t0 + 0.4, 1, "o"]]);
     return g;
 }
+// The tracked changes the capture found in a document shot, merged into
+// up to `max` blocks (runs on one line, then lines close together).
+function revisionBlocks(name, max = 3) {
+    const boxes = ((shotMeta[name] || {}).revisions || []).slice().sort((a, b) => a.y - b.y || a.x - b.x);
+    const lines = [];
+    for (const b of boxes) {
+        const l = lines.find((l) => Math.abs(l.y - b.y) < 6);
+        if (l) { const x2 = Math.max(l.x + l.w, b.x + b.w); l.x = Math.min(l.x, b.x); l.w = x2 - l.x; l.h = Math.max(l.h, b.h); }
+        else lines.push({ ...b });
+    }
+    const blocks = [];
+    for (const l of lines) {
+        const last = blocks[blocks.length - 1];
+        if (last && l.y - (last.y + last.h) < 12) {
+            const x2 = Math.max(last.x + last.w, l.x + l.w), y2 = l.y + l.h;
+            last.x = Math.min(last.x, l.x); last.w = x2 - last.x; last.h = y2 - last.y;
+        } else blocks.push({ ...l });
+    }
+    return blocks.slice(0, max);
+}
 const CURSOR_SVG = `<svg viewBox="0 0 22 30" width="22" height="30"><path d="M2 2 L2 24 L7.5 18.8 L11.2 27.6 L15 26 L11.4 17.4 L19 17.4 Z" fill="#111" stroke="#fff" stroke-width="1.6" stroke-linejoin="round"/></svg>`;
 function cursor(cam, path, clicks = []) {
     const cur = h("div", { class: "cursor", html: CURSOR_SVG });
@@ -368,13 +388,13 @@ function mailCard() {
     const innerH = r.h / sc;
     const c = h("div", { class: "abs glass", style: { left: r.x + "px", top: r.y + "px", width: r.w + "px", height: r.h + "px", transformOrigin: "50% 50%" } });
     const t = h("div", { class: "thread", style: { width: TH.w + "px", height: innerH + "px", transform: `scale(${sc})` } });
-    const bar = h("div", { class: "bar" }, h("img", { src: "assets/gmail.svg" }), h("span", { class: "ch" }, "Inbox"), h("span", { class: "sub" }, "legal@example.com"));
+    const bar = h("div", { class: "bar" }, h("img", { src: "assets/gmail.svg" }), h("span", { class: "ch" }, "Inbox"), h("span", { class: "sub" }, "legal@alia.ai"));
     const scroll = h("div", { class: "scroll" });
     const subj = h("div", { class: "subj" }, "DPA for Brightwater: need sign-off this week");
-    const m1 = mailMsg({ initials: "MC", name: "Maya Chen", addr: "maya.chen@example.com", to: "to legal@example.com", time: "9:41 AM",
-        html: "Hi Legal,<br><br>Brightwater sent over their DPA for the analytics rollout (attached). We need sign-off this week so they can start on Monday.<br><br>Thanks,<br>Maya",
+    const m1 = mailMsg({ initials: "MC", photo: "maya", name: "Maya Chen", addr: "maya@alia.ai", to: "to legal@alia.ai", time: "9:41 AM",
+        html: "Hi Legal,<br><br>Brightwater sent over their DPA for the product analytics rollout (attached). We need sign-off this week so they can start on Monday.<br><br>Thanks,<br>Maya",
         file: "Brightwater_DPA.docx" });
-    const m2 = mailMsg({ mike: true, name: "Legal", addr: "legal@example.com", to: "to Maya Chen", time: "9:42 AM",
+    const m2 = mailMsg({ mike: true, name: "Legal", addr: "legal@alia.ai", to: "to Maya Chen", time: "9:42 AM",
         html: 'Logged for Legal: <span class="lnk">Brightwater DPA sign-off</span>. Assigned to Priya Shah.' });
     scroll.append(subj, m1, m2);
     t.append(bar, h("div", { class: "body" }, scroll));
@@ -394,7 +414,9 @@ function mailMsg(m) {
 function msgEl(m) {
     const av = m.mike
         ? h("div", { class: "av", style: { background: "#fff", border: "1px solid #ececef" } }, h("img", { src: "assets/mikegc-icon.svg" }))
-        : h("div", { class: "av", style: { background: AV[m.initials] || "#666" } }, m.initials);
+        : m.photo
+            ? h("div", { class: "av", style: { background: "#e5e7eb" } }, h("img", { class: "photo", src: `assets/avatars/${m.photo}.jpg` }))
+            : h("div", { class: "av", style: { background: AV[m.initials] || "#666" } }, m.initials);
     const head = h("div", {}, h("span", { class: "nm" }, m.name), m.app ? h("span", { class: "app" }, "APP") : null, h("span", { class: "tm" }, m.time));
     const tx = h("div", { class: "tx", html: m.html });
     const col = h("div", { style: { minWidth: "0" } }, head, tx);
@@ -403,11 +425,11 @@ function msgEl(m) {
         h("div", {}, h("div", { class: "fn" }, m.file), h("div", { class: "fk" }, m.fileKind || "Word document"))));
     return h("div", { class: "msgx" }, av, col);
 }
-const M_JORDAN = { initials: "JL", name: "Jordan Lee", time: "10:14 AM", html: '<span class="mention">@MikeGC</span> can someone review Acme\'s NDA by Friday?', file: "Acme_NDA.docx" };
+const M_JORDAN = { initials: "JL", photo: "jordan", name: "Jordan Lee", time: "10:14 AM", html: '<span class="mention">@MikeGC</span> can someone review Acme\'s NDA by Friday?', file: "Acme_NDA.docx" };
 const M_ACK = { mike: true, name: "MikeGC", app: true, time: "10:14 AM", html: 'Logged for Legal: <span class="lnk">Review Acme\'s NDA</span>. Assigned to Priya Shah.' };
-const M_ASK = { initials: "PS", name: "Priya Shah", app: true, time: "10:21 AM", html: "Is this mutual? Their draft only protects Acme." };
-const M_REPLY = { initials: "JL", name: "Jordan Lee", time: "10:24 AM", html: "Mutual. We're sharing roadmaps." };
-const M_RESOLVE = { initials: "PS", name: "Priya Shah", app: true, time: "10:31 AM", html: "Approved as a mutual NDA. Send Acme the attached redline.", file: "Acme_NDA.docx", fileKind: "Word document · redline" };
+const M_ASK = { initials: "PS", photo: "priya", name: "Priya Shah", app: true, time: "10:21 AM", html: "Is this mutual? Their draft only protects Acme." };
+const M_REPLY = { initials: "JL", photo: "jordan", name: "Jordan Lee", time: "10:24 AM", html: "Mutual. We're sharing roadmaps." };
+const M_RESOLVE = { initials: "PS", photo: "priya", name: "Priya Shah", app: true, time: "10:31 AM", html: "Approved as a mutual NDA. Send Acme the attached redline.", file: "Acme_NDA.docx", fileKind: "Word document · redline" };
 
 // ================================================================ build the timeline
 const T = {};
@@ -525,17 +547,17 @@ function buildTimeline() {
     const ta = tq5 + 2.2;
     const act = card([img("s5_activity")]);
     show(act, ta, ta + 2.55, "fade", "fade");
-    camKeys(act, [[ta, [780, 640, "w"]], [ta + 0.3, [780, 640, "w"]], [ta + 0.9, [790, 760, "p"]]]);
-    glow(act.__cam, { x: 462, y: 660, w: 664, h: 262 }, ta + 0.85);
+    camKeys(act, [[ta, [780, 640, "w"]], [ta + 0.3, [780, 640, "w"]], [ta + 0.9, [790, 790, "p"]]]);
+    glow(act.__cam, { x: 462, y: 657, w: 664, h: 350 }, ta + 0.85);
     const t6 = C.at[5] - 0.2;
     caption("First pass against your playbook", ta + 0.1, t6);
     const td = ta + 2.55;
     const doc = card([img("s5_doc")]);
     show(doc, td, t6, "fade", "fade");
-    camKeys(doc, [[td, [940, 420, "w"]], [td + 0.25, [940, 420, "w"]], [td + 0.85, [938, 330, 1.5 * (L.zp / 1.3)]]]);
-    glow(doc.__cam, { x: 850, y: 143, w: 46, h: 17 }, td + 0.9, null, 4);
-    glow(doc.__cam, { x: 958, y: 372, w: 80, h: 18 }, td + 1.25, null, 4);
-    glow(doc.__cam, { x: 731, y: 451, w: 414, h: 32 }, td + 1.6, null, 4);
+    const ndaBlocks = revisionBlocks("s5_doc", 4);
+    const ndaFocus = ndaBlocks.length ? [940, Math.min(520, ndaBlocks[0].y + 220)] : [940, 360];
+    camKeys(doc, [[td, [940, 420, "w"]], [td + 0.25, [940, 420, "w"]], [td + 0.85, [...ndaFocus, 1.45 * (L.zp / 1.3)]]]);
+    ndaBlocks.forEach((b, i) => glow(doc.__cam, b, td + 0.9 + i * 0.25, null, 4));
 
     // --- Beat 6: requester loop
     T.b6 = t6;
@@ -588,8 +610,8 @@ function buildTimeline() {
     const er = card([img("e_request")]);
     show(er, tq2, tq2 + 2.15, "push", "fade");
     camKeys(er, [[tq2, [800, 500, "w"]], [tq2 + 0.55, [800, 500, "w"]], [tq2 + 1.05, [1200, 300, "p"]]]);
-    glow(er.__cam, { x: 1171, y: 428, w: 266, h: 84 }, tq2 + 0.75, tq2 + 2.3);
-    glow(er.__cam, { x: 1171, y: 522, w: 266, h: 46 }, tq2 + 0.95, tq2 + 2.3);
+    glow(er.__cam, { x: 1171, y: 428, w: 266, h: 70 }, tq2 + 0.75, tq2 + 2.3);
+    glow(er.__cam, { x: 1171, y: 502, w: 266, h: 46 }, tq2 + 0.95, tq2 + 2.3);
     cursor(er.__cam, [[tq2, 1050, 640], [tq2 + 1.15, 1050, 640], [tq2 + 1.75, 1393, 36]], [[tq2 + 1.88, 1393, 36]]);
     const tc = tq2 + 2.15;
     const ec = card([img("e_composer")]);
@@ -606,17 +628,20 @@ function buildTimeline() {
     const tg = tt2 + 1.5;
     const eg = card([img("e_chat_changes")]);
     show(eg, tg, tg + 1.25, "fade", "fade");
-    camKeys(eg, [[tg, [930, 560, L.zChat]]]);
-    glow(eg.__cam, { x: 524, y: 416, w: 812, h: 402 }, tg + 0.2, tg + 1.3);
-    cursor(eg.__cam, [[tg, 1120, 760], [tg + 0.35, 1120, 760], [tg + 0.9, 1310, 395]], [[tg + 1.03, 1310, 395]]);
+    // The first change's own View opens the document at that change.
+    const egMeta = shotMeta.e_chat_changes || {};
+    const v1 = egMeta.view ? [egMeta.view.x + egMeta.view.w / 2, egMeta.view.y + egMeta.view.h / 2] : [1310, 395];
+    camKeys(eg, [[tg, [930, Math.max(500, v1[1] - 60), L.zChat]]]);
+    if (egMeta.view) glow(eg.__cam, { x: 524, y: v1[1] - 150, w: 812, h: 175 }, tg + 0.2, tg + 1.3);
+    cursor(eg.__cam, [[tg, 1120, v1[1] + 160], [tg + 0.35, 1120, v1[1] + 160], [tg + 0.9, ...v1]], [[tg + 1.03, ...v1]]);
     caption("Redline with tracked changes", tg + 0.05, C.at[7] - 0.2);
     const td2 = tg + 1.25;
     const edoc = card([img("e_doc")]);
     show(edoc, td2, C.at[7] - 0.15, "fade", "push");
-    camKeys(edoc, [[td2, [1200, 450, "w"]], [td2 + 0.2, [1200, 450, "w"]], [td2 + 0.8, [1202, 430, 1.45 * (L.zp / 1.3)]]]);
-    glow(edoc.__cam, { x: 938, y: 323, w: 530, h: 60 }, td2 + 0.75, null, 4);
-    glow(edoc.__cam, { x: 1046, y: 413, w: 176, h: 20 }, td2 + 0.95, null, 4);
-    glow(edoc.__cam, { x: 938, y: 494, w: 530, h: 41 }, td2 + 1.15, null, 4);
+    const dpaBlocks = revisionBlocks("e_doc", 3);
+    const dpaFocus = dpaBlocks.length ? [1202, dpaBlocks[0].y + dpaBlocks[0].h / 2 + 120] : [1202, 430];
+    camKeys(edoc, [[td2, [1200, 450, "w"]], [td2 + 0.2, [1200, 450, "w"]], [td2 + 0.8, [...dpaFocus, 1.45 * (L.zp / 1.3)]]]);
+    dpaBlocks.forEach((b, i) => glow(edoc.__cam, b, td2 + 0.75 + i * 0.2, null, 4));
 
     // --- Beat 7: oversight
     const t7 = C.at[7] - 0.2;

@@ -73,7 +73,7 @@ Playwright's Chromium.
    no backend is needed), then run `node capture/capture.cjs`. It signs in a
    fictional member, answers every `/api` call from `capture/mock.cjs`, and
    writes `capture/shots/*.png` (1600 × 1000 at 2×) with `shots.json`.
-   Run `python3 capture/make_docx.py capture/docx/Acme_NDA.docx` and
+   Run `python3 capture/make_docx.py capture/docx/Acme_NDA.docx nda` and
    `python3 capture/make_docx.py capture/docx/Brightwater_DPA.docx dpa` first:
    they write the NDA with MikeGC's tracked changes and the DPA with Priya's,
    which the document viewer shows.
@@ -91,10 +91,24 @@ Playwright's Chromium.
 
 ## Demo data
 
-One workspace, "Legal", with three lawyers (Priya Shah, Sam Ortiz, Dana Kim),
-40 requests over eight weeks, and fictional requesters at Acme, Brightwater
-and Harbor & Pine. Email addresses use `example.com`. No real person, client
-or document appears.
+The workspace belongs to Alia, Inc., a fictional AI startup. Its legal team
+is three lawyers (Priya Shah, Sam Ortiz and Dana Kim), its colleagues file 40
+requests over eight weeks, and everyone's address is `firstname@alia.ai`, with
+the intake mailbox at `legal@alia.ai`. The counterparties, Acme, Brightwater
+and Harbor & Pine, are fictional too.
+
+The two contracts are full-length documents written for the demo, in
+`capture/contracts.py`: Acme's four-page one-way NDA, which MikeGC redlines
+into a mutual one (deleting the residuals clause and cutting the term to three
+years), and Brightwater's seven-page data processing addendum with its three
+annexes, which the Assistant redlines in Priya's name.
+
+The people's photos in `capture/avatars/` are AI-generated faces from the
+Synthetic Faces High Quality (SFHQ) dataset, which Kaggle lists as CC0 (public
+domain), so no real person appears; `capture/avatars/avatars.json` records
+each image's source file, checksum and licence. The app shows the three
+lawyers' photos; requesters aren't accounts, so the app shows their initials,
+and the film's Slack and email scenes use Jordan's and Maya's photos.
 
 ## Credits
 
@@ -104,6 +118,8 @@ or document appears.
   2008012110017088). The audio used is the 256 kbps original of the same
   recording at archive.org (`MoonlightSonata_845`).
 - **Fonts:** Inter and EB Garamond, SIL Open Font License (`frontend/src/app/fonts/`).
+- **Headshots:** AI-generated faces from SFHQ ("Synthetic Faces High Quality",
+  parts 3 and 4, by David Beniaguev), CC0 on Kaggle.
 - **Logos:** Gmail, Outlook, Slack and Teams are their owners' trademarks,
   shown unmodified as channels Intake works with. The General Legal logo is
   used with the sponsor's approval (pending).

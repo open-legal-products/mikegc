@@ -34,6 +34,8 @@ async function openPage(browser, port, format) {
     page.on("pageerror", (e) => console.error("PAGEERROR", e.message));
     page.on("console", (m) => { if (m.type() === "error") console.error("CONSOLE", m.text()); });
     await page.addInitScript((c) => { window.__CUES = c; }, cues());
+    const shots = path.join(ROOT, "shots", "shots.json");
+    if (fs.existsSync(shots)) await page.addInitScript((m) => { window.__SHOTS = m; }, JSON.parse(fs.readFileSync(shots, "utf8")));
     await page.goto(`http://127.0.0.1:${port}/index.html?f=${format}`, { waitUntil: "load" });
     await page.evaluate(() => window.__ready);
     return page;

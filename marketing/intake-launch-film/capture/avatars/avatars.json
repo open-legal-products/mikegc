@@ -1,0 +1,301 @@
+{
+  "generated": "2026-11-05",
+  "output_spec": "512x512 JPEG q90, sRGB, no EXIF/ICC/XMP",
+  "avatars": [
+    {
+      "n": "priya",
+      "file": "out/priya.jpg",
+      "source": "SFHQ (Synthetic Faces High Quality) part 3, by David Beniaguev, Kaggle dataset selfishgene/synthetic-faces-high-quality-sfhq-part-3",
+      "source_page_url": "https://www.kaggle.com/datasets/selfishgene/synthetic-faces-high-quality-sfhq-part-3",
+      "file_in_dataset": "a small samples (750 images)/SFHQ_pt3_00001304.jpg",
+      "original_file_url": "https://www.kaggle.com/api/v1/datasets/download/selfishgene/synthetic-faces-high-quality-sfhq-part-3/a%20small%20samples%20%28750%20images%29%2FSFHQ_pt3_00001304.jpg",
+      "sha256_of_original": "e81cf242aa24ea688cfaa9c1c7735d22dc9b396626bab11f5358b93ddb90c07d",
+      "licence": {
+        "kaggle_licenseName (datasets/view API, verbatim)": "CC0: Public Domain",
+        "kaggle_licenses (datasets/metadata API, verbatim)": [
+          "CC0-1.0"
+        ],
+        "dataset_description_statement (verbatim)": "Overall, the SFHQ dataset contains ~425,000 high quality and curated synthetic face images that have no privacy issues or license issues surrounding them.",
+        "note": "The dataset's GitHub repo (github.com/SelfishGene/SFHQ-dataset), which holds the README, a sample montage and code but not the images, carries an MIT LICENSE. The images themselves are distributed only on Kaggle, which lists them as CC0-1.0. Neither source mentions any other licence for the images."
+      },
+      "generator": "StyleGAN2 (FFHQ-trained) samples drawn at high truncation psi and corrected with the e4e encoder; no external inspiration image (per SFHQ README)",
+      "original_size": "1024x1024",
+      "crop": "full frame (dataset images are already face-aligned and centred), resized to 512x512",
+      "description": {
+        "apparent_gender": "woman",
+        "apparent_age": "22-30",
+        "hair": "long straight dark hair, pulled back; red lipstick; one visible drop earring (checked at full size, it isn't warped)",
+        "background": "plain light-blue",
+        "clothing": "barely visible at neckline (dataset framing)",
+        "expression": "slight closed-mouth smile, facing camera"
+      },
+      "could_suit": [
+        "Priya Shah"
+      ],
+      "note": ""
+    },
+    {
+      "n": "sam",
+      "file": "out/sam.jpg",
+      "source": "SFHQ (Synthetic Faces High Quality) part 4, by David Beniaguev, Kaggle dataset selfishgene/synthetic-faces-high-quality-sfhq-part-4",
+      "source_page_url": "https://www.kaggle.com/datasets/selfishgene/synthetic-faces-high-quality-sfhq-part-4",
+      "file_in_dataset": "a small sample (700 images)/SFHQ_pt4_00003095.jpg",
+      "original_file_url": "https://www.kaggle.com/api/v1/datasets/download/selfishgene/synthetic-faces-high-quality-sfhq-part-4/a%20small%20sample%20%28700%20images%29%2FSFHQ_pt4_00003095.jpg",
+      "sha256_of_original": "503609c7d3171cdb3d7db7ee10ea5dcec0d2cd2bda0592dc40a7f377056ce5cb",
+      "licence": {
+        "kaggle_licenseName (datasets/view API, verbatim)": "CC0: Public Domain",
+        "kaggle_licenses (datasets/metadata API, verbatim)": [
+          "CC0-1.0"
+        ],
+        "dataset_description_statement (verbatim)": "Overall, the SFHQ dataset contains ~425,000 high quality and curated synthetic face images that have no privacy issues or license issues surrounding them.",
+        "note": "The dataset's GitHub repo (github.com/SelfishGene/SFHQ-dataset), which holds the README, a sample montage and code but not the images, carries an MIT LICENSE. The images themselves are distributed only on Kaggle, which lists them as CC0-1.0. Neither source mentions any other licence for the images."
+      },
+      "generator": "Stable Diffusion 2.1 portrait used only as 'inspiration', encoded into StyleGAN2 latent space and regenerated as a photo (per SFHQ README)",
+      "original_size": "1024x1024",
+      "crop": "full frame (dataset images are already face-aligned and centred), resized to 512x512",
+      "description": {
+        "apparent_gender": "man",
+        "apparent_age": "38-48",
+        "hair": "short dark hair greying at the sides, salt-and-pepper stubble",
+        "background": "softly blurred warm stone/wall",
+        "clothing": "dark suit jacket, white shirt",
+        "expression": "natural smile, facing camera"
+      },
+      "could_suit": [
+        "Sam Ortiz",
+        "(apparent ethnicity is only an impression: could also read Southern European or Middle Eastern)"
+      ],
+      "note": "Replaces the earlier Commons StyleGAN image, whose casual T-shirt fails the business/smart-casual rule."
+    },
+    {
+      "n": "dana",
+      "file": "out/dana.jpg",
+      "source": "SFHQ (Synthetic Faces High Quality) part 4, by David Beniaguev, Kaggle dataset selfishgene/synthetic-faces-high-quality-sfhq-part-4",
+      "source_page_url": "https://www.kaggle.com/datasets/selfishgene/synthetic-faces-high-quality-sfhq-part-4",
+      "file_in_dataset": "a small sample (700 images)/SFHQ_pt4_00001163.jpg",
+      "original_file_url": "https://www.kaggle.com/api/v1/datasets/download/selfishgene/synthetic-faces-high-quality-sfhq-part-4/a%20small%20sample%20%28700%20images%29%2FSFHQ_pt4_00001163.jpg",
+      "sha256_of_original": "2f869d83678a51027d7de77864fca6d7b2c5ae110bff71cc837f1a77a593fe1d",
+      "licence": {
+        "kaggle_licenseName (datasets/view API, verbatim)": "CC0: Public Domain",
+        "kaggle_licenses (datasets/metadata API, verbatim)": [
+          "CC0-1.0"
+        ],
+        "dataset_description_statement (verbatim)": "Overall, the SFHQ dataset contains ~425,000 high quality and curated synthetic face images that have no privacy issues or license issues surrounding them.",
+        "note": "The dataset's GitHub repo (github.com/SelfishGene/SFHQ-dataset), which holds the README, a sample montage and code but not the images, carries an MIT LICENSE. The images themselves are distributed only on Kaggle, which lists them as CC0-1.0. Neither source mentions any other licence for the images."
+      },
+      "generator": "Stable Diffusion 2.1 portrait used only as 'inspiration', encoded into StyleGAN2 latent space and regenerated as a photo (per SFHQ README)",
+      "original_size": "1024x1024",
+      "crop": "full frame (dataset images are already face-aligned and centred), resized to 512x512",
+      "description": {
+        "apparent_gender": "woman",
+        "apparent_age": "35-45",
+        "hair": "long straight black hair, centre parting",
+        "background": "softly blurred light background (indoor/outdoor bokeh)",
+        "clothing": "dark top/jacket at bottom edge",
+        "expression": "closed-mouth smile, facing camera"
+      },
+      "could_suit": [
+        "Dana Kim",
+        "Maya Chen"
+      ],
+      "note": ""
+    },
+    {
+      "n": "jordan",
+      "file": "out/jordan.jpg",
+      "source": "SFHQ (Synthetic Faces High Quality) part 3, by David Beniaguev, Kaggle dataset selfishgene/synthetic-faces-high-quality-sfhq-part-3",
+      "source_page_url": "https://www.kaggle.com/datasets/selfishgene/synthetic-faces-high-quality-sfhq-part-3",
+      "file_in_dataset": "a small samples (750 images)/SFHQ_pt3_00000347.jpg",
+      "original_file_url": "https://www.kaggle.com/api/v1/datasets/download/selfishgene/synthetic-faces-high-quality-sfhq-part-3/a%20small%20samples%20%28750%20images%29%2FSFHQ_pt3_00000347.jpg",
+      "sha256_of_original": "abbce8e824915e64facca4b01fba22fe9713e4e4c8bb6aee3776300dad194fdb",
+      "licence": {
+        "kaggle_licenseName (datasets/view API, verbatim)": "CC0: Public Domain",
+        "kaggle_licenses (datasets/metadata API, verbatim)": [
+          "CC0-1.0"
+        ],
+        "dataset_description_statement (verbatim)": "Overall, the SFHQ dataset contains ~425,000 high quality and curated synthetic face images that have no privacy issues or license issues surrounding them.",
+        "note": "The dataset's GitHub repo (github.com/SelfishGene/SFHQ-dataset), which holds the README, a sample montage and code but not the images, carries an MIT LICENSE. The images themselves are distributed only on Kaggle, which lists them as CC0-1.0. Neither source mentions any other licence for the images."
+      },
+      "generator": "StyleGAN2 (FFHQ-trained) samples drawn at high truncation psi and corrected with the e4e encoder; no external inspiration image (per SFHQ README)",
+      "original_size": "1024x1024",
+      "crop": "full frame (dataset images are already face-aligned and centred), resized to 512x512",
+      "description": {
+        "apparent_gender": "man",
+        "apparent_age": "30-38",
+        "hair": "short black hair",
+        "background": "softly blurred outdoor scene; a blurred shape lower-left",
+        "clothing": "blue-and-white striped collared shirt",
+        "expression": "friendly smile, facing camera"
+      },
+      "could_suit": [
+        "Jordan Lee"
+      ],
+      "note": ""
+    },
+    {
+      "n": "maya",
+      "file": "out/maya.jpg",
+      "source": "SFHQ (Synthetic Faces High Quality) part 4, by David Beniaguev, Kaggle dataset selfishgene/synthetic-faces-high-quality-sfhq-part-4",
+      "source_page_url": "https://www.kaggle.com/datasets/selfishgene/synthetic-faces-high-quality-sfhq-part-4",
+      "file_in_dataset": "a small sample (700 images)/SFHQ_pt4_00002797.jpg",
+      "original_file_url": "https://www.kaggle.com/api/v1/datasets/download/selfishgene/synthetic-faces-high-quality-sfhq-part-4/a%20small%20sample%20%28700%20images%29%2FSFHQ_pt4_00002797.jpg",
+      "sha256_of_original": "9e8426f1c7d88ed4c08d30e7b45da7dfd357230abdd8ab196ac0a958e21c59a7",
+      "licence": {
+        "kaggle_licenseName (datasets/view API, verbatim)": "CC0: Public Domain",
+        "kaggle_licenses (datasets/metadata API, verbatim)": [
+          "CC0-1.0"
+        ],
+        "dataset_description_statement (verbatim)": "Overall, the SFHQ dataset contains ~425,000 high quality and curated synthetic face images that have no privacy issues or license issues surrounding them.",
+        "note": "The dataset's GitHub repo (github.com/SelfishGene/SFHQ-dataset), which holds the README, a sample montage and code but not the images, carries an MIT LICENSE. The images themselves are distributed only on Kaggle, which lists them as CC0-1.0. Neither source mentions any other licence for the images."
+      },
+      "generator": "Stable Diffusion 2.1 portrait used only as 'inspiration', encoded into StyleGAN2 latent space and regenerated as a photo (per SFHQ README)",
+      "original_size": "1024x1024",
+      "crop": "full frame (dataset images are already face-aligned and centred), resized to 512x512",
+      "description": {
+        "apparent_gender": "woman",
+        "apparent_age": "25-35",
+        "hair": "chin-length black hair, tucked behind one ear",
+        "background": "softly blurred olive/green outdoor background",
+        "clothing": "teal blouse with collar",
+        "expression": "neutral, facing camera"
+      },
+      "could_suit": [
+        "Maya Chen",
+        "Dana Kim"
+      ],
+      "note": ""
+    }
+  ],
+  "alternates": [
+    {
+      "n": "jordan_alt",
+      "file": "out/alternates/jordan_alt.jpg",
+      "source": "SFHQ (Synthetic Faces High Quality) part 3, by David Beniaguev, Kaggle dataset selfishgene/synthetic-faces-high-quality-sfhq-part-3",
+      "source_page_url": "https://www.kaggle.com/datasets/selfishgene/synthetic-faces-high-quality-sfhq-part-3",
+      "file_in_dataset": "a small samples (750 images)/SFHQ_pt3_00001492.jpg",
+      "original_file_url": "https://www.kaggle.com/api/v1/datasets/download/selfishgene/synthetic-faces-high-quality-sfhq-part-3/a%20small%20samples%20%28750%20images%29%2FSFHQ_pt3_00001492.jpg",
+      "sha256_of_original": "9fce51b11a4e327516d742e21396df5f3690286d79f27fe7b494b4a562ff79c5",
+      "licence": {
+        "kaggle_licenseName (datasets/view API, verbatim)": "CC0: Public Domain",
+        "kaggle_licenses (datasets/metadata API, verbatim)": [
+          "CC0-1.0"
+        ],
+        "dataset_description_statement (verbatim)": "Overall, the SFHQ dataset contains ~425,000 high quality and curated synthetic face images that have no privacy issues or license issues surrounding them.",
+        "note": "The dataset's GitHub repo (github.com/SelfishGene/SFHQ-dataset), which holds the README, a sample montage and code but not the images, carries an MIT LICENSE. The images themselves are distributed only on Kaggle, which lists them as CC0-1.0. Neither source mentions any other licence for the images."
+      },
+      "generator": "StyleGAN2 (FFHQ-trained) samples drawn at high truncation psi and corrected with the e4e encoder; no external inspiration image (per SFHQ README)",
+      "original_size": "1024x1024",
+      "crop": "full frame (dataset images are already face-aligned and centred), resized to 512x512",
+      "description": {
+        "apparent_gender": "man",
+        "apparent_age": "25-32",
+        "hair": "short black hair",
+        "background": "bright, softly blurred outdoor greenery",
+        "clothing": "blazer over collared shirt; dark round glasses",
+        "expression": "slight smile"
+      },
+      "could_suit": [
+        "Jordan Lee"
+      ],
+      "note": "More formal than the primary pick, but the right arm of the glasses is faint and semi-transparent where it meets the ear, a mild GAN artefact."
+    },
+    {
+      "n": "maya_alt",
+      "file": "out/alternates/maya_alt.jpg",
+      "source": "SFHQ (Synthetic Faces High Quality) part 4, by David Beniaguev, Kaggle dataset selfishgene/synthetic-faces-high-quality-sfhq-part-4",
+      "source_page_url": "https://www.kaggle.com/datasets/selfishgene/synthetic-faces-high-quality-sfhq-part-4",
+      "file_in_dataset": "a small sample (700 images)/SFHQ_pt4_00002489.jpg",
+      "original_file_url": "https://www.kaggle.com/api/v1/datasets/download/selfishgene/synthetic-faces-high-quality-sfhq-part-4/a%20small%20sample%20%28700%20images%29%2FSFHQ_pt4_00002489.jpg",
+      "sha256_of_original": "5c12f93fc17bda568e471b2471fa88ac7ef72b1927179830fe76e9399eec1b6f",
+      "licence": {
+        "kaggle_licenseName (datasets/view API, verbatim)": "CC0: Public Domain",
+        "kaggle_licenses (datasets/metadata API, verbatim)": [
+          "CC0-1.0"
+        ],
+        "dataset_description_statement (verbatim)": "Overall, the SFHQ dataset contains ~425,000 high quality and curated synthetic face images that have no privacy issues or license issues surrounding them.",
+        "note": "The dataset's GitHub repo (github.com/SelfishGene/SFHQ-dataset), which holds the README, a sample montage and code but not the images, carries an MIT LICENSE. The images themselves are distributed only on Kaggle, which lists them as CC0-1.0. Neither source mentions any other licence for the images."
+      },
+      "generator": "Stable Diffusion 2.1 portrait used only as 'inspiration', encoded into StyleGAN2 latent space and regenerated as a photo (per SFHQ README)",
+      "original_size": "1024x1024",
+      "crop": "full frame (dataset images are already face-aligned and centred), resized to 512x512",
+      "description": {
+        "apparent_gender": "woman",
+        "apparent_age": "25-35",
+        "hair": "long straight black hair",
+        "background": "plain textured grey wall",
+        "clothing": "dark top",
+        "expression": "neutral"
+      },
+      "could_suit": [
+        "Maya Chen",
+        "Dana Kim"
+      ],
+      "note": "Cool, slightly desaturated colour cast."
+    },
+    {
+      "n": "priya_alt",
+      "file": "out/alternates/priya_alt.jpg",
+      "source": "SFHQ (Synthetic Faces High Quality) part 3, by David Beniaguev, Kaggle dataset selfishgene/synthetic-faces-high-quality-sfhq-part-3",
+      "source_page_url": "https://www.kaggle.com/datasets/selfishgene/synthetic-faces-high-quality-sfhq-part-3",
+      "file_in_dataset": "a small samples (750 images)/SFHQ_pt3_00000168.jpg",
+      "original_file_url": "https://www.kaggle.com/api/v1/datasets/download/selfishgene/synthetic-faces-high-quality-sfhq-part-3/a%20small%20samples%20%28750%20images%29%2FSFHQ_pt3_00000168.jpg",
+      "sha256_of_original": "f2d84bf3079c7f2e9f117d5cb836aff1e6b347f307d190995279da348ea2f375",
+      "licence": {
+        "kaggle_licenseName (datasets/view API, verbatim)": "CC0: Public Domain",
+        "kaggle_licenses (datasets/metadata API, verbatim)": [
+          "CC0-1.0"
+        ],
+        "dataset_description_statement (verbatim)": "Overall, the SFHQ dataset contains ~425,000 high quality and curated synthetic face images that have no privacy issues or license issues surrounding them.",
+        "note": "The dataset's GitHub repo (github.com/SelfishGene/SFHQ-dataset), which holds the README, a sample montage and code but not the images, carries an MIT LICENSE. The images themselves are distributed only on Kaggle, which lists them as CC0-1.0. Neither source mentions any other licence for the images."
+      },
+      "generator": "StyleGAN2 (FFHQ-trained) samples drawn at high truncation psi and corrected with the e4e encoder; no external inspiration image (per SFHQ README)",
+      "original_size": "1024x1024",
+      "crop": "full frame (dataset images are already face-aligned and centred), resized to 512x512",
+      "description": {
+        "apparent_gender": "woman",
+        "apparent_age": "25-35",
+        "hair": "long straight black hair, centre parting",
+        "background": "plain warm beige",
+        "clothing": "red/pink turtleneck",
+        "expression": "open smile"
+      },
+      "could_suit": [
+        "Priya Shah"
+      ],
+      "note": ""
+    }
+  ],
+  "rejected": [
+    {
+      "file": "previous jordan.jpg and dana.jpg",
+      "source": "https://commons.wikimedia.org/wiki/File:Human_Race_Example_(Mongoloid).jpg",
+      "reason": "Racial-typology illustration with a pending Commons deletion request. Both crops came from this one file, so dana.jpg was rejected too."
+    },
+    {
+      "file": "previous priya.jpg",
+      "source": "https://commons.wikimedia.org/wiki/File:AI_generated_Woman_in_Welcome_pose.png",
+      "reason": "Costume/pose image (saree, namaste), and the page carries both {{PD-algorithm}} and {{cc-by-4.0}}."
+    },
+    {
+      "file": "previous sam.jpg",
+      "source": "https://commons.wikimedia.org/wiki/File:GAN_Mensch_StyleGAN2.png",
+      "reason": "Licence is fine ({{PD-algorithm}} only, no deletion request), but the casual T-shirt doesn't meet the business/smart-casual rule. It also had lower resolution and a GAN blob in the background. Kept at src/rejected_out/sam.jpg."
+    },
+    {
+      "file": "SFHQ_pt4_00002818",
+      "reason": "Warped GAN earring"
+    },
+    {
+      "file": "SFHQ_pt4_00001564",
+      "reason": "Phantom glasses arm at the temple"
+    },
+    {
+      "file": "SFHQ_pt4_00001769",
+      "reason": "Dark artefact at the corner of the mouth"
+    },
+    {
+      "file": "Commons generally",
+      "reason": "No other Commons file met the rules: clean PD-algorithm/CC0 licence only, no deletion request, neutral professional headshot, and the needed apparent ethnicities."
+    }
+  ]
+}

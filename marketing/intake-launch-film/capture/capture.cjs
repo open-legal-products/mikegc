@@ -80,25 +80,6 @@ const want = (n) => !only.length || only.some((o) => n.startsWith(o));
             activity: page.getByText("Activity", { exact: true }).first(),
         });
     }
-    if (want("s5_doc")) {
-        await go(page, REQ);
-        await page.getByText("Acme_NDA.docx").first().click();
-        await page.waitForTimeout(3500);
-        const ins = page.getByText("three (3)").first();
-        await shot(page, "s5_doc", {
-            page: page.locator("text=NON-DISCLOSURE AGREEMENT").first(),
-            term: ins,
-            mutual: page.getByText("MUTUAL", { exact: true }).first(),
-            residuals: page.getByText("Residuals.").first(),
-            versions: page.getByText("Versions", { exact: true }).first(),
-        });
-        try {
-            await ins.hover();
-            await page.waitForTimeout(900);
-            await shot(page, "s5_doc_hover", { term: ins });
-        } catch (e) { console.log("hover failed", e.message); }
-        await page.keyboard.press("Escape");
-    }
     if (want("s5_rules")) {
         await go(page, "/settings/intake/rules");
         await shot(page, "s5_rules", {
@@ -251,18 +232,31 @@ const want = (n) => !only.length || only.some((o) => n.startsWith(o));
         await page.mouse.wheel(0, 1200);
         await page.waitForTimeout(700);
         await page.mouse.move(1500, 700);
+        // The first change's own View button opens the document at that change.
+        const viewFirst = page.getByRole("button", { name: "View", exact: true }).nth(1);
         await shot(page, "e_chat_changes", {
             changes,
-            view: page.getByRole("button", { name: "View", exact: true }).first(),
+            view: viewFirst,
+            card: rowBox(page, "3 tracked changes", 700),
         });
-        await page.getByRole("button", { name: "View", exact: true }).first().click();
-        await page.waitForTimeout(3500);
+        await viewFirst.click();
+        await page.waitForTimeout(4000);
         await page.mouse.move(1500, 960);
-        await shot(page, "e_doc", {
-            sub: page.getByText("after giving the Customer", { exact: false }).first(),
-            breach: page.getByText("within 48 hours", { exact: false }).first(),
-            liability: page.getByText("capped at twice", { exact: false }).first(),
-        });
+        // Where the tracked changes are drawn in the viewer, for the film's highlights.
+        const revisions = await page.evaluate(() => [...document.querySelectorAll(".docx-revision")]
+            .map((el) => { const b = el.getBoundingClientRect(); return { x: Math.round(b.x), y: Math.round(b.y), w: Math.round(b.width), h: Math.round(b.height) }; })
+            .filter((b) => b.w > 0 && b.y > 60 && b.y < 990));
+        await shot(page, "e_doc", { revisions });
+    }
+    if (want("s5_doc")) {
+        // The NDA's first page, with MikeGC's redline, and where its changes are drawn.
+        await go(page, REQ);
+        await page.getByText("Acme_NDA.docx").first().click();
+        await page.waitForTimeout(4000);
+        const revisions = await page.evaluate(() => [...document.querySelectorAll(".docx-revision")]
+            .map((el) => { const b = el.getBoundingClientRect(); return { x: Math.round(b.x), y: Math.round(b.y), w: Math.round(b.width), h: Math.round(b.height) }; })
+            .filter((b) => b.w > 0 && b.y > 60 && b.y < 990));
+        await shot(page, "s5_doc", { revisions });
     }
 
     // --- Beat 7: dashboard -------------------------------------------------------------

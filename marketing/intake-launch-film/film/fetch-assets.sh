@@ -38,4 +38,7 @@ open(sys.argv[1], "w").write("window.__GL_SVG = " + json.dumps(svg) + ";\n")
 ' "$HERE/gl.js"
 
 cp "$HERE/../capture/shots/"*.png "$HERE/../capture/shots/shots.json" "$HERE/shots/"
+# The fictional people's photos (public-domain, AI-generated faces).
+mkdir -p "$A/avatars"
+cp "$HERE/../capture/avatars/"*.jpg "$A/avatars/"
 echo "assets ready"
