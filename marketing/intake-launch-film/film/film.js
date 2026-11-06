@@ -129,13 +129,16 @@ SPECIAL.chars = (el, v) => {
     el.textContent = el.__full.slice(0, n);
 };
 // Camera inside a screen card: [fx, fy, zoomMultiplier] in screenshot px.
+// The zoom is relative to fitting the shot's width (or a 1000 px tall window
+// of it), so a tall shot pans rather than shrinking to fit.
 SPECIAL.cam = (el, v) => {
     const { w, h } = el.__card;
-    const cover = Math.max(w / 1600, h / 1000);
+    const iw = el.__w || 1600, ih = el.__h || 1000;
+    const cover = Math.max(w / iw, h / Math.min(ih, 1000));
     const z = cover * v[2];
     let tx = w / 2 - v[0] * z, ty = h / 2 - v[1] * z;
-    tx = Math.min(0, Math.max(w - 1600 * z, tx));
-    ty = Math.min(0, Math.max(h - 1000 * z, ty));
+    tx = Math.min(0, Math.max(w - iw * z, tx));
+    ty = Math.min(0, Math.max(h - ih * z, ty));
     el.style.transform = `translate(${tx.toFixed(2)}px, ${ty.toFixed(2)}px) scale(${z.toFixed(5)})`;
 };
 SPECIAL.scrollY = (el, v) => { el.style.transform = `translateY(${(-v).toFixed(2)}px)`; };
@@ -194,15 +197,29 @@ const shotMeta = window.__SHOTS || {};
 function card(layers, opts = {}) {
     const r = opts.rect || L.card;
     const c = h("div", { class: "abs glass", style: { left: r.x + "px", top: r.y + "px", width: r.w + "px", height: r.h + "px", transformOrigin: "50% 50%" } });
-    const cam = h("div", { class: "cam" });
+    const ih = opts.h || 1000;
+    const cam = h("div", { class: "cam", style: { height: ih + "px" } });
     cam.__card = r;
+    cam.__w = 1600;
+    cam.__h = ih;
     for (const l of layers) cam.append(l);
     c.append(cam, h("div", { class: "edge" }));
     stage.append(c);
     c.__cam = cam;
     return c;
 }
-const img = (name, attrs = {}) => h("img", Object.assign({ class: "shot", src: `shots/${name}.png` }, attrs));
+const img = (name, attrs = {}) => {
+    const el = h("img", Object.assign({ class: "shot", src: `shots/${name}.png` }, attrs));
+    const size = (shotMeta[name] || {}).size;
+    if (size) el.style.height = size.h + "px";
+    return el;
+};
+// A region the capture recorded in a shot, padded; `fallback` if it has none.
+function region(name, key, pad = 6, fallback = null) {
+    const r = (shotMeta[name] || {})[key];
+    return r ? { x: r.x - pad, y: r.y - pad, w: r.w + 2 * pad, h: r.h + 2 * pad } : fallback;
+}
+const centre = (r) => [r.x + r.w / 2, r.y + r.h / 2];
 function camKeys(c, keys) {
     A(c.__cam, "cam", keys.map(([t, [fx, fy, z], e]) => [t, [fx, fy, z === "w" ? L.zw : z === "p" ? L.zp : z], e]));
 }
@@ -518,25 +535,38 @@ function buildTimeline() {
     A(queue, "s", [[b3end - 0.4, 1], [b3end, 0.97, "io"]]);
     logos.forEach((lg) => A(lg, "o", [[b3end - 0.4, 1], [b3end, 0, "io"]]));
 
-    // --- Beat 4: capture. The thread rises on bar 11; the request page arrives on the fermata chord.
+    // --- Beat 4: capture. The Slack thread, then the request page MikeGC recorded,
+    // stop by stop: the request and its documents, Messages, Activity, the details.
     const th1 = thread([M_JORDAN, { divider: "1 reply" }, M_ACK]);
     onBeat(th1, H.thread, H.request, "rise", "push", "push");
     const [mJ, dv, mA] = th1.__els;
     fadeIn(mJ, H.jordan - 0.05, 0.4, 18);
     fadeIn(dv, H.ack - 0.25, 0.3, 0);
     fadeIn(mA, H.ack - 0.05, 0.4, 18);
-    caption("Recorded from Slack", H.thread + 0.45, H.rules - 0.1);
-    const s4 = card([img("s4_request")]);
+    caption("Recorded from Slack", H.thread + 0.45, H.request);
+    const pageH = ((shotMeta.s4_page || {}).size || {}).h || 1000;
+    const s4 = card([img("s4_page")], { h: pageH });
     const s4t = onBeat(s4, H.request, H.rules, "push", "fade");
-    const req = { title: { x: 410, y: 84, w: 210, h: 34 }, reviewer: { x: 1171, y: 216, w: 266, h: 60 }, requester: { x: 1171, y: 286, w: 266, h: 60 },
-        target: { x: 1171, y: 356, w: 266, h: 60 }, documents: { x: 425, y: 336, w: 702, h: 30 }, created: { x: 1171, y: 484, w: 266, h: 56 } };
-    glow(s4.__cam, req.title, H.subject, H.punch);
-    glow(s4.__cam, req.documents, H.documents, H.punch + 0.2);
-    camKeys(s4, [[s4t, [800, 500, "w"]], [H.punch - 0.1, [800, 500, "w"]], [H.punch + 0.45, [1304, 380, "p"]]]);
-    glow(s4.__cam, req.reviewer, H.requester - 0.1, H.rules);
-    glow(s4.__cam, req.requester, H.requester, H.rules);
-    glow(s4.__cam, req.target, H.deadline, H.rules);
-    glow(s4.__cam, req.created, H.created, H.rules);
+    const reqCard = region("s4_page", "requestCard", 4, { x: 408, y: 132, w: 736, h: 233 });
+    const msgCard = region("s4_page", "messages", 4, { x: 408, y: 377, w: 736, h: 330 });
+    const actCard = region("s4_page", "activity", 4, { x: 408, y: 719, w: 736, h: 655 });
+    const actTop = (shotMeta.s4_page || {}).activityTop;
+    const actGlow = actTop ? { ...actCard, h: actTop.y + actTop.h + 16 - actCard.y } : { ...actCard, h: 120 };
+    const detCard = region("s4_page", "details", 4, { x: 1156, y: 132, w: 296, h: 478 });
+    const stops = [
+        [H.request, reqCard, "The request and its documents"],
+        [H.messages, msgCard, "The Slack thread, in Messages"],
+        [H.activity4, actGlow, "Every step in Activity"],
+        [H.details, detCard, "Requester, reviewer and target date filled in"],
+    ];
+    const camStops = [[s4t, [centre(reqCard)[0], centre(reqCard)[1] + 40, "p"]]];
+    stops.forEach(([t, r, text], i) => {
+        const next = i + 1 < stops.length ? stops[i + 1][0] : H.rules;
+        if (i > 0) camStops.push([t - 0.3, camStops[camStops.length - 1][1]], [t + 0.3, [...centre(r), i === 3 ? L.zp * 1.15 : "p"]]);
+        glow(s4.__cam, r, t + (i === 0 ? 0.35 : 0.1), next + 0.05);
+        caption(text, t + (i === 0 ? 0.1 : 0), next - (i === 3 ? 0.1 : 0.1));
+    });
+    camKeys(s4, camStops);
 
     // --- Beat 5: triage and first pass. Rules on wave 6; the toast on wave 7.
     T.b5 = H.rules;
@@ -553,11 +583,13 @@ function buildTimeline() {
     A(toast, "o", [[T.toast, 0], [T.toast + 0.25, 1, "o"]]);
     A(toast, "y", [[T.toast, -36], [T.toast + 0.3, 0, "o"]]);
     camKeys(queueShot, [[tq5, [800, 500, "w"]], [H.toast + 0.2, [800, 500, "w"]], [H.toast + 0.75, [800, 160, "p"]]]);
-    clickOn(queueShot.__cam, [1180, 420], [1008, 92], H.open);
+    const openBtn = (shotMeta.s5_toast || {}).open;
+    clickOn(queueShot.__cam, [1180, 420], openBtn ? centre(openBtn) : [1008, 92], H.open);
     const act = card([img("s5_activity")]);
     const ta = onBeat(act, H.activity, H.doc);
-    camKeys(act, [[ta, [780, 640, "w"]], [H.note - 0.6, [780, 640, "w"]], [H.note, [790, 790, "p"]]]);
-    glow(act.__cam, { x: 462, y: 657, w: 664, h: 350 }, H.note - 0.1);
+    camKeys(act, [[ta, [780, 600, "w"]], [H.note - 0.6, [780, 600, "w"]], [H.note, [790, 720, "p"]]]);
+    const pre = (shotMeta.s5_activity || {}).preprocessed;
+    glow(act.__cam, pre ? { x: 462, y: pre.y - 6, w: 664, h: 868 - pre.y + 6 } : { x: 462, y: 578, w: 664, h: 290 }, H.note - 0.1);
     caption("First pass against your playbook", H.activity, H.ask - 0.1);
     const doc = card([img("s5_doc")]);
     const td = onBeat(doc, H.doc, H.ask);
@@ -573,8 +605,9 @@ function buildTimeline() {
     const ask = card([typeFrames]);
     onBeat(ask, H.ask, H.thread2, "fade", "push", "push");
     A(typeFrames, "frame", [[t6 + 0.2, 0], [H.askClick - 0.65, 9, "l"]]);
-    camKeys(ask, [[t6, [776, 440, "p"]]]);
-    clickOn(ask.__cam, [1250, 560], [1058, 482], H.askClick, 0.45);
+    const askBtn = region("s6_type", "ask", 0, { x: 1002, y: 454, w: 109, h: 20 });
+    camKeys(ask, [[t6, [776, askBtn.y - 60, "p"]]]);
+    clickOn(ask.__cam, [1250, askBtn.y + 80], centre(askBtn), H.askClick, 0.45);
     caption("Ask the requester", H.ask + 0.2, H.resolveTyped - 0.1);
     const th2 = thread([M_JORDAN, { divider: "3 replies" }, M_ACK, M_ASK, M_REPLY]);
     onBeat(th2, H.thread2, H.newReply, "push", "push", "push");
@@ -611,19 +644,24 @@ function buildTimeline() {
     const er = card([img("e_request")]);
     const tq2 = onBeat(er, H.emailRequest, H.composer, "push", "fade");
     camKeys(er, [[tq2, [800, 500, "w"]], [H.emailGlow - 0.35, [800, 500, "w"]], [H.emailGlow + 0.15, [1200, 300, "p"]]]);
-    glow(er.__cam, { x: 1171, y: 428, w: 266, h: 70 }, H.emailGlow, H.composer);
-    glow(er.__cam, { x: 1171, y: 502, w: 266, h: 46 }, H.emailGlow + 0.2, H.composer);
-    clickOn(er.__cam, [1050, 640], [1393, 36], H.process, 0.6);
+    const em = shotMeta.e_request || {};
+    const conv = em.conversation && em.conversationTo
+        ? { x: 1171, y: em.conversation.y - 6, w: 266, h: em.conversationTo.y + em.conversationTo.h + 6 - (em.conversation.y - 6) }
+        : { x: 1171, y: 428, w: 266, h: 70 };
+    glow(er.__cam, conv, H.emailGlow, H.composer);
+    clickOn(er.__cam, [1050, 640], em.assistant ? centre(em.assistant) : [1430, 35], H.process, 0.6);
     const ec = card([img("e_composer")]);
     const tc = onBeat(ec, H.composer, H.chat);
     camKeys(ec, [[tc, [930, 500, L.zChat]]]);
-    glow(ec.__cam, { x: 524, y: 446, w: 186, h: 24 }, H.composer + 0.15, H.chat, 4);
-    clickOn(ec.__cam, [1150, 700], [1322, 539], H.send, 0.5);
+    const pill = (shotMeta.e_composer || {}).pill;
+    glow(ec.__cam, pill ? { x: pill.x - 22, y: pill.y - 4, w: pill.w + 44, h: pill.h + 8 } : { x: 524, y: 446, w: 186, h: 24 }, H.composer + 0.15, H.chat, 4);
+    const send = (shotMeta.e_composer || {}).send;
+    clickOn(ec.__cam, [1150, 700], send ? centre(send) : [1322, 539], H.send, 0.5);
     caption("Analyse it in the Assistant", H.composer, H.changes - 0.1);
     const et = card([img("e_chat_top")]);
     const tt2 = onBeat(et, H.chat, H.changes);
     camKeys(et, [[tt2, [930, 330, L.zChat]], [H.changes, [930, 430, L.zChat]]]);
-    glow(et.__cam, { x: 508, y: 420, w: 842, h: 128 }, H.chat + 0.4, H.changes + 0.1);
+    glow(et.__cam, region("e_chat_top", "issueList", 6, { x: 508, y: 414, w: 844, h: 196 }), H.chat + 0.4, H.changes + 0.1);
     const eg = card([img("e_chat_changes")]);
     const tg = onBeat(eg, H.changes, H.dpa);
     // The first change's own View opens the document at that change.
@@ -649,9 +687,6 @@ function buildTimeline() {
         [H.counts + 0.15, [604, 160, "p"]], [H.workload - 0.1, [604, 160, "p"]],
         [H.workload + 0.6, L.dashEnd],
     ]);
-    glow(dash.__cam, { x: 287, y: 77, w: 199, h: 102 }, H.counts, H.workload + 0.2);
-    glow(dash.__cam, { x: 722, y: 77, w: 199, h: 102 }, H.overdue, H.workload + 0.2);
-    glow(dash.__cam, { x: 287, y: 489, w: 1286, h: 178 }, H.load - 0.1);
     caption("See the whole queue", H.dashboard + 0.2, C.endcard - 0.05);
 
     // --- Beat 8: end card. The MikeGC wordmark, "Sponsored by" and General Legal's logo.

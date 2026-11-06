@@ -17,6 +17,26 @@ async function box(locator) {
     if (!b) return null;
     return { x: Math.round(b.x), y: Math.round(b.y), w: Math.round(b.width), h: Math.round(b.height) };
 }
+// The glass card (rounded panel) around the element with this text: the
+// nearest ancestor at least minWidth wide with a background and rounded corners.
+async function cardOf(page, text, minWidth) {
+    return page.evaluate(({ text, minWidth }) => {
+        const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+        let n;
+        while ((n = walker.nextNode())) {
+            if (!n.textContent.includes(text)) continue;
+            let el = n.parentElement;
+            while (el) {
+                const cs = getComputedStyle(el);
+                const b = el.getBoundingClientRect();
+                if (b.width >= minWidth && parseFloat(cs.borderTopLeftRadius) >= 8 && cs.backgroundColor !== "rgba(0, 0, 0, 0)")
+                    return { x: Math.round(b.x), y: Math.round(b.y), w: Math.round(b.width), h: Math.round(b.height) };
+                el = el.parentElement;
+            }
+        }
+        return null;
+    }, { text, minWidth });
+}
 // The nearest ancestor of the element with this text that is at least minWidth wide.
 async function rowBox(page, text, minWidth = 1000) {
     return page.evaluate(({ text, minWidth }) => {
@@ -57,14 +77,22 @@ const want = (n) => !only.length || only.some((o) => n.startsWith(o));
 
     // --- Beat 4: the request MikeGC recorded -----------------------------------
     if (want("s4")) {
+        // The whole request page in one tall frame, Messages open, for the film to pan over.
+        await page.setViewportSize({ width: 1600, height: 1900 });
         await go(page, REQ);
-        const sidebar = page.locator("aside, [data-slot=details], section").filter({ hasText: "Created by" }).last();
-        await shot(page, "s4_request", {
-            sidebar: sidebar,
-            reviewer: page.getByText("Reviewer", { exact: true }).first(),
-            created: page.getByText("Created by", { exact: true }).first(),
-            title: page.getByRole("heading", { name: "Review Acme's NDA" }).last(),
+        await page.getByRole("button", { name: /^Messages/ }).first().click();
+        await page.waitForTimeout(800);
+        await page.mouse.move(1590, 1890);
+        await shot(page, "s4_page", {
+            size: { w: 1600, h: 1900 },
+            request: rowBox(page, "Jordan Lee in Sales asks Legal", 700),
+            requestCard: cardOf(page, "Jordan Lee in Sales asks Legal", 700),
+            messages: cardOf(page, "Message the requester", 700),
+            activity: cardOf(page, "assigned this to Priya Shah", 700),
+            activityTop: rowBox(page, "assigned this to Priya Shah", 600),
+            details: cardOf(page, "Created by", 260),
         });
+        await page.setViewportSize({ width: 1600, height: 1000 });
     }
 
     // --- Beat 5: first pass -----------------------------------------------------
@@ -96,7 +124,7 @@ const want = (n) => !only.length || only.some((o) => n.startsWith(o));
         await page.waitForTimeout(1500);
         const toast = page.getByText("New Intake Request").first();
         const card = page.locator("[data-sonner-toast], li[role=status], [role=status], [role=alert]").filter({ hasText: "New Intake Request" }).first();
-        await shot(page, "s5_toast", { title: toast, card });
+        await shot(page, "s5_toast", { title: toast, card, open: page.getByRole("button", { name: "Open", exact: true }).first() });
     }
 
     // --- Beat 6: requester loop ----------------------------------------------------
@@ -195,10 +223,15 @@ const want = (n) => !only.length || only.some((o) => n.startsWith(o));
         await go(page, `/intake/${mock.BW_ID}?org=${mock.ORG}`);
         await page.mouse.move(1180, 300);
         await shot(page, "e_request", {
-            process: page.getByRole("button", { name: "Process in Assistant" }).first(),
-            conversation: page.getByText("Conversation", { exact: true }).first(),
-            created: page.getByText("Created by", { exact: true }).first(),
-            documents: page.getByText("Brightwater_DPA.docx").first(),
+            // The page header's Assistant button, not the sidebar's.
+            assistant: page.evaluate(() => {
+                const b = [...document.querySelectorAll("button, a")].find((el) => el.textContent.trim() === "Assistant" && el.getBoundingClientRect().x > 1000);
+                if (!b) return null;
+                const r = b.getBoundingClientRect();
+                return { x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.width), h: Math.round(r.height) };
+            }),
+            conversation: rowBox(page, "Conversation", 240),
+            conversationTo: page.getByText("maya@alia.ai", { exact: false }).last(),
         });
     }
     if (want("e_composer")) {
@@ -216,6 +249,7 @@ const want = (n) => !only.length || only.some((o) => n.startsWith(o));
         await shot(page, "e_chat_top", {
             asked: page.getByText("What's being asked.").first(),
             issues: page.getByText("Main issues", { exact: true }).first(),
+            issueList: page.locator("ol").filter({ hasText: "Sub-processors" }).first(),
         });
         const changes = page.getByText("3 tracked changes").first();
         await changes.scrollIntoViewIfNeeded();
@@ -251,8 +285,9 @@ const want = (n) => !only.length || only.some((o) => n.startsWith(o));
     if (want("s5_doc")) {
         // The NDA's first page, with MikeGC's redline, and where its changes are drawn.
         await go(page, REQ);
-        await page.getByText("Acme_NDA.docx").first().click();
-        await page.waitForTimeout(4000);
+        // The document's row in Documents (the summary and the note also name it).
+        await page.getByRole("button", { name: /Acme_NDA\.docx/ }).first().click();
+        await page.waitForTimeout(4500);
         const revisions = await page.evaluate(() => [...document.querySelectorAll(".docx-revision")]
             .map((el) => { const b = el.getBoundingClientRect(); return { x: Math.round(b.x), y: Math.round(b.y), w: Math.round(b.width), h: Math.round(b.height) }; })
             .filter((b) => b.w > 0 && b.y > 60 && b.y < 990));
@@ -269,6 +304,7 @@ const want = (n) => !only.length || only.some((o) => n.startsWith(o));
             overdue: page.getByText("Overdue", { exact: true }).first(),
             chart: page.getByText("Requests per week").first(),
             workload: page.getByText("Workload", { exact: true }).first(),
+            workloadCard: cardOf(page, "Workload", 1000),
         });
     }
 

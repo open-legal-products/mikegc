@@ -17,11 +17,11 @@ the steps below.
 | 1. Sponsor | 0:00 | General Legal's logo and *sponsors*; the MikeOSS logo, at the same size, lands on the music's first chords; "GC" types on and the mark turns MikeGC blue; *A fork of Mike for in-house legal teams* |
 | 2. Feature | 0:07 | *Its first feature* / **Intake** |
 | 3. Channels | 0:10 | Gmail, Outlook, Slack and Teams land on the music's accented chords; their messages slide into one *Intake · Outstanding* card |
-| 4. Capture | 0:18 | Jordan's @MikeGC message and MikeGC's reply in the thread, then the request page and its Details sidebar |
+| 4. Capture | 0:18 | Jordan's @MikeGC message and MikeGC's reply in the thread, then the request page MikeGC recorded, stop by stop: the request and its documents, Messages (Jordan's Slack message), Activity and the details pane |
 | 5. Triage and first pass | 0:28 | The NDA rule, the **New Intake Request** toast, MikeGC's note in Activity, and *Acme_NDA.docx* with MikeGC's tracked changes |
 | 6. Requester loop | 0:38 | **Ask requester**, the question and Jordan's reply in the thread, the queue's new-reply marker, **Resolve request**, and the redline posted back |
-| 7. By email | 0:48 | Maya's email to legal@example.com and MikeGC's "Logged for Legal" reply; the request *Created by MikeGC from Gmail*; **Process in Assistant** opens the Assistant with the request attached; its analysis, three tracked changes to *Brightwater_DPA.docx*, and the redlined DPA |
-| 8. Oversight | 0:58 | The dashboard: counts, the weekly chart and the workload table |
+| 7. By email | 0:48 | Maya's email to legal@alia.ai and MikeGC's "Logged for Legal" reply; the request and its Conversation field (Gmail); the header's **Assistant** button opens the Assistant with the request attached; its analysis, three tracked changes to *Brightwater_DPA.docx*, and the redlined DPA |
+| 8. Oversight | 0:59 | The dashboard: the counts, then the workload table |
 | 9. End card | 1:03 | The MikeGC wordmark, with *Sponsored by* and General Legal's logo beneath it |
 
 `film/cues.json` holds the exact times: the four chord landings, the end-card
@@ -43,7 +43,8 @@ analysis confirmed, failing if none is within 0.12 seconds. For example:
 | The Mike logo lands | 0:02.90 | Wave 1's first accented chord |
 | "Intake" lands | 0:09.37 | Wave 3's first chord |
 | The channel logos | 0:10.99–0:13.20 | Waves 4 and 5's chords, then bar 9's forte chord |
-| The request page | 0:22.91 | The sforzando chord under bar 14's fermata |
+| The request page | 0:20.94 | Accent in bar 13 |
+| Its Messages, Activity and details | 0:22.91, 0:25.05, 0:26.68 | The fermata chord, bar 15's downbeat, an accent |
 | The triage rules, then their glow | 0:27.93, 0:28.15 | Wave 6's two chords |
 | The New Intake Request toast | 0:31.12 | Wave 7's first chord |
 | The email arrives | 0:48.92 | Accent at bar 29 |
@@ -52,7 +53,6 @@ analysis confirmed, failing if none is within 0.12 seconds. For example:
 
 A cut is centred on its hit: a crossfade starts 0.1 s before it and a push
 0.05 s before. The cursor arrives 0.13 s early so the click lands on the beat.
-`film/make_cues.py` writes it from the music analysis and the schedule.
 
 ## Where it departs from the script
 
@@ -78,6 +78,10 @@ A cut is centred on its hit: a crossfade starts 0.1 s before it and a push
   request's **Messages** panel, with an **Ask requester** button, so the film
   shows that. (`docs/intake.md` still says **Message requester** in the note
   box.)
+- **Messages on the request** hold Jordan's original Slack message, which
+  MikeGC records with the request, and later the question and Jordan's reply.
+  MikeGC's "Logged for Legal" acknowledgement appears in the Slack thread but
+  not in the app's Messages panel, which doesn't list acknowledgements.
 - **The Slack thread** is a neutral chat thread with the Slack logo, not a
   recording of Slack's own interface. MikeGC's lines use the wording the Slack
   adapter actually posts (`backend/src/modules/intake/intake.slack.ts`):
@@ -110,8 +114,8 @@ Playwright's Chromium.
    measured wave chords, bar downbeats and splice points.
 4. **Build.** `film/build.sh audio <out>` writes the cues, builds the
    soundtrack (two-pass loudness to -16 LUFS, -1.5 dBTP), renders the 16:9
-   master and the 1:1 and 9:16 cutdowns, and writes
-   `MikeGC_Intake_launch_<format>.mp4`. `node film/render.cjs stills 16x9 3,12.5,40`
+   film and writes `MikeGC_Intake_launch_16x9.mp4`; add `16x9 1x1 9x16` after
+   `<out>` for the square and vertical cutdowns too. `node film/render.cjs stills 16x9 3,12.5,40`
    renders single frames for review.
 
 ## Demo data

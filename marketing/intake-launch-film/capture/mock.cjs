@@ -104,7 +104,17 @@ for (const [subject, requester, team, state, assignee, created] of CLOSED) {
 const ACME_CREATED = new Date("2026-11-09T10:14:00Z");
 const acme = {
     id: ACME_ID, org_id: ORG, subject: "Review Acme's NDA",
-    description: "Can someone review Acme's NDA by Friday? It's attached.\n\nPosted by Jordan Lee in #legal-requests.",
+    // MikeGC's summary, then the original Slack message, as composeDescription
+    // writes it; the request page shows the message in Messages.
+    description: [
+        "Jordan Lee in Sales asks Legal to review Acme's NDA by Friday 13 November. It's Acme's own form; the draft is attached as Acme_NDA.docx.",
+        "",
+        "--- Original message ---",
+        "From: Jordan Lee <jordan@alia.ai> in Slack",
+        "Sent: 9 Nov 2026, 10:14 UTC",
+        "",
+        "@MikeGC can someone review Acme's NDA by Friday?",
+    ].join("\n"),
     requester_name: "Jordan Lee", requester_email: "jordan@alia.ai", requester_team: "Sales",
     requested_by_date: "2026-11-13", state: "in_review", version: 2,
     assignee_id: PRIYA.user_id, assignee_name: PRIYA.display_name,
@@ -124,7 +134,21 @@ requests.unshift(acme);
 const BW_ID = "req-bw-dpa";
 const brightwater = {
     id: BW_ID, org_id: ORG, subject: "Brightwater DPA sign-off",
-    description: "Hi Legal,\n\nBrightwater sent over their DPA for the product analytics rollout (attached). We need sign-off this week so they can start on Monday.\n\nThanks,\nMaya",
+    description: [
+        "Maya Chen in Procurement needs sign-off on Brightwater's data processing addendum for the product analytics rollout this week, so Brightwater can start on Monday. The DPA is attached as Brightwater_DPA.docx.",
+        "",
+        "--- Original message ---",
+        "From: Maya Chen <maya@alia.ai> in Gmail",
+        "Sent: 9 Nov 2026, 09:41 UTC",
+        "Subject: DPA for Brightwater: need sign-off this week",
+        "",
+        "Hi Legal,",
+        "",
+        "Brightwater sent over their DPA for the product analytics rollout (attached). We need sign-off this week so they can start on Monday.",
+        "",
+        "Thanks,",
+        "Maya",
+    ].join("\n"),
     requester_name: "Maya Chen", requester_email: "maya@alia.ai", requester_team: "Procurement",
     requested_by_date: "2026-11-13", state: "in_review", version: 2,
     assignee_id: PRIYA.user_id, assignee_name: PRIYA.display_name,
@@ -149,15 +173,13 @@ const bwDocuments = [{
 }];
 
 const PREPROCESS_NOTE = [
-    "I reviewed Acme_NDA.docx against the NDA playbook and marked it up with tracked changes.",
+    "I reviewed **Acme_NDA.docx** against the NDA playbook and marked it up with tracked changes.",
     "",
-    "Mutuality: Acme's form is one-way and protects only Acme's information. The playbook asks for a mutual NDA when both sides share information, so I made the obligations mutual throughout (sections 1 to 13). Worth confirming with Jordan what we'll share.",
+    "- **Mutuality.** Acme's form is one-way and protects only Acme's information. The playbook asks for a mutual NDA when both sides share information, so I made the obligations mutual throughout. Worth confirming with Jordan what we'll share.",
+    "- **Term.** Obligations run for 7 years after the last disclosure (section 8.2). The playbook allows 3, so I changed it to 3.",
+    "- **Residuals.** Section 6 lets Acme use anything its people remember from our discussions. The playbook rejects residuals clauses, so I deleted it.",
     "",
-    "Term: obligations run for 7 years after the last disclosure (section 8.2). The playbook allows 3, so I changed it to 3. Trade secrets stay protected for as long as they're trade secrets.",
-    "",
-    "Residuals: section 6 lets Acme use anything its people remember from our discussions. The playbook rejects residuals clauses, so I deleted it.",
-    "",
-    "No change needed: Delaware law and courts (section 12) and the ban on training models with the other side's information (section 2.1(d)) are within the playbook.",
+    "**No change needed:** Delaware law and courts (section 12), and the ban on training models with the other side's information (section 2.1(d)).",
 ].join("\n");
 
 let messages = [

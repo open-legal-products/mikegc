@@ -8,7 +8,7 @@ AUDIO="$(cd "$1" && pwd)"
 OUT="$(mkdir -p "$2" && cd "$2" && pwd)"
 shift 2
 FORMATS=("$@")
-[ "$#" -eq 0 ] && FORMATS=(16x9 1x1 9x16)
+[ "$#" -eq 0 ] && FORMATS=(16x9)  # pass 1x1 9x16 for the cutdowns
 
 python3 "$HERE/make_cues.py" "$AUDIO" > /dev/null
 python3 "$HERE/mix.py" "$AUDIO" "$OUT/mix.wav"

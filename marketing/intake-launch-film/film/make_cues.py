@@ -42,11 +42,12 @@ def hit(t, tol=0.12):
 
 
 hits = {
-    # Beat 4: the Slack thread rises on bar 11's accent; Jordan's message on bar 12;
-    # MikeGC's reply on the strong accent at 20.1; the request page on the bar-14 fermata chord.
-    "thread": hit(17.80), "jordan": hit(18.83), "ack": hit(20.11), "request": hit(22.91),
-    "subject": hit(23.475), "documents": hit(24.275), "punch": hit(25.05),
-    "requester": hit(25.5, 0.2), "deadline": hit(25.92), "created": hit(26.68),
+    # Beat 4: the Slack thread rises on bar 11's accent, Jordan's message on bar 12 and
+    # MikeGC's reply on the accent at 19.7. The request page arrives on the accent at
+    # 20.9, then the camera moves to Messages on the bar-14 fermata chord, to Activity
+    # on bar 15's downbeat and to the details pane on the accent at 26.7.
+    "thread": hit(17.80), "jordan": hit(18.83), "ack": hit(19.67), "request": hit(20.94),
+    "messages": hit(22.91), "activity4": hit(25.05), "details": hit(26.68),
     # Beat 5: rules on wave 6's first chord, the rule's glow on its second; the toast on wave 7.
     "rules": hit(27.93), "rule": hit(28.146), "queue": hit(30.75), "toast": hit(31.12), "open": hit(32.43),
     "activity": hit(33.36), "note": hit(34.01), "doc": hit(36.22), "redline": hit(36.77),
