@@ -13,7 +13,6 @@ import {
 } from "react";
 import {
     ArrowRight,
-    Inbox,
     Loader2,
     Square,
     Waypoints,
@@ -22,6 +21,11 @@ import {
 import { AddDocButton } from "./AddDocButton";
 import { PlaybookPickerModal } from "../playbooks/PlaybookPickerModal";
 import { PlaybookPillUI } from "@/shared/ui/PlaybookPillUI";
+import { IntakePill } from "./IntakePill";
+import {
+    IntakeRequestPickerModal,
+    type PickedIntakeRequest,
+} from "../intake/IntakeRequestPickerModal";
 import { UploadOverlay } from "./UploadOverlay";
 import { COMPOSER_SEND_BUTTON_CLASS } from "@/shared/ui/ComposerSendButtonUI.styles";
 import { ExcerptModalUI } from "@/shared/ui/ExcerptModalUI";
@@ -103,7 +107,7 @@ export interface ChatInputHandle {
     attachPlaybook: (playbook: { id: string; title: string }) => void;
     /**
      * Attaches an intake request to process, as a pill, with a suggested
-     * prompt; nothing is sent until the user sends it.
+     * prompt when the draft is empty; nothing is sent until the user sends it.
      */
     startIntake: (intake: { id: string; title: string }, prompt?: string) => void;
 }
@@ -134,6 +138,12 @@ interface Props {
     chatLoading?: boolean;
     hideAddDocButton?: boolean;
     hideWorkflowButton?: boolean;
+    /**
+     * Offers the + menu's intake request picker and receives the pick. Only
+     * the general Assistant passes it: a request is processed in a chat of
+     * its own, outside any project.
+     */
+    onIntakeRequest?: (request: PickedIntakeRequest) => void;
     projectName?: string;
     projectCmNumber?: string | null;
     projectId?: string;
@@ -182,6 +192,7 @@ function ChatInputForChatImpl(
         chatLoading = false,
         hideAddDocButton,
         hideWorkflowButton,
+        onIntakeRequest,
         projectName,
         projectCmNumber,
         projectId,
@@ -263,6 +274,7 @@ function ChatInputForChatImpl(
         title: string;
     } | null>(null);
     const [playbookModalOpen, setPlaybookModalOpen] = useState(false);
+    const [intakeModalOpen, setIntakeModalOpen] = useState(false);
     const [playbookModalInitialId, setPlaybookModalInitialId] = useState<
         string | undefined
     >(undefined);
@@ -533,7 +545,9 @@ function ChatInputForChatImpl(
         },
         startIntake: (intake, prompt) => {
             setSelectedIntake(intake);
-            if (prompt !== undefined) setValue(prompt);
+            // A draft already typed stays; the suggestion fills an empty one.
+            if (prompt !== undefined)
+                setValue((current) => (current.trim() ? current : prompt));
             requestAnimationFrame(() => {
                 const textarea = textareaRef.current;
                 if (!textarea) return;
@@ -820,15 +834,8 @@ function ChatInputForChatImpl(
                                 />
                             )}
                             {selectedIntake && (
-                                <DocumentPill
-                                    filename={selectedIntake.title}
-                                    icon={
-                                        <Inbox
-                                            aria-hidden="true"
-                                            className="h-2.5 w-2.5 shrink-0"
-                                        />
-                                    }
-                                    status="Intake request"
+                                <IntakePill
+                                    title={selectedIntake.title}
                                     onRemove={() => setSelectedIntake(null)}
                                 />
                             )}
@@ -945,6 +952,11 @@ function ChatInputForChatImpl(
                                                   );
                                                   setPlaybookModalOpen(true);
                                               }
+                                    }
+                                    onIntakeRequests={
+                                        onIntakeRequest
+                                            ? () => setIntakeModalOpen(true)
+                                            : undefined
                                     }
                                 />
                             )}
@@ -1067,6 +1079,14 @@ function ChatInputForChatImpl(
                 }
                 initialPlaybookId={playbookModalInitialId}
             />
+            {onIntakeRequest && (
+                <IntakeRequestPickerModal
+                    open={intakeModalOpen}
+                    onClose={() => setIntakeModalOpen(false)}
+                    onSelect={onIntakeRequest}
+                    breadcrumbs={["Assistant", "Add intake request"]}
+                />
+            )}
             <ApiKeyMissingPopup
                 open={apiKeyModalProvider !== null}
                 onClose={() => setApiKeyModalProvider(null)}

@@ -973,6 +973,31 @@ export async function consumeAssistantTurnStream(
           continue;
         }
 
+        if (data.type === "intake_action") {
+          const action = data.action;
+          if (
+            typeof data.card_id === "string" &&
+            typeof data.org_id === "string" &&
+            typeof data.request_id === "string" &&
+            (action === "resolve" ||
+              action === "cancel" ||
+              action === "wait" ||
+              action === "resume" ||
+              action === "reopen")
+          ) {
+            pushEvent({
+              type: "intake_action",
+              card_id: data.card_id,
+              org_id: data.org_id,
+              request_id: data.request_id,
+              action,
+              ...(typeof data.note === "string" ? { note: data.note } : {}),
+            });
+            pushThinkingPlaceholder();
+          }
+          continue;
+        }
+
         if (data.type === "ask_inputs") {
           const eventId =
             typeof data.event_id === "string" ? data.event_id.trim() : "";

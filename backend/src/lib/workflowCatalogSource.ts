@@ -21,11 +21,16 @@ const DEFAULT_QUICK_ACTION_PROMPT =
   "Execute this workflow on the selected documents.";
 const DEFAULT_WORD_QUICK_ACTION_PROMPT =
   "Execute this workflow on this Word document.";
+// MikeGC's quick actions are the three contract workflows. The original Mike
+// defaults are still installed for every user, without quick actions.
 const DEFAULT_WORKFLOWS = [
-  { key: "proofread", quickAction: true, wordQuickAction: true },
-  { key: "compare-documents", quickAction: true, wordQuickAction: false },
-  { key: "extract-key-terms", quickAction: true, wordQuickAction: true },
-  { key: "draft-from-template", quickAction: true, wordQuickAction: true },
+  { key: "contract-intake", quickAction: true, wordQuickAction: true },
+  { key: "contract-markup", quickAction: true, wordQuickAction: true },
+  { key: "obligation-tracking", quickAction: true, wordQuickAction: true },
+  { key: "proofread", quickAction: false, wordQuickAction: false },
+  { key: "compare-documents", quickAction: false, wordQuickAction: false },
+  { key: "extract-key-terms", quickAction: false, wordQuickAction: false },
+  { key: "draft-from-template", quickAction: false, wordQuickAction: false },
   {
     key: "commercial-agreement-tabular-review",
     quickAction: false,

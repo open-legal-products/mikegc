@@ -38,6 +38,9 @@ async function archive(options: { duplicate?: boolean } = {}) {
   const zip = new JSZip();
   const root = "mike-workflows-test/";
   for (const [key, title] of [
+    ["contract-intake", "Contract Intake"],
+    ["contract-markup", "Contract Markup"],
+    ["obligation-tracking", "Obligation Tracking"],
     ["compare-documents", "Compare Documents"],
     ["extract-key-terms", "Extract Key Terms"],
     ["draft-from-template", "Draft From Template"],
@@ -125,15 +128,38 @@ describe("GitHub workflow catalog preparation", () => {
         JSON.parse(await readFile(prepared.catalogPath, "utf8")) as unknown,
       );
       expect(document.source_commit).toBe(COMMIT);
-      expect(document.workflows).toHaveLength(6);
+      expect(document.workflows).toHaveLength(9);
+      expect(
+        document.workflows.find(
+          (workflow) => workflow.workflow_key === "contract-intake",
+        ),
+      ).toMatchObject({
+        distribution: "default",
+        default_sort_order: 0,
+        quick_action_name: "Contract Intake",
+        word_quick_action: true,
+      });
+      expect(
+        document.workflows
+          .filter((workflow) => workflow.quick_action_name !== null)
+          .map((workflow) => workflow.workflow_key)
+          .sort(),
+      ).toEqual(["contract-intake", "contract-markup", "obligation-tracking"]);
+      expect(
+        document.workflows
+          .filter((workflow) => workflow.word_quick_action)
+          .map((workflow) => workflow.workflow_key)
+          .sort(),
+      ).toEqual(["contract-intake", "contract-markup", "obligation-tracking"]);
       expect(
         document.workflows.find(
           (workflow) => workflow.workflow_key === "proofread",
         ),
       ).toMatchObject({
         distribution: "default",
-        default_sort_order: 0,
-        quick_action_name: "Proofread",
+        default_sort_order: 3,
+        quick_action_name: null,
+        word_quick_action: false,
       });
       const asset = document.workflows.find(
         (workflow) => workflow.workflow_key === "proofread",

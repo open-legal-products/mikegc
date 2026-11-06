@@ -27,6 +27,7 @@ import {
     type SubagentTranscript,
 } from "./delegateRuns";
 import { scopedDocuments } from "./documentScope";
+import { INTAKE_ACTION_TOOL_NAME } from "./intakeActions";
 import { createChildWebTurnState, type WebTurnState } from "./webSearchTools";
 
 export const DELEGATE_TOOL_NAME = "delegate";
@@ -40,6 +41,7 @@ export const SUBAGENT_EXCLUDED_TOOL_NAMES: ReadonlySet<string> = new Set([
     DELEGATE_TOOL_NAME,
     "ask_inputs",
     "create_text_card",
+    INTAKE_ACTION_TOOL_NAME,
 ]);
 
 export const MAX_SUBAGENTS_PER_ANSWER = 8;

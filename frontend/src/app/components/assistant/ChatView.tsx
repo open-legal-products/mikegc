@@ -28,6 +28,7 @@ import {
 } from "lucide-react";
 import { UserMessage } from "./UserMessage";
 import { AssistantMessage } from "./AssistantMessage";
+import { latestIntakeActionCardId } from "./IntakeActionCard";
 import { ChatInput } from "./ChatInput";
 import { InitialView } from "./InitialView";
 import { QuickActionsModal } from "./QuickActionsModal";
@@ -98,6 +99,7 @@ import { getIntakeRequest, getPlaybook } from "@/app/lib/mikeApi";
 import { LINKED_PLAYBOOK_PARAM } from "@/app/lib/assistantPlaybookLink";
 import {
     INTAKE_PROCESS_PROMPT,
+    assistantPathWithIntake,
     LINKED_INTAKE_ORG_PARAM,
     LINKED_INTAKE_PARAM,
 } from "@/app/lib/assistantIntakeLink";
@@ -1010,7 +1012,7 @@ export function AssistantChatColumn({
         );
     }, [paneId, canWrite, chatLoading]);
 
-    // "Process in Assistant" on an intake request opens a new chat with
+    // "Assistant" on an intake request opens a new chat with
     // `?intake=`: its pill and a suggested prompt wait in the composer, and
     // nothing is sent until the user sends it. Then drop it from the URL.
     // The new chat is filed in the active workspace and the server takes the
@@ -1134,6 +1136,14 @@ export function AssistantChatColumn({
                         onEditQuickActions={() =>
                             setQuickActionsModalOpen(true)
                         }
+                        // A new chat takes the request here, as the request
+                        // page's Assistant button does.
+                        onIntakeRequest={(request) =>
+                            chatInputRef.current?.startIntake(
+                                { id: request.id, title: request.title },
+                                INTAKE_PROCESS_PROMPT,
+                            )
+                        }
                     />
                 ) : (
                     <>
@@ -1186,6 +1196,8 @@ export function AssistantChatColumn({
                                         const pendingAskInputIndex =
                                             findPendingAskInput(messages)
                                                 ?.messageIndex ?? -1;
+                                        const latestIntakeCardId =
+                                            latestIntakeActionCardId(messages);
                                         return messages.map((msg, i) => (
                                             <div
                                                 key={msg.id ?? i}
@@ -1234,6 +1246,9 @@ export function AssistantChatColumn({
                                                         }
                                                         awaitingInput={
                                                             i === pendingAskInputIndex
+                                                        }
+                                                        latestIntakeCardId={
+                                                            latestIntakeCardId
                                                         }
                                                         isError={!!msg.error}
                                                         errorMessage={
@@ -1374,6 +1389,22 @@ export function AssistantChatColumn({
                                                 chatReasoningLevel={chatReasoningLevel}
                                                 onDocumentClick={
                                                     handleAttachedDocumentClick
+                                                }
+                                                // A chat with messages can't
+                                                // take a request, so it opens
+                                                // in a new chat. The side
+                                                // chat has no page to open
+                                                // one in.
+                                                onIntakeRequest={
+                                                    paneId === "primary"
+                                                        ? (request) =>
+                                                              router.push(
+                                                                  assistantPathWithIntake(
+                                                                      request.id,
+                                                                      request.orgId,
+                                                                  ),
+                                                              )
+                                                        : undefined
                                                 }
                                             />
                                         </ChatInputPrompt>

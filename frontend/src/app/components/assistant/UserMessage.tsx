@@ -2,9 +2,10 @@
 
 import { useState } from "react";
 import Link from "next/link";
-import { ClipboardCheck, Inbox, Waypoints } from "lucide-react";
+import { ClipboardCheck, Waypoints } from "lucide-react";
 import { playbookPath } from "../playbooks/PlaybookTable";
 import { FileTypeIcon } from "../shared/FileTypeIcon";
+import { IntakePill } from "./IntakePill";
 import type { MessageFile } from "../shared/types";
 import { LIQUID_GLASS_FLAT_CLASS } from "@/shared/ui/LiquidGlassUI";
 import {
@@ -20,7 +21,7 @@ interface Props {
     workflow?: { id: string; title: string };
     /** The playbook this message ran; its pill links to the playbook. */
     playbook?: { id: string; title: string };
-    /** The intake request this message processed, shown like a document. */
+    /** The intake request this message processed. */
     intake?: { id: string; title: string };
     onFileClick?: (file: MessageFile) => void;
     /** Reveals the workflow this message ran, in the workflow modal. */
@@ -103,21 +104,7 @@ export function UserMessage({
                                 </span>
                             </Link>
                         )}
-                        {intake && (
-                            <div
-                                title={intake.title}
-                                className={`inline-flex items-center gap-1 rounded-[10px] py-0.5 pl-2 pr-2.5 text-xs text-gray-800 ${LIQUID_GLASS_FLAT_CLASS}`}
-                            >
-                                <Inbox
-                                    aria-hidden="true"
-                                    className="h-2.5 w-2.5 shrink-0"
-                                />
-                                <span className="max-w-[140px] truncate">
-                                    {intake.title}
-                                </span>
-                                <span className="sr-only">, intake request</span>
-                            </div>
-                        )}
+                        {intake && <IntakePill title={intake.title} />}
                         {hasFiles &&
                             files.map((f, i) => {
                                 const className =

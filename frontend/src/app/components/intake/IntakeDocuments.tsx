@@ -1,7 +1,7 @@
 "use client";
 
 import { useId, useRef, useState } from "react";
-import { Loader2 } from "lucide-react";
+import { Cloud, Loader2, Plus, Upload } from "lucide-react";
 import type { IntakeDocument } from "@mike/contracts";
 import type { Document } from "@/app/components/shared/types";
 import {
@@ -21,6 +21,13 @@ import { FileTypeIcon } from "@/app/components/shared/FileTypeIcon";
 import { IntakeUploadPrompt } from "./IntakeDocumentDropZone";
 import { LIQUID_GLASS_MODAL_ROW_HOVER_CLASS } from "@/app/components/ui/liquid-surface";
 import { DocumentSidePanel } from "@/app/components/shared/DocumentSidePanel";
+import { TextButtonUI } from "@/shared/ui/TextButtonUI";
+import {
+  Dropdown,
+  DropdownContent,
+  DropdownItem,
+  DropdownTrigger,
+} from "@/shared/ui/dropdown";
 
 const noop = () => {};
 
@@ -202,9 +209,11 @@ export function useIntakeDocumentViewer() {
 }
 
 /**
- * A request's documents as rows like the file directory's, above a grey field
- * that adds more; files can also be dropped anywhere on the page. Every member
- * of the organization can open them in the document viewer and add more.
+ * A request's documents as rows like the file directory's. Until it has any,
+ * a grey field below adds them; after that an Add menu beside the heading
+ * does, with saved documents or an upload. Files can also be dropped anywhere
+ * on the page. Every member of the organization can open them in the
+ * document viewer and add more.
  */
 export function IntakeDocuments({
   documents,
@@ -224,15 +233,68 @@ export function IntakeDocuments({
 }) {
   const heading = useId();
   const input = useRef<HTMLInputElement>(null);
+  // Set while a menu item opens a dialog, which then keeps focus.
+  const openingDialog = useRef(false);
   const busy = uploading.length > 0;
   const spinner = <IntakeDocumentSpinner />;
   const rows = documents.length + uploading.length;
+  const hasDocuments = documents.length > 0;
+  const uploadingStatus =
+    uploading.length === 1
+      ? "Uploading 1 document…"
+      : `Uploading ${uploading.length} documents…`;
 
   return (
     <section aria-labelledby={heading} className="@container">
-      <h2 id={heading} className="mb-2 text-sm font-medium text-gray-900">
-        Documents
-      </h2>
+      <div className="mb-2 flex min-h-6 items-center justify-between gap-3">
+        <h2 id={heading} className="text-sm font-medium text-gray-900">
+          Documents
+        </h2>
+        {hasDocuments && (
+          <Dropdown>
+            <DropdownTrigger asChild>
+              <TextButtonUI
+                size="icon-xs"
+                aria-label="Add documents"
+                title="Add documents"
+                className="-mr-1 h-6"
+              >
+                <Plus aria-hidden="true" className="h-4 w-4" />
+              </TextButtonUI>
+            </DropdownTrigger>
+            <DropdownContent
+              align="end"
+              className="min-w-40"
+              onCloseAutoFocus={(event) => {
+                if (openingDialog.current) event.preventDefault();
+                openingDialog.current = false;
+              }}
+            >
+              {onBrowse && (
+                <DropdownItem
+                  onSelect={() => {
+                    openingDialog.current = true;
+                    onBrowse();
+                  }}
+                >
+                  <Cloud
+                    aria-hidden="true"
+                    className="h-4 w-4 shrink-0 text-gray-500"
+                  />
+                  Saved Documents
+                </DropdownItem>
+              )}
+              <DropdownItem onSelect={() => input.current?.click()}>
+                <Upload
+                  aria-hidden="true"
+                  className="h-4 w-4 shrink-0 text-gray-500"
+                />
+                Upload Documents
+              </DropdownItem>
+            </DropdownContent>
+          </Dropdown>
+        )}
+      </div>
       <input
         ref={input}
         type="file"
@@ -247,7 +309,9 @@ export function IntakeDocuments({
         }}
       />
       {rows > 0 && (
-        <div className="-mx-2 mb-3 text-xs">
+        // Rows keep their own padding for the hover; with no field below,
+        // the last one sits as far from the card's edge as from its sides.
+        <div className={`-mx-2 text-xs ${hasDocuments ? "-mb-1" : "mb-3"}`}>
           <div
             aria-hidden="true"
             className={`${DOCUMENT_GRID_CLASS} px-2 pb-1 pt-0.5 text-[11px] font-medium text-gray-400`}
@@ -342,42 +406,46 @@ export function IntakeDocuments({
           </ul>
         </div>
       )}
-      <div
-        aria-busy={busy}
-        className={`rounded-xl bg-gray-100 ${rows ? "p-2" : "p-4"}`}
-      >
-        {busy ? (
-          <p
-            className="py-1.5 text-center text-xs text-gray-500"
-            aria-live="polite"
-          >
-            {uploading.length === 1
-              ? "Uploading 1 document…"
-              : `Uploading ${uploading.length} documents…`}
+      {hasDocuments ? (
+        <>
+          {/* The rows show each upload; this says so to a screen reader. */}
+          <p className="sr-only" aria-live="polite">
+            {busy ? uploadingStatus : ""}
           </p>
-        ) : rows ? (
-          <button
-            type="button"
-            onClick={() => (onBrowse ? onBrowse() : input.current?.click())}
-            className="w-full rounded-lg py-1.5 text-center text-xs text-gray-500 transition-colors hover:text-gray-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40"
-          >
-            Drop more documents here, or click to add more.
-          </button>
-        ) : (
-          <button
-            type="button"
-            onClick={() => (onBrowse ? onBrowse() : input.current?.click())}
-            className="w-full rounded-lg py-4 text-center text-sm text-gray-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40"
-          >
-            <IntakeUploadPrompt />
-          </button>
-        )}
-        {warning && (
-          <p role="alert" className="mt-2 text-xs text-red-600">
-            {warning}
-          </p>
-        )}
-      </div>
+          {warning && (
+            <p role="alert" className="mt-3 text-xs text-red-600">
+              {warning}
+            </p>
+          )}
+        </>
+      ) : (
+        <div
+          aria-busy={busy}
+          className={`rounded-xl bg-gray-100 ${rows ? "p-2" : "p-4"}`}
+        >
+          {busy ? (
+            <p
+              className="py-1.5 text-center text-xs text-gray-500"
+              aria-live="polite"
+            >
+              {uploadingStatus}
+            </p>
+          ) : (
+            <button
+              type="button"
+              onClick={() => (onBrowse ? onBrowse() : input.current?.click())}
+              className="w-full rounded-lg py-4 text-center text-sm text-gray-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40"
+            >
+              <IntakeUploadPrompt />
+            </button>
+          )}
+          {warning && (
+            <p role="alert" className="mt-2 text-xs text-red-600">
+              {warning}
+            </p>
+          )}
+        </div>
+      )}
     </section>
   );
 }

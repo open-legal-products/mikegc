@@ -16,11 +16,21 @@ export function assistantHistoryContent(message: {
 }): string {
   // Cards are delivered outside prose. Include them in order even after a
   // reload, when `content` contains only the joined prose from this turn.
-  if (message.events?.some((event) => event.type === "text_card")) {
+  if (
+    message.events?.some(
+      (event) => event.type === "text_card" || event.type === "intake_action",
+    )
+  ) {
     return message.events
       .flatMap((event) => {
         if (event.type === "content") return [event.text];
         if (event.type === "text_card") return [`${event.title}\n${event.text}`];
+        // The note too, so the model can revise it. Whether the user
+        // confirmed is not recorded; a status change may be a teammate's.
+        if (event.type === "intake_action")
+          return [
+            `[Proposed intake status change: ${event.action}${event.note ? `, with note ${JSON.stringify(event.note)}` : ""}. Whether the user confirmed it is not recorded.]`,
+          ];
         return [];
       })
       .join("\n\n");

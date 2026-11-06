@@ -15,7 +15,7 @@ import {
   announceIntakeNotifications,
   planIntakeNotificationToasts,
   type IntakeNotificationToast,
-} from "./intakeNotifications";
+} from "./intakeNotificationToasts";
 
 /** How often an open, visible tab checks for news. */
 export const INTAKE_NOTIFICATION_POLL_MS = 30_000;

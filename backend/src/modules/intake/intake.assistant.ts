@@ -86,7 +86,9 @@ export async function intakeChatBrief(
   db: Db,
   actorId: string,
   requestId: string,
-): Promise<ServiceResult<{ brief: string; documentIds: string[] }>> {
+): Promise<
+  ServiceResult<{ brief: string; documentIds: string[]; orgId: string }>
+> {
   const workspace = await intakeRequestWorkspace(db, actorId, requestId);
   if (!workspace.ok) return workspace;
   const scope: IntakeScope = { orgId: workspace.data.orgId, actorId };
@@ -104,6 +106,7 @@ export async function intakeChatBrief(
     documentIds: documents.data
       .filter((d) => d.status === "ready")
       .map((d) => d.document_id),
+    orgId: workspace.data.orgId,
   });
 }
 

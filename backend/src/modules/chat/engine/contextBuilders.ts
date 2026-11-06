@@ -897,6 +897,7 @@ export function stripTransientAssistantEvents(events: AssistantEvent[]) {
 // deliberately, instead of silently dropping an otherwise useful response.
 const COMPLETES_TEXTLESS_TURN = {
   text_card: true,
+  intake_action: true,
   reasoning: false,
   ask_inputs: true,
   ask_inputs_response: false,

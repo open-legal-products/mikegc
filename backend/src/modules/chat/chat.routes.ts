@@ -606,6 +606,7 @@ chatRouter.post("/", requireAuth, asyncRoute(async (req, res) => {
         selectedReasoningLevel,
         nonce,
         approvalEvents,
+        intakeRequest,
     } = prep.prepared;
     let chatTitle = prep.prepared.chatTitle;
     let completedTurnPersisted = prep.prepared.completedTurnPersisted;
@@ -767,6 +768,7 @@ chatRouter.post("/", requireAuth, asyncRoute(async (req, res) => {
                 conversationId: chatId,
                 includeMemory: true,
                 connectorApprovals: true,
+                intakeRequest,
                 memoryProjectId: canReadProjectMemory
                     ? resolvedProjectId
                     : null,

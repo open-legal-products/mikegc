@@ -23,6 +23,7 @@ import type { Db } from "../../../lib/supabase";
 import { buildUserMcpTools } from "../../../lib/mcpConnectors";
 import { buildGoogleDriveTools } from "../../../lib/integrations/googleDrive";
 import { COURTLISTENER_TOOLS } from "./tools/courtlistenerTools";
+import { INTAKE_ACTION_TOOL } from "./tools/intakeActions";
 import { createProviderWebSearchTracker } from "./tools/providerWebSearch";
 import {
   MIKE_WEB_SEARCH_SYSTEM_PROMPT,
@@ -257,6 +258,11 @@ export async function runLLMStream(params: {
   /** Expose ask_inputs only to clients that can render and answer it. */
   includeAskInputs?: boolean;
   /**
+   * The intake request the chat was started from: the assistant may propose
+   * changing its status, for the user to confirm.
+   */
+  intakeRequest?: { orgId: string; requestId: string } | null;
+  /**
    * The surface continues a paused turn from an ask_inputs_response, so a
    * connector write can wait there for the user's approval. Surfaces without
    * that continuation refuse writes that need approval instead.
@@ -350,6 +356,7 @@ export async function runLLMStream(params: {
     includeResearchTools = true,
     webSearch = null,
     includeAskInputs = true,
+    intakeRequest = null,
     connectorApprovals = false,
     allowDocumentMutation = true,
     workflowStore,
@@ -402,6 +409,7 @@ export async function runLLMStream(params: {
     ...researchTools,
     ...WORKFLOW_TOOLS,
     ...PLAYBOOK_TOOLS,
+    ...(intakeRequest ? [INTAKE_ACTION_TOOL] : []),
     ...webTools,
     ...(subagentRuns && chatModel
       ? [delegateTool(chatModel, sameProviderModels(chatModel, apiKeys ?? {}))]
@@ -914,6 +922,7 @@ export async function runLLMStream(params: {
           docsEdited,
           askInputsEvents,
           textCardEvents,
+          intakeActionEvents,
           courtlistenerEvents,
           caseCitationEvents,
           mcpEvents,
@@ -939,6 +948,7 @@ export async function runLLMStream(params: {
             model: selectedModel,
             documentLocks,
             documentsScoped: subagentRun?.documentsScoped,
+            intakeRequest,
           },
         );
         throwIfAborted(signal);
@@ -964,6 +974,7 @@ export async function runLLMStream(params: {
         }
         events.push(...(documentSearchEvents ?? []));
         events.push(...(textCardEvents ?? []));
+        events.push(...(intakeActionEvents ?? []));
         for (const dl of docsCreated) {
           events.push({
             type: "doc_created",

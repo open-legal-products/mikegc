@@ -24,6 +24,19 @@ describe("assistantHistoryContent", () => {
     })).toBe("Before.\n\nDraft\nFirst paragraph.\n\nSecond paragraph.\n\nAfter.");
   });
 
+  it("tells the model which intake status change it proposed", () => {
+    expect(assistantHistoryContent({ content: "Confirm it below.", events: [
+      { type: "content", text: "Confirm it below." },
+      { type: "intake_action", card_id: "card-1", org_id: "org-1", request_id: "request-1", action: "cancel", note: "Duplicate" },
+    ] })).toBe("Confirm it below.\n\n[Proposed intake status change: cancel, with note \"Duplicate\". Whether the user confirmed it is not recorded.]");
+  });
+
+  it("names a proposal without a note on its own", () => {
+    expect(assistantHistoryContent({ content: "", events: [
+      { type: "intake_action", card_id: "card-1", org_id: "org-1", request_id: "request-1", action: "reopen" },
+    ] })).toBe("[Proposed intake status change: reopen. Whether the user confirmed it is not recorded.]");
+  });
+
   it("keeps content that is already present", () => {
     expect(
       assistantHistoryContent({ content: "Hydrated", events: [] }),

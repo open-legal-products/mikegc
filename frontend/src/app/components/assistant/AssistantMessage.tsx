@@ -1,6 +1,7 @@
 "use client";
 
 import { TextCardUI } from "@/shared/ui/TextCardUI";
+import { IntakeActionCard } from "./IntakeActionCard";
 import { useRef, useState, type ReactNode } from "react";
 import type { WebSource } from "@mike/contracts";
 import { Check, Copy } from "lucide-react";
@@ -65,6 +66,12 @@ interface Props {
      * a neutral state and the copy button stays hidden.
      */
     awaitingInput?: boolean;
+    /**
+     * The chat's newest proposed intake status change. Only it can still be
+     * confirmed; an earlier one may already have been, and offering it again
+     * would repeat an old decision.
+     */
+    latestIntakeCardId?: string | null;
     isError?: boolean;
     /** Human-readable error text rendered alongside the red Mike icon. */
     errorMessage?: string;
@@ -138,6 +145,7 @@ export function AssistantMessage({
     events,
     isStreaming = false,
     awaitingInput = false,
+    latestIntakeCardId = null,
     isError = false,
     errorMessage,
     citations = [],
@@ -352,6 +360,11 @@ export function AssistantMessage({
               index: number;
           }
         | {
+              kind: "intake_action";
+              event: Extract<AssistantEvent, { type: "intake_action" }>;
+              index: number;
+          }
+        | {
               kind: "content";
               event: Extract<AssistantEvent, { type: "content" }>;
               index: number;
@@ -362,13 +375,19 @@ export function AssistantMessage({
         let current: Extract<EventGroup, { kind: "pre" }> | null = null;
         events.forEach((e, i) => {
             if (!isRenderableEvent(e)) return;
-            if (e.type === "content" || e.type === "text_card") {
+            if (
+                e.type === "content" ||
+                e.type === "text_card" ||
+                e.type === "intake_action"
+            ) {
                 if (current) {
                     groups.push(current);
                     current = null;
                 }
                 if (e.type === "text_card") {
                     groups.push({ kind: "text_card", event: e, index: i });
+                } else if (e.type === "intake_action") {
+                    groups.push({ kind: "intake_action", event: e, index: i });
                 } else {
                     groups.push({ kind: "content", event: e, index: i });
                 }
@@ -397,6 +416,7 @@ export function AssistantMessage({
     const hasContentAfter = (groupIdx: number): boolean => {
         for (let i = groupIdx + 1; i < groups.length; i++) {
             const g = groups[i];
+            if (g.kind === "intake_action") return true;
             if (
                 (g.kind === "content" || g.kind === "text_card") &&
                 g.event.text.length > 0
@@ -939,6 +959,18 @@ export function AssistantMessage({
                 {events && events.length > 0 ? (
                     <div className="flex flex-col gap-4">
                         {groups.map((g, gIdx) => {
+                            if (g.kind === "intake_action") {
+                                return (
+                                    <IntakeActionCard
+                                        key={`intake-${g.event.card_id}`}
+                                        event={g.event}
+                                        replaced={
+                                            g.event.card_id !==
+                                            latestIntakeCardId
+                                        }
+                                    />
+                                );
+                            }
                             if (g.kind === "text_card") {
                                 return (
                                     <TextCardUI

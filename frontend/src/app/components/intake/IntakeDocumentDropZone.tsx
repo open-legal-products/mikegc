@@ -2,6 +2,7 @@
 
 import { useRef, useState } from "react";
 import { DocumentPill } from "@/app/components/shared/DocumentPill";
+import { FileTypeIcon } from "@/app/components/shared/FileTypeIcon";
 import {
   SUPPORTED_DOCUMENT_ACCEPT,
   formatUnsupportedDocumentWarning,
@@ -9,14 +10,30 @@ import {
 } from "@/app/lib/documentUploadValidation";
 import type { IntakePickedDocument } from "./IntakeDocumentPicker";
 
-/** What an empty upload field asks for: the action, then the accepted files. */
+/** The accepted file types, upright and overlapping in a row. */
+const PROMPT_FILE_TYPES = ["pdf", "docx", "xlsx", "pptx"];
+
+/**
+ * What an empty upload field asks for: the accepted file types as icons,
+ * then the action. A screen reader hears the types in words.
+ */
 export function IntakeUploadPrompt() {
   return (
     <>
+      <span aria-hidden="true" className="mb-2 flex justify-center">
+        {PROMPT_FILE_TYPES.map((fileType, index) => (
+          <span
+            key={fileType}
+            className={`${index ? "-ml-2" : ""} drop-shadow-[0_1px_2px_rgba(15,23,42,0.18)]`}
+          >
+            <FileTypeIcon fileType={fileType} className="h-4 w-4" />
+          </span>
+        ))}
+      </span>
       <span className="block">
         Drag and drop documents here, or click to browse.
       </span>
-      <span className="mt-0.5 block text-xs text-gray-500">
+      <span className="sr-only">
         PDF, Word, Excel and PowerPoint files are supported.
       </span>
     </>

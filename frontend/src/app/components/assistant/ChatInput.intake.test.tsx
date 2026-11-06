@@ -98,6 +98,21 @@ describe("ChatInput intake request", () => {
         expect(screen.queryByText("Review mutual NDA")).toBeNull();
     });
 
+    it("keeps a draft already typed instead of the suggested prompt", async () => {
+        const user = userEvent.setup();
+        const { ref } = renderInput();
+
+        await user.type(screen.getByRole("combobox"), "Check the term");
+        act(() =>
+            ref.current?.startIntake(
+                { id: "request-1", title: "Review mutual NDA" },
+                "Process this intake request.",
+            ),
+        );
+        expect(screen.getByText("Review mutual NDA")).toBeInTheDocument();
+        expect(screen.getByRole("combobox")).toHaveValue("Check the term");
+    });
+
     it("sends without the request once its pill is removed", async () => {
         const user = userEvent.setup();
         const { onSubmit, ref } = renderInput();

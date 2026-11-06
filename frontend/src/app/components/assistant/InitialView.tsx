@@ -8,6 +8,7 @@ import { useAuth } from "@/app/contexts/AuthContext";
 import { useUserProfile } from "@/app/contexts/UserProfileContext";
 import { MikeIcon } from "@/shared/ui/MikeIconUI";
 import { ChatInput, type ChatInputHandle } from "./ChatInput";
+import type { PickedIntakeRequest } from "../intake/IntakeRequestPickerModal";
 import type { Document, Message, QuickAction } from "../shared/types";
 import {
     LIQUID_GLASS_HOVER_CLASS,
@@ -20,6 +21,8 @@ interface InitialViewProps {
     onDocumentClick?: (document: Document) => void;
     quickActions: QuickAction[];
     onEditQuickActions: () => void;
+    /** Offers the + menu's intake request picker; see ChatInput. */
+    onIntakeRequest?: (request: PickedIntakeRequest) => void;
 }
 
 const ICON_SIZE = 30;
@@ -30,6 +33,7 @@ export function InitialView({
     inputRef,
     quickActions,
     onEditQuickActions,
+    onIntakeRequest,
 }: InitialViewProps) {
     const { user } = useAuth();
     const { profile } = useUserProfile();
@@ -120,6 +124,7 @@ export function InitialView({
                     ref={chatInputRef}
                     onSubmit={onSubmit}
                     onDocumentClick={onDocumentClick}
+                    onIntakeRequest={onIntakeRequest}
                     onCancel={() => {}}
                     isLoading={false}
                 />

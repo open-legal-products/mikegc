@@ -43,6 +43,9 @@ Proofread the document.
   );
   zip.file(`${root}/assets/template.docx`, Buffer.from("template"));
   for (const [key, title] of [
+    ["contract-intake", "Contract Intake"],
+    ["contract-markup", "Contract Markup"],
+    ["obligation-tracking", "Obligation Tracking"],
     ["compare-documents", "Compare Documents"],
     ["extract-key-terms", "Extract Key Terms"],
     ["draft-from-template", "Draft From Template"],
@@ -118,7 +121,7 @@ describe("workflow catalog synchronization", () => {
       await expect(
         syncWorkflowCatalog({ rpc } as never, { temporaryRoot, fetchImpl }),
       ).resolves.toEqual({
-        workflows: 5,
+        workflows: 8,
         assets: 1,
         sourceCommit: COMMIT,
       });

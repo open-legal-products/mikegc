@@ -1,5 +1,11 @@
-import type { ConnectorApprovalItem, DocumentSearchEvent, TextCardEvent } from "@mike/contracts";
+import type {
+  ConnectorApprovalItem,
+  DocumentSearchEvent,
+  IntakeActionEvent,
+  TextCardEvent,
+} from "@mike/contracts";
 import { textCardEvent } from "./textCard";
+import { INTAKE_ACTION_TOOL_NAME, intakeActionEvent } from "./intakeActions";
 import { internalFailure } from "../../../../lib/serviceResult";
 import { canUseWorkflowInWorkspace } from "../../../../lib/workflowWorkspace";
 import { safeError } from "../../../../lib/safeError";
@@ -331,6 +337,8 @@ export async function runToolCalls(
     documentLocks?: KeyedLock;
     /** A subagent scoped to its docStore's documents: searches stay inside them. */
     documentsScoped?: boolean;
+    /** The intake request the chat was started from, whose status it may propose changing. */
+    intakeRequest?: { orgId: string; requestId: string } | null;
   } = {},
 ): Promise<{
   toolResults: unknown[];
@@ -355,6 +363,7 @@ export async function runToolCalls(
   docsEdited: DocEditedResult[];
   askInputsEvents: AskInputsEvent[];
   textCardEvents: TextCardEvent[];
+  intakeActionEvents: IntakeActionEvent[];
   courtlistenerEvents: CourtlistenerToolEvent[];
   caseCitationEvents: CaseCitationEvent[];
   mcpEvents: McpToolEvent[];
@@ -381,6 +390,7 @@ export async function runToolCalls(
   const docsEdited: DocEditedResult[] = [];
   const askInputsEvents: AskInputsEvent[] = [];
   const textCardEvents: TextCardEvent[] = [];
+  const intakeActionEvents: IntakeActionEvent[] = [];
   const courtlistenerEvents: CourtlistenerToolEvent[] = [];
   const caseCitationEvents: CaseCitationEvent[] = [];
   const mcpEvents: McpToolEvent[] = [];
@@ -611,6 +621,35 @@ export async function runToolCalls(
             : {
                 error: "Provide a non-empty title (up to 200 characters) and text (up to 100000 characters).",
               },
+        ),
+      });
+      continue;
+    }
+
+    if (tc.function.name === INTAKE_ACTION_TOOL_NAME) {
+      // Only a chat started from a request is offered the tool; a model
+      // naming it anywhere else gets nothing to change.
+      // A card of its own: a provider's call IDs can repeat across turns
+      // (local models' recovered calls restart at the same one), and the
+      // chat offers only its newest card for confirmation.
+      const proposed = options.intakeRequest
+        ? intakeActionEvent(crypto.randomUUID(), args, options.intakeRequest)
+        : { error: "This chat was not started from an intake request." };
+      if ("event" in proposed) {
+        intakeActionEvents.push(proposed.event);
+        write(`data: ${JSON.stringify(proposed.event)}\n\n`);
+      }
+      toolResults.push({
+        role: "tool",
+        tool_call_id: tc.id,
+        content: JSON.stringify(
+          "event" in proposed
+            ? {
+                card_id: proposed.event.card_id,
+                proposed: true,
+                note: "Shown to the user with a Confirm button. The request is unchanged until they confirm it.",
+              }
+            : { error: proposed.error },
         ),
       });
       continue;
@@ -2356,6 +2395,7 @@ export async function runToolCalls(
     docsEdited,
     askInputsEvents,
     textCardEvents,
+    intakeActionEvents,
     courtlistenerEvents,
     caseCitationEvents,
     mcpEvents,

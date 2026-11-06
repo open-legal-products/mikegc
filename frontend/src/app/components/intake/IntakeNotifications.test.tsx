@@ -10,7 +10,7 @@ import {
   INTAKE_NOTIFICATION_POLL_MS,
   IntakeNotifications,
 } from "./IntakeNotifications";
-import { onIntakeNotified } from "./intakeNotifications";
+import { onIntakeNotified } from "./intakeNotificationToasts";
 
 const push = vi.fn();
 vi.mock("next/navigation", () => ({ useRouter: () => ({ push }) }));

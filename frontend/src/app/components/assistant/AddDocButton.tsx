@@ -4,6 +4,7 @@ import { useRef } from "react";
 import {
     ClipboardCheck,
     Cloud,
+    Inbox,
     Loader2,
     PlusIcon,
     Upload,
@@ -23,15 +24,18 @@ interface Props {
     /** Adds the workflow and playbook pickers to the menu. */
     onWorkflows?: () => void;
     onPlaybooks?: () => void;
+    /** Adds the intake request picker; the general Assistant only. */
+    onIntakeRequests?: () => void;
     uploading?: boolean;
 }
 
-/** The composer's + menu: documents, then workflows and playbooks. */
+/** The composer's + menu: documents, then workflows, playbooks and intake requests. */
 export function AddDocButton({
     onBrowseAll,
     onLocalFiles,
     onWorkflows,
     onPlaybooks,
+    onIntakeRequests,
     uploading = false,
 }: Props) {
     const openingDialog = useRef(false);
@@ -76,7 +80,9 @@ export function AddDocButton({
                     <Cloud aria-hidden="true" className="h-4 w-4 shrink-0 text-gray-500" />
                     Saved Documents
                 </DropdownItem>
-                {(onWorkflows || onPlaybooks) && <DropdownSeparator />}
+                {(onWorkflows || onPlaybooks || onIntakeRequests) && (
+                    <DropdownSeparator />
+                )}
                 {onWorkflows && (
                     <DropdownItem onSelect={() => {
                         openingDialog.current = true;
@@ -93,6 +99,15 @@ export function AddDocButton({
                     }}>
                         <ClipboardCheck aria-hidden="true" className="h-4 w-4 shrink-0 text-gray-500" />
                         Playbooks
+                    </DropdownItem>
+                )}
+                {onIntakeRequests && (
+                    <DropdownItem onSelect={() => {
+                        openingDialog.current = true;
+                        onIntakeRequests();
+                    }}>
+                        <Inbox aria-hidden="true" className="h-4 w-4 shrink-0 text-gray-500" />
+                        Intake Requests
                     </DropdownItem>
                 )}
             </DropdownContent>

@@ -60,6 +60,21 @@ describe("consumeAssistantTurnStream", () => {
     ]);
     turn.finish();
   });
+  it("keeps intake status cards and ignores malformed ones", async () => {
+    const turn = begin();
+    const card = { type: "intake_action" as const, card_id: "card-1", org_id: "org-1", request_id: "request-1", action: "resolve" as const, note: "Signed." };
+    await consumeAssistantTurnStream(sseResponse([
+      frame(1, card),
+      frame(2, { ...card, card_id: "card-2", action: "delete" }),
+      frame(3, { type: "intake_action", card_id: "card-3", action: "wait" }),
+      frame(4, { type: "content_delta", text: "Confirm it above." }),
+      "data: [DONE]\n\n",
+    ]), { turn, sink: createTurnEventSink(turn, []), cursor: createTurnCursor("chat-a") });
+    expect(turn.turn.assistant.events).toEqual([
+      card, { type: "content", text: "Confirm it above.", isStreaming: true },
+    ]);
+    turn.finish();
+  });
   it("records what the answer ran on and drops malformed details", async () => {
     const turn = begin();
     await consumeAssistantTurnStream(sseResponse([
