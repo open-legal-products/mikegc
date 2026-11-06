@@ -17,6 +17,7 @@ export type ModalAction = Omit<
 interface ModalProps {
   open: boolean;
   onClose: () => void;
+  closeDisabled?: boolean;
   children: ReactNode;
   breadcrumbs?: ReactNode[];
   headerAction?: ReactNode;
@@ -39,6 +40,7 @@ interface ModalProps {
 export function Modal({
   open,
   onClose,
+  closeDisabled,
   children,
   breadcrumbs,
   headerAction,
@@ -57,6 +59,7 @@ export function Modal({
     <ModalUI
       open={open}
       onClose={onClose}
+      closeDisabled={closeDisabled}
       breadcrumbs={breadcrumbs}
       headerAction={headerAction}
       size={size}

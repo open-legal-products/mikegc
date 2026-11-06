@@ -257,6 +257,7 @@ export function IntakeDetailsPanel({
               <PopoverTrigger asChild>
                 <button
                   type="button"
+                  data-intake-detail="requester"
                   aria-label={`Requester: ${request.requester_name}`}
                   className={MENU_FIELD_CLASS}
                 >
@@ -420,6 +421,7 @@ export function TargetDateField({
           >
             <input
               id={inputId}
+              data-intake-detail="requested_by_date"
               type="text"
               value={shown}
               placeholder="None"
@@ -560,6 +562,9 @@ function ClarifyNotice({
       <p className="text-xs text-gray-500">
         MikeGC is waiting for the requester&apos;s answer (round {round} of{" "}
         {maxRounds}).
+      </p>
+      <p className="text-xs text-gray-500">
+        Saving details or changing the reviewer or status stops automatic questions.
       </p>
       {onStop && (
         <TextButtonUI
@@ -895,6 +900,7 @@ export function IntakeSubjectInput({
   return (
     <FormTextInput
       variant="minimal"
+      data-intake-detail="subject"
       aria-label="Subject"
       value={draft}
       maxLength={200}
@@ -958,6 +964,7 @@ export function IntakeDescription({
         {editable && !editing && (
           <button
             type="button"
+            data-intake-detail="description"
             aria-label="Edit request"
             onClick={() => setDraft(text)}
             title="Edit request"

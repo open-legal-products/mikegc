@@ -291,6 +291,13 @@ edit), stops MikeGC asking for good: later answers are recorded but run no
 AI. If it was waiting on the readiness check, preprocessing then runs with
 what the request has.
 
+Detail edits made while questions are active show a confirmation with the
+before and after values. **Save and stop follow-up** applies the edit and
+ends automatic questions; **Cancel edit** leaves both unchanged. Changing a
+reviewer or status is still an immediate, deliberate command, and the
+waiting notice explains that it also stops automatic questions. Editing
+details does not assign a reviewer.
+
 ### Visibility
 
 A Slack or Teams thread is visible to everyone in the channel, and the send
