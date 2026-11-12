@@ -141,7 +141,7 @@ services:
         # runtime variables, because the Dockerfile bakes them into the image.
         MIKE_VERSION: ${MIKE_VERSION:-}
         GIT_SHA: ${GIT_SHA:-}
-    image: &backend-image ${MIKE_IMAGE_REPO:-ghcr.io/open-legal-products}/mike-backend:${MIKE_IMAGE_TAG:-2.1.0}
+    image: &backend-image ${MIKE_IMAGE_REPO:-ghcr.io/open-legal-products}/mikegc-backend:${MIKE_IMAGE_TAG:-2.1.0}
     depends_on:
       db:
         condition: service_healthy
@@ -422,7 +422,7 @@ services:
       secrets:
         - SENTRY_AUTH_TOKEN
     # Same default tag as the backend image; pull both or build both.
-    image: ${MIKE_IMAGE_REPO:-ghcr.io/open-legal-products}/mike-frontend:${MIKE_IMAGE_TAG:-2.1.0}
+    image: ${MIKE_IMAGE_REPO:-ghcr.io/open-legal-products}/mikegc-frontend:${MIKE_IMAGE_TAG:-2.1.0}
     environment:
       - API_BASE_URL=${API_BASE_URL:-http://backend:3001}
       # Next server side (the /api gateway); same project as the browser.

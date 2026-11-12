@@ -27,6 +27,9 @@
 # Upstream publication requires complete Sentry configuration before any
 # registry lookup or build, so a missing secret cannot create a mapless release.
 #
+# MikeGC shares its owner with upstream Mike, so its images are named
+# mikegc-* to keep them apart from upstream's mike-* packages.
+#
 # Forks. The image owner is the repository owner, so a fork publishes to its
 # own namespace with no setup. Where events go is decided together with where
 # maps go, never silently upstream: the upstream repository bakes the built-in
@@ -223,7 +226,7 @@ jobs:
           # Retain the exact build independently of expiring Actions artifacts.
           # Never rebuild/overwrite this tag when saved discovery found it.
           push: true
-          tags: ${{ env.REGISTRY }}/${{ needs.identity.outputs.owner }}/mike-${{ matrix.image }}:build-${{ needs.identity.outputs.version }}
+          tags: ${{ env.REGISTRY }}/${{ needs.identity.outputs.owner }}/mikegc-${{ matrix.image }}:build-${{ needs.identity.outputs.version }}
           labels: |
             org.opencontainers.image.version=${{ needs.identity.outputs.version }}
             org.opencontainers.image.revision=${{ github.sha }}
@@ -316,7 +319,7 @@ jobs:
             echo "## Published $RELEASE"
             echo
             for image in backend frontend; do
-              echo "- \`$REGISTRY/$OWNER/mike-$image\` @ \`$(cat "digests/$image")\`: tags $TAGS"
+              echo "- \`$REGISTRY/$OWNER/mikegc-$image\` @ \`$(cat "digests/$image")\`: tags $TAGS"
             done
             echo
             echo "Error reporting baked into the images: $REPORTING. Source maps uploaded: $UPLOAD_MAPS."
