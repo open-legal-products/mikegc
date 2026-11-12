@@ -167,6 +167,8 @@ describe.skipIf(!container)("intake real PostgreSQL transactions", () => {
     sql(migration("20261111_03_intake_retire_postmark.sql"));
     sql(migration("20261111_04_intake_answer_automated.sql"));
     sql(migration("20261111_04_intake_answer_automated.sql"));
+    sql(migration("20261112_04_intake_update_expected_version.sql"));
+    sql(migration("20261112_04_intake_update_expected_version.sql"));
   }, 90000);
   afterAll(() => {
     execFileSync("docker", [
@@ -1083,6 +1085,7 @@ describe.skipIf(!container)("intake real PostgreSQL transactions", () => {
     sql(migration("20261110_02_intake_conversations_email.sql"));
     sql(migration("20261111_01_intake_agent.sql"));
     sql(migration("20261111_02_intake_edit_preserves_unread.sql"));
+    sql(migration("20261112_04_intake_update_expected_version.sql"));
   };
   it("backfills legacy requests from their creator's profile", () => {
     beforeReplay();
@@ -1428,6 +1431,9 @@ describe.skipIf(!container)("intake real PostgreSQL transactions", () => {
     // Details the database refuses fail the whole update.
     expect(() => agentUpdate(502, "' '")).toThrow(/22023/);
     expect(() => sql(`select public.intake_update_automated(${q(10)},${q(99)},${q(503)})`)).toThrow(/P0002/);
+    // Planned from an older version: refused, so newer details stand.
+    expect(() => sql(`select public.intake_update_automated(${q(10)},${q(21)},${q(504)},'Stale',null,null,'{}'::jsonb,1)`)).toThrow(/P0001/);
+    expect(sql(`select subject from public.intake_requests where id=${q(21)}`)).toBe("NDA for Acme");
   });
   it("never changes a detail a member has edited, or a closed request", () => {
     thread();
@@ -1833,7 +1839,7 @@ describe.skipIf(!container)("intake real PostgreSQL transactions", () => {
         "intake_reply_automated(uuid,uuid,uuid,text,jsonb)",
         "intake_record_delivery(uuid,uuid,text,text,text,jsonb)",
         "intake_mark_reply_seen(uuid,uuid,uuid,timestamptz)",
-        "intake_update_automated(uuid,uuid,uuid,text,text,date,jsonb)",
+        "intake_update_automated(uuid,uuid,uuid,text,text,date,jsonb,integer)",
         "intake_answer_automated(uuid,uuid,uuid,uuid,text)",
       ])
         expect(sql(`select has_function_privilege('${role}','public.${fn}','EXECUTE')`)).toBe("f");

@@ -267,6 +267,29 @@ describe("a requester's reply in the thread", () => {
     expect(request()).toMatchObject({ subject: "Review the Acme customer NDA" });
     expect(request().requested_by_date).toBeUndefined();
   });
+  it("plans again rather than overwrite details changed since its plan was made", async () => {
+    // A plan saved before a retry, made from version 1; a newer reply's
+    // update has since moved the request on.
+    const newer = "An NDA with Acme, a customer, needed by Friday.";
+    setup({
+      request: { assignee_id: sam, state: "in_review", version: 2, description: newer },
+      payload: {
+        ...slackReply,
+        recorded: true,
+        agent: {
+          agent: true,
+          update: { subject: null, description: "An NDA with Acme.", requested_by_date: null, lines: {} },
+        },
+        agentStage: null,
+        agentRound: 0,
+        agentVersion: 1,
+      },
+    });
+    await handleIntakeAgent(memory.db, job());
+    expect(mocks.stream).toHaveBeenCalledTimes(1);
+    expect(request()).toMatchObject({ description: newer, version: 2 });
+    expect(memory.rows("intake_messages").filter((m) => m.kind === "note")).toEqual([]);
+  });
   it("answers in the request's thread once the rule is decided, after updating it, without making it wait", async () => {
     setup({ request: { assignee_id: sam, state: "in_review" } });
     modelCalls([

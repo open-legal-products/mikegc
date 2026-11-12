@@ -529,6 +529,8 @@ export function requesterLoopRpc(): Record<string, RpcHandler> {
       if (!request) return { data: null, error: { code: "P0002" } };
       if (memory.rows("intake_messages").some((m) => m.id === args.p_note)) return { data: [], error: null };
       if (["resolved", "cancelled"].includes(String(request.state))) return { data: [], error: null };
+      if (args.p_version != null && request.version !== args.p_version)
+        return { data: null, error: { code: "P0001" } };
       const locked = (request.member_edited_fields as string[] | undefined) ?? [];
       const values: Record<string, unknown> = {
         subject: args.p_subject,
@@ -551,6 +553,7 @@ export function requesterLoopRpc(): Record<string, RpcHandler> {
               ? `${lines[0]} and ${lines[1]}`
               : `${lines[0]}, ${lines[1]} and ${lines[2]}`;
       for (const field of applied) request[field] = values[field];
+      if (typeof request.version === "number") request.version += 1;
       memory.rows("intake_messages").push({
         id: args.p_note,
         org_id: args.p_org,

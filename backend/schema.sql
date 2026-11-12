@@ -11680,10 +11680,14 @@ end $$;
 -- MikeGC changes an open request's subject, description or due date from
 -- what the requester wrote, skipping any detail a member has edited, and
 -- says so in a note. p_lines names each change for the note, by field. The
--- caller names the note, so a retry adds nothing. Returns the fields changed.
+-- caller names the note, so a retry adds nothing. p_version is the request's
+-- version the change was planned from: once anything has changed the request
+-- since (a newer reply, a member), the plan is stale and refused (P0001), so
+-- it never overwrites newer details. Returns the fields changed.
+drop function if exists public.intake_update_automated(uuid, uuid, uuid, text, text, date, jsonb);
 create or replace function public.intake_update_automated(p_org uuid, p_request uuid, p_note uuid,
   p_subject text default null, p_description text default null, p_date date default null,
-  p_lines jsonb default '{}'::jsonb)
+  p_lines jsonb default '{}'::jsonb, p_version integer default null)
 returns text[] language plpgsql set search_path = public, pg_temp as $$
 declare r public.intake_requests; applied text[] := '{}'; lines text[] := '{}'; field text; said text;
   next_subject text; next_description text; next_date date;
@@ -11698,6 +11702,9 @@ begin
   end if;
   if exists(select 1 from public.intake_messages where id = p_note) then return applied; end if;
   if r.state in ('resolved', 'cancelled') then return applied; end if;
+  if p_version is not null and r.version <> p_version then
+    raise exception 'Request changed' using errcode = 'P0001';
+  end if;
   next_subject := r.subject;
   next_description := r.description;
   next_date := r.requested_by_date;
@@ -14701,5 +14708,6 @@ insert into public.schema_migrations (filename) values
   ('20261111_04_intake_answer_automated.sql'),
   ('20261112_01_org_profiles.sql'),
   ('20261112_02_intake_after_upstream_sync.sql'),
-  ('20261112_03_intake_event_indexes.sql')
+  ('20261112_03_intake_event_indexes.sql'),
+  ('20261112_04_intake_update_expected_version.sql')
 on conflict (filename) do nothing;

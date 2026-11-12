@@ -207,15 +207,18 @@ type ReplyResult = {
   clarify_stopped: boolean;
 };
 
-/** The request as the agent reads it, or null once it is gone. */
+/**
+ * The request as the agent reads it, with the version it was read at, or
+ * null once it is gone.
+ */
 async function loadAgentRequest(
   db: Db,
   orgId: string,
   reply: ReplyResult,
-): Promise<AgentRequest | null> {
+): Promise<{ request: AgentRequest; version: number | null } | null> {
   const { data, error } = await db
     .from("intake_requests")
-    .select("subject, description, requested_by_date, state, member_edited_fields")
+    .select("subject, description, requested_by_date, state, member_edited_fields, version")
     .eq("org_id", orgId)
     .eq("id", reply.request_id)
     .maybeSingle();
@@ -227,22 +230,27 @@ async function loadAgentRequest(
     requested_by_date: string | null;
     state: string;
     member_edited_fields?: AgentField[] | null;
+    version?: number | null;
   };
   return {
-    subject: request.subject,
-    description: request.description,
-    requested_by_date: request.requested_by_date,
-    state: request.state,
-    member_edited_fields: request.member_edited_fields ?? [],
-    ruleUndecided: reply.clarify_stage === "rule",
-    canAsk: !reply.clarify_stopped && reply.clarify_rounds < MAX_CLARIFY_ROUNDS,
+    request: {
+      subject: request.subject,
+      description: request.description,
+      requested_by_date: request.requested_by_date,
+      state: request.state,
+      member_edited_fields: request.member_edited_fields ?? [],
+      ruleUndecided: reply.clarify_stage === "rule",
+      canAsk: !reply.clarify_stopped && reply.clarify_rounds < MAX_CLARIFY_ROUNDS,
+    },
+    version: request.version ?? null,
   };
 }
 
 /**
  * Change the request's details as the agent planned. A detail a member has
  * edited since is skipped by the database; details it refuses are dropped,
- * as the requester's words can't be trusted to fit.
+ * as the requester's words can't be trusted to fit. False when the request
+ * has changed since the plan was made from `version`: nothing is changed.
  */
 async function updateRequest(
   db: Db,
@@ -251,8 +259,9 @@ async function updateRequest(
     requestId: string;
     noteId: string;
     update: NonNullable<AgentPlan["update"]>;
+    version: number | null;
   },
-): Promise<void> {
+): Promise<boolean> {
   const updated = await intakeRpc<string[]>(db, "intake_update_automated", {
     p_org: args.orgId,
     p_request: args.requestId,
@@ -261,14 +270,19 @@ async function updateRequest(
     p_description: args.update.description,
     p_date: args.update.requested_by_date,
     p_lines: args.update.lines,
+    p_version: args.version,
   });
-  if (updated.ok || updated.kind === "not_found") return;
+  if (updated.ok || updated.kind === "not_found") return true;
+  if (updated.kind === "conflict" && updated.code === "intake_conflict") return false;
   if (updated.kind === "validation") {
     console.warn("[intake-reply] update refused by the database");
-    return;
+    return true;
   }
   throw updated.kind === "error" ? updated.error : new Error(updated.detail);
 }
+
+/** Plans made for one reply before a stale update is dropped instead. */
+const MAX_PLANS = 3;
 
 /**
  * The agent's turn on a reply: plan once, saving the plan with the stage it
@@ -289,36 +303,51 @@ async function runAgentOnReply(
   const { row, settings, link, reply, payload, save } = args;
   const orgId = link.org_id;
   const requestId = reply.request_id;
-  if (!payload.agent) {
-    const [request, thread, rules, model, organization] = await Promise.all([
-      loadAgentRequest(db, orgId, reply),
-      loadThreadEntries(db, orgId, requestId),
-      loadTriageRules(db, orgId),
-      resolveIntakeModel(db, orgId, settings.configured_by, settings.triage_model),
-      loadOrgContext(db, orgId),
-    ]);
-    if (!request) return;
-    payload.agent = await runIntakeAgent({
-      context: { kind: "reply", channel: link.source, request, thread, sentAt: new Date() },
-      rules,
-      model,
-      organization,
-    });
-    payload.agentStage = reply.clarify_stage === "rule" ? "rule" : null;
-    payload.agentRound = reply.clarify_rounds;
-    await save();
-  }
-  const plan = payload.agent;
-  if (plan.update && !payload.updated) {
-    await updateRequest(db, {
+  // A plan whose request has changed since it was made (a newer reply's
+  // update, a member's edit) is made again from the request as it is now,
+  // rather than overwriting the newer details with older ones.
+  for (let plans = 1; ; plans++) {
+    if (!payload.agent) {
+      const [loaded, thread, rules, model, organization] = await Promise.all([
+        loadAgentRequest(db, orgId, reply),
+        loadThreadEntries(db, orgId, requestId),
+        loadTriageRules(db, orgId),
+        resolveIntakeModel(db, orgId, settings.configured_by, settings.triage_model),
+        loadOrgContext(db, orgId),
+      ]);
+      if (!loaded) return;
+      payload.agent = await runIntakeAgent({
+        context: { kind: "reply", channel: link.source, request: loaded.request, thread, sentAt: new Date() },
+        rules,
+        model,
+        organization,
+      });
+      payload.agentStage = reply.clarify_stage === "rule" ? "rule" : null;
+      payload.agentRound = reply.clarify_rounds;
+      payload.agentVersion = loaded.version ?? undefined;
+      await save();
+    }
+    const update = payload.agent.update;
+    if (!update || payload.updated) break;
+    const applied = await updateRequest(db, {
       orgId,
       requestId,
       noteId: stableId(`intake.agent.update:${row.id}`),
-      update: plan.update,
+      update,
+      version: payload.agentVersion ?? null,
     });
+    if (!applied && plans < MAX_PLANS) {
+      payload.agent = undefined;
+      continue;
+    }
+    // Still changing under every plan: the newer details stand.
+    if (!applied) console.warn("[intake-reply] stale update dropped");
     payload.updated = true;
     await save();
+    break;
   }
+  const plan = payload.agent;
+  if (!plan) return;
   if (payload.agentStage === "rule") {
     const asked = await settleRule(db, { orgId, requestId, plan, payload, save });
     if (asked) return;
