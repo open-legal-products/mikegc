@@ -268,7 +268,7 @@ export async function updateLinkAddress(
 
 /**
  * Store a message in a request's thread as a reply, once, and queue the
- * intake.reply job for it. Its content is kept only until the job has put it
+ * intake.agent job for it. Its content is kept only until the job has put it
  * on the request. A delivery seen before is not stored again; one still
  * waiting is queued again in case the first delivery couldn't queue it.
  */

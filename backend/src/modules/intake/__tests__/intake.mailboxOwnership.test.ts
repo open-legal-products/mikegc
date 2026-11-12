@@ -15,7 +15,7 @@ vi.mock("../../documents/documents.service", () => ({ createDocumentVersion: moc
 import type { DbJob } from "../../../lib/dbq/types";
 import type { Db } from "../../../lib/supabase";
 import { recordMail } from "../intake.mailbox";
-import { handleIntakeReply } from "../intake.reply";
+import { handleIntakeAgent } from "../intake.agentJob";
 import type { ReadMail } from "../intake.outlook";
 import type { AutomationRow } from "../intake.settingsRow";
 
@@ -63,8 +63,8 @@ afterAll(() => { process.env = env; vi.unstubAllGlobals(); });
 
 async function importReply() {
   const row = inbound()[0]!;
-  const job: DbJob = { id: "reply-job", kind: "intake.reply", payload: { orgId: org, inboundId: row.id }, status: "running", attempts: 1, max_attempts: 4, run_at: "", claimed_at: "", finished_at: null, last_error: null, dedupe_key: null, result: null, created_at: "" };
-  await handleIntakeReply(memory.db, job);
+  const job: DbJob = { id: "reply-job", kind: "intake.agent", payload: { orgId: org, inboundId: row.id }, status: "running", attempts: 1, max_attempts: 4, run_at: "", claimed_at: "", finished_at: null, last_error: null, dedupe_key: null, result: null, created_at: "" };
+  await handleIntakeAgent(memory.db, job);
   expect(row).toMatchObject({ status: "done", payload: null });
   const [version] = memory.rows("document_versions");
   expect(version).toMatchObject({ filename: "agreement.pdf", file_type: "pdf", size_bytes: 4 });

@@ -149,7 +149,6 @@ describe("who manages automated intake", () => {
           notification_url: `https://app.example.com/api/webhooks/intake/graph/${row().email_webhook_id}`,
           gmail: { client_id: null, key_set: false, deployment_key: false },
           status: { subscription_expires_at: null, last_read_at: null, error: null },
-          needs_reconnect: false,
         },
         slack: {
           enabled: false,
@@ -647,13 +646,6 @@ describe("the intake mailbox", () => {
     ).toMatchObject({ ok: false, kind: "validation", detail: "Paste the service account's JSON key." });
     expect(mocks.gmailProfile).not.toHaveBeenCalled();
   });
-  it("tells an organization that used Postmark to connect its mailbox", async () => {
-    memory.tables.intake_automation = [{ ...row(), org_id: org }];
-    await getIntakeAutomation(memory.db, scope(owner));
-    row().email_reconnect_notice = true;
-    const result = await getIntakeAutomation(memory.db, scope(owner));
-    expect(result.ok && result.data.email.needs_reconnect).toBe(true);
-  });
 });
 
 describe("Teams", () => {
@@ -1016,8 +1008,6 @@ describe("automation routes", () => {
     // Triage can't be switched off: it runs whenever a model is available.
     const off = await request(app).patch(path).send({ triage_enabled: false });
     expect(off.status).toBe(400);
-    // The Postmark webhook generator is gone.
-    expect((await request(app).post(`${path}/email-webhook`)).status).toBe(404);
     const bad = await request(app).post(`${path}/mailbox`).send({ provider: "imap", mailbox: "x@y.test" });
     expect(bad.status).toBe(400);
   });

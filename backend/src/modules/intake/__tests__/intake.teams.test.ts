@@ -212,7 +212,7 @@ describe("when Microsoft refuses a document or a retry finds a message", () => {
 
 describe("answering in a Teams chat without a request", () => {
   const settings = () => memory.rows("intake_automation")[0] as unknown as AutomationRow;
-  const inbound = { id: "00000000-0000-4000-8000-0000000000e1", org_id: org, source: "teams" as const, status: "pending" as const, payload: null, request_id: null, error: null };
+  const inbound = { id: "00000000-0000-4000-8000-0000000000e1", org_id: org, source: "teams" as const, kind: "request" as const, status: "pending" as const, payload: null, request_id: null, error: null };
   const payload = {
     kind: "teams" as const,
     tenant_id: "tenant-1",

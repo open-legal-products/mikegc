@@ -129,7 +129,7 @@ describe("recording email from the intake mailbox", () => {
     // Read again while it waits, it is queued again under the same key,
     // which the queue holds to one live job; once handled, it isn't.
     const keys = mocks.enqueueDbJob.mock.calls.map(([, input]) => input.dedupeKey);
-    expect(kinds()).toEqual(["intake.inbound", "intake.inbound"]);
+    expect(kinds()).toEqual(["intake.agent", "intake.agent"]);
     expect(new Set(keys).size).toBe(1);
     inbound()[0]!.status = "done";
     expect(await recordMail(memory.db, settings(), mail())).toBe("duplicate");
@@ -156,7 +156,7 @@ describe("recording email from the intake mailbox", () => {
     expect(inbound()).toHaveLength(1);
     expect(mocks.enqueueDbJob).toHaveBeenCalledWith(
       expect.anything(),
-      expect.objectContaining({ kind: "intake.inbound", dedupeKey: "intake.inbound:other-poll" }),
+      expect.objectContaining({ kind: "intake.agent", dedupeKey: "intake.agent:other-poll" }),
     );
   });
   it("queues mail another poll stored first even when this poll would ignore it", async () => {
@@ -179,7 +179,7 @@ describe("recording email from the intake mailbox", () => {
     expect(await recordMail(db, settings(), other)).toBe("duplicate");
     expect(mocks.enqueueDbJob).toHaveBeenCalledWith(
       expect.anything(),
-      expect.objectContaining({ kind: "intake.inbound", dedupeKey: "intake.inbound:other-poll" }),
+      expect.objectContaining({ kind: "intake.agent", dedupeKey: "intake.agent:other-poll" }),
     );
   });
   it("ignores automatic mail, mail not to the intake address, other domains and an unauthenticated sender", async () => {
@@ -215,7 +215,7 @@ describe("recording email from the intake mailbox", () => {
         payload: expect.objectContaining({ kind: "mail_reply", text: "Supplier.", provider_id: "gm-2" }),
       }),
     ]);
-    expect(kinds()).toEqual(["intake.reply"]);
+    expect(kinds()).toEqual(["intake.agent"]);
   });
   it("matches a reply whose edited subject started a new conversation by the Message-ID it answers", async () => {
     linkThread();

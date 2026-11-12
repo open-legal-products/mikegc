@@ -1814,7 +1814,7 @@ describe("request detail", () => {
 
   it("names MikeGC as the creator of a request it recorded, with where it came from", async () => {
     mocks.request.mockResolvedValue(
-      request({ created_by: null, created_by_name: "MikeGC", source: "email" }),
+      request({ created_by: null, created_by_name: "MikeGC", source: "gmail" }),
     );
     mocks.events.mockResolvedValue([
       event({
@@ -1835,7 +1835,7 @@ describe("request detail", () => {
     expect(marks[1]).toHaveAttribute("data-actor", "person");
     const details = screen.getByRole("complementary", { name: "Details" });
     // Plain text after the name, beside MikeGC's mark.
-    expect(details).toHaveTextContent("Created byMikeGC from email");
+    expect(details).toHaveTextContent("Created byMikeGC from Gmail");
     expect(details.querySelector('[data-actor="mikegc"]')).not.toBeNull();
     expect(
       within(details).queryByRole("img", { name: "MikeGC" }),

@@ -225,7 +225,6 @@ async function present(
           last_read_at: row.email_last_read_at,
           error: row.email_error,
         },
-        needs_reconnect: row.email_reconnect_notice && !row.email_provider,
       },
       slack: {
         enabled: row.slack_enabled,
@@ -717,7 +716,6 @@ export async function connectIntakeMailbox(
     email_mailbox: mailbox,
     email_enabled: true,
     email_error: null,
-    email_reconnect_notice: false,
     email_last_read_at: new Date().toISOString(),
     configured_by: scope.actorId,
     updated_at: new Date().toISOString(),

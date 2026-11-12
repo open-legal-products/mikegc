@@ -6,7 +6,7 @@ import { DbJobDeferredError, type DbJob } from "../../lib/dbq/types";
 import { configuredApiPublicUrl } from "../../lib/runtimeConfig";
 import { safeError } from "../../lib/safeError";
 import type { Db } from "../../lib/supabase";
-import { dispatchIntakeInbound } from "./intake.automationJob";
+import { dispatchIntakeAgent } from "./intake.agentJob";
 import {
   findThreadLink,
   loadLinkById,
@@ -55,7 +55,6 @@ import {
   graphSubscribe,
   type ReadMail,
 } from "./intake.outlook";
-import { dispatchIntakeReply } from "./intake.reply";
 import { automationByWebhook, loadAutomationRow, type AutomationRow } from "./intake.settingsRow";
 import { dispatchIntakeJob } from "./intake.shared";
 
@@ -126,11 +125,11 @@ export async function recordMail(
   const source = mailSource(mail.provider);
   const externalId =
     normalizeMessageId(mail.internetMessageId) ?? `${mail.provider}:${mail.providerId}`;
-  type Seen = { id: string; status: string; kind: string };
+  type Seen = { id: string; status: string };
   const lookup = async (): Promise<Seen | null> => {
     const { data, error } = await db
       .from("intake_inbound")
-      .select("id, status, kind")
+      .select("id, status")
       .eq("org_id", settings.org_id)
       .eq("source", source)
       .eq("external_id", externalId)
@@ -142,11 +141,7 @@ export async function recordMail(
   // again, in case its job never was (deduplicated while one is live).
   const requeue = async (row: Seen | null): Promise<MailReceipt> => {
     if (row?.status === "pending")
-      await (row.kind === "reply" ? dispatchIntakeReply : dispatchIntakeInbound)(
-        db,
-        settings.org_id,
-        row.id,
-      );
+      await dispatchIntakeAgent(db, settings.org_id, row.id);
     return "duplicate";
   };
   const seen = await lookup();
@@ -208,7 +203,7 @@ export async function recordMail(
         text: clip(cleanText(stripQuotedReply(text)), MAX_MESSAGE_CHARS),
         ...staged,
       },
-      dispatch: dispatchIntakeReply,
+      dispatch: dispatchIntakeAgent,
     });
     if (routed.payloadOwnership === "unowned")
       await discardStaged(staged.attachments.map((a) => a.key));
@@ -253,7 +248,7 @@ export async function recordMail(
     await discardStaged(staged.attachments.map((a) => a.key));
   if (!stored.ok) throw failureError(stored);
   if (stored.data === null) return requeue(await lookup());
-  await dispatchIntakeInbound(db, settings.org_id, stored.data);
+  await dispatchIntakeAgent(db, settings.org_id, stored.data);
   await markRecorded(settings, mail);
   return "received";
 }

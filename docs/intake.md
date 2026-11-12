@@ -429,7 +429,7 @@ Apply migrations before starting the new application build:
   request and its documents as MikeGC.
 - `20261103_05_intake_requester_loop.sql`, `20261103_06_intake_mailbox.sql`
   and `20261103_07_intake_teams.sql` add the requester loop, the Outlook and
-  Gmail intake mailbox (retiring Postmark) and Teams. See
+  Gmail intake mailbox and Teams. See
   [Automated intake](intake-automation.md#deployment) for what each changes.
 - `20261104_08_intake_notifications.sql` adds [notifications](#notifications):
   the `intake_notifications` table, the triggers on `intake_events`,

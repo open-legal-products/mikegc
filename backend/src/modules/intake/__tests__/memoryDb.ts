@@ -52,7 +52,6 @@ const DEFAULTS: Record<string, () => Row> = {
     email_webhook_id: randomUUID(),
     email_last_read_at: null,
     email_error: null,
-    email_reconnect_notice: false,
     graph_tenant_id: null,
     graph_client_id: null,
     graph_client_secret_encrypted: null,
@@ -399,6 +398,37 @@ export function requesterLoopRpc(): Record<string, RpcHandler> {
         attempted_at: null,
       });
       return { data: args.p_outbound, error: null };
+    },
+    intake_answer_automated: (args, memory) => {
+      const request = findRequest(memory, args.p_org, args.p_request);
+      if (!request) return { data: null, error: { code: "P0002" } };
+      if (memory.rows("intake_messages").some((m) => m.id === args.p_message)) return { data: true, error: null };
+      const link = linkOf(memory, args.p_request);
+      if (!link || ["resolved", "cancelled"].includes(String(request.state))) return { data: false, error: null };
+      memory.rows("intake_messages").push({
+        id: args.p_message,
+        org_id: args.p_org,
+        request_id: args.p_request,
+        author_id: null,
+        kind: "answer",
+        body: args.p_body,
+        automated: true,
+        created_at: new Date().toISOString(),
+      });
+      memory.rows("intake_outbound").push({
+        id: args.p_outbound,
+        org_id: args.p_org,
+        request_id: args.p_request,
+        link_id: link.id,
+        message_id: args.p_message,
+        author_id: null,
+        kind: "answer",
+        documents: [],
+        status: "pending",
+        external_id: null,
+        attempted_at: null,
+      });
+      return { data: true, error: null };
     },
     intake_ask_automated: (args, memory) => {
       const request = findRequest(memory, args.p_org, args.p_request);

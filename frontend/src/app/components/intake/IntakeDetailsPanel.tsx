@@ -641,8 +641,6 @@ function Fact({ label, children }: { label: string; children: ReactNode }) {
 /** Where a request came from, after its creator; a member's own has none. */
 const INTAKE_SOURCE_NOTES: Record<IntakeSource, string | null> = {
   manual: null,
-  // Recorded through Postmark, before MikeGC read the mailbox itself.
-  email: "from email",
   slack: `from ${INTAKE_SOURCE_LABELS.slack}`,
   outlook: `from ${INTAKE_SOURCE_LABELS.outlook}`,
   gmail: `from ${INTAKE_SOURCE_LABELS.gmail}`,

@@ -57,8 +57,7 @@ const preprocessModels = () => [
 
 /** A received message as the agent reads it, whichever channel it came from. */
 export type InboundMessage = {
-  /** "email" is a message received through Postmark. */
-  source: "email" | IntakeChannel;
+  source: IntakeChannel;
   sender: { name: string; email: string | null };
   sentAt: Date;
   /** The email's subject; null for Slack. */
@@ -73,7 +72,6 @@ export type InboundMessage = {
 
 /** How a channel is named in prompts and the request's description. */
 export const CHANNEL_NAMES: Record<InboundMessage["source"], string> = {
-  email: "email",
   slack: "Slack",
   outlook: "Outlook",
   gmail: "Gmail",
@@ -312,7 +310,7 @@ export function composeDescription(args: {
         summary,
         "",
         ORIGINAL_MESSAGE,
-        `From: ${senderLine(message.sender)}${message.source === "email" ? "" : ` in ${CHANNEL_NAMES[message.source]}`}`,
+        `From: ${senderLine(message.sender)} in ${CHANNEL_NAMES[message.source]}`,
         `Sent: ${formatSent(message.sentAt)}`,
         ...(message.subject ? [`Subject: ${message.subject}`] : []),
         "",

@@ -95,7 +95,7 @@ const BLOB_UPLOAD_PREFIX = "/download/signed/";
 // office of lawyers behind one address would spend the shared budget on it.
 const INTAKE_NOTIFICATIONS_PATH = "/intake/notifications/claim";
 
-// Deliveries from other services (Slack, Postmark), which authenticate with a
+// Deliveries from other services (Slack, Teams, Microsoft Graph), which authenticate with a
 // signature or a secret URL and share no user's budget.
 const WEBHOOK_PREFIX = "/webhooks/";
 

@@ -5,7 +5,7 @@ import { handleDocumentCleanup, handleDocumentExtractText, markDocumentTextFaile
 import { handleExtractionExtract, markExtractionJobFailed } from "../modules/tabular/tabular.service";
 import { handleMemoryConsolidation, markMemoryConsolidationFailed } from "../modules/memory/memory.service";
 import { handlePlaybookImport, handlePlaybookReview, markPlaybookImportJobFailed, markPlaybookReviewJobFailed } from "../modules/playbooks/playbooks.service";
-import { handleIntakeDeliver, handleIntakeInbound, handleIntakeMailboxPoll, handleIntakePreprocess, handleIntakeReply, markIntakeDeliverFailed, markIntakeInboundFailed, markIntakePreprocessFailed, markIntakeReplyFailed } from "../modules/intake/intake.service";
+import { handleIntakeAgent, handleIntakeDeliver, handleIntakeMailboxPoll, handleIntakePreprocess, markIntakeAgentFailed, markIntakeDeliverFailed, markIntakePreprocessFailed } from "../modules/intake/intake.service";
 import { handleStorageCleanup } from "../lib/dbq/storageCleanup";
 import { type DbJobHandlers } from "../lib/dbq/types";
 import { type DbJobFailureHook } from "../lib/dbq/runner";
@@ -24,9 +24,8 @@ export const DB_JOB_HANDLERS: DbJobHandlers = {
   "memory.consolidate": handleMemoryConsolidation,
   "playbook.review": handlePlaybookReview,
   "playbook.import": handlePlaybookImport,
-  "intake.inbound": handleIntakeInbound,
+  "intake.agent": handleIntakeAgent,
   "intake.preprocess": handleIntakePreprocess,
-  "intake.reply": handleIntakeReply,
   "intake.deliver": handleIntakeDeliver,
   "intake.mailbox.poll": handleIntakeMailboxPoll,
 };
@@ -37,9 +36,8 @@ export const DB_JOB_FAILURE_HOOKS: Record<string, DbJobFailureHook> = {
   "memory.consolidate": markMemoryConsolidationFailed,
   "playbook.review": markPlaybookReviewJobFailed,
   "playbook.import": markPlaybookImportJobFailed,
-  "intake.inbound": markIntakeInboundFailed,
+  "intake.agent": markIntakeAgentFailed,
   "intake.preprocess": markIntakePreprocessFailed,
-  "intake.reply": markIntakeReplyFailed,
   "intake.deliver": markIntakeDeliverFailed,
 };
 export {

@@ -3,6 +3,7 @@ import {
   acknowledgementId,
   questionBody,
   questionIds,
+  stableId,
   type ThreadEntry,
 } from "./intake.clarify";
 import { dispatchIntakeDeliver } from "./intake.deliver";
@@ -53,6 +54,34 @@ export async function askRequester(
   return asked.data;
 }
 
+/**
+ * MikeGC answers in a request's thread without asking: the request doesn't
+ * wait. Named from `seed`, so answering again adds nothing. False when the
+ * request is closed or has no thread.
+ */
+export async function answerRequester(
+  db: Db,
+  args: { orgId: string; requestId: string; seed: string; text: string },
+): Promise<boolean> {
+  const ids = {
+    messageId: stableId(`intake.answer:${args.seed}`),
+    outboundId: stableId(`intake.answer.outbound:${args.seed}`),
+  };
+  const answered = await intakeRpc<boolean>(db, "intake_answer_automated", {
+    p_org: args.orgId,
+    p_request: args.requestId,
+    p_outbound: ids.outboundId,
+    p_message: ids.messageId,
+    p_body: args.text,
+  });
+  if (!answered.ok) {
+    if (answered.kind === "not_found") return false;
+    throw answered.kind === "error" ? answered.error : new Error(answered.detail);
+  }
+  if (answered.data) await dispatchIntakeDeliver(db, args.orgId, ids.outboundId);
+  return answered.data;
+}
+
 /** MikeGC's acknowledgement in a request's thread, once. */
 export async function acknowledgeRequest(
   db: Db,
@@ -101,9 +130,9 @@ export async function settleClarify(
 }
 
 /**
- * The thread after a request, oldest first: MikeGC's and members' questions
- * to the requester and the requester's replies, as the stages read it; the
- * 50 newest when there are more.
+ * The thread after a request, oldest first: what MikeGC and members sent the
+ * requester and the requester's replies, as the stages read it; the 50
+ * newest when there are more.
  */
 export async function loadThreadEntries(
   db: Db,
@@ -115,14 +144,14 @@ export async function loadThreadEntries(
     .select("kind, body, created_at, automated, external_author")
     .eq("org_id", orgId)
     .eq("request_id", requestId)
-    .in("kind", ["question", "reply"])
+    .in("kind", ["question", "answer", "reply"])
     // The 50 newest, read back oldest first.
     .order("created_at", { ascending: false })
     .limit(50);
   if (error) throw error;
   return (
     [...((data ?? []) as unknown[])].reverse() as {
-      kind: "question" | "reply";
+      kind: "question" | "answer" | "reply";
       body: string;
       created_at: string;
       automated: boolean;

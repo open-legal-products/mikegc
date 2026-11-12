@@ -10986,13 +10986,13 @@ create index if not exists intake_requests_created_by on public.intake_requests(
 create index if not exists intake_requests_org_updated on public.intake_requests(org_id, updated_at desc, id desc);
 create index if not exists intake_requests_org_target on public.intake_requests(org_id, requested_by_date, id);
 
--- Where a request came from: typed by a member, or recorded by MikeGC from an
--- email or a Slack message. MikeGC is not an account, so what it records has no
+-- Where a request came from: typed by a member, or recorded by MikeGC from a
+-- Slack, Teams, Outlook or Gmail message. MikeGC is not an account, so what it records has no
 -- actor and is marked automated, to read as MikeGC rather than a former member.
 alter table public.intake_requests add column if not exists source text not null default 'manual';
 alter table public.intake_requests drop constraint if exists intake_requests_source_check;
 alter table public.intake_requests add constraint intake_requests_source_check
-  check (source in ('manual', 'email', 'slack', 'outlook', 'gmail', 'teams'));
+  check (source in ('manual', 'slack', 'outlook', 'gmail', 'teams'));
 -- Which clarifying stage MikeGC is waiting on: 'rule' (choosing a triage
 -- rule) or 'readiness' (what the rule's playbook or workflow needs). Rounds
 -- count MikeGC's automatic questions across both stages. A lawyer acting on
@@ -11993,8 +11993,6 @@ create table if not exists public.intake_automation (
   email_webhook_id uuid not null default gen_random_uuid() unique,
   email_last_read_at timestamptz,
   email_error text check (email_error is null or char_length(email_error) <= 200),
-  -- Email was recorded through Postmark, which is retired.
-  email_reconnect_notice boolean not null default false,
   graph_tenant_id text check (graph_tenant_id is null or char_length(graph_tenant_id) between 1 and 200),
   graph_client_id text check (graph_client_id is null or char_length(graph_client_id) between 1 and 200),
   graph_client_secret_encrypted text,
@@ -12102,7 +12100,7 @@ end $$;
 create table if not exists public.intake_inbound (
   id uuid primary key default gen_random_uuid(),
   org_id uuid not null references public.organizations(id) on delete cascade,
-  source text not null check (source in ('email', 'slack', 'outlook', 'gmail', 'teams')),
+  source text not null check (source in ('slack', 'outlook', 'gmail', 'teams')),
   -- A new request, or a message in a request's thread.
   kind text not null default 'request' check (kind in ('request', 'reply')),
   external_id text not null check (char_length(external_id) between 1 and 300),
@@ -12503,6 +12501,35 @@ begin
     values(p_note, p_org, p_request, null, 'note',
       'Updated ' || said || ' from the requester''s reply.', true);
   return applied;
+end $$;
+
+-- MikeGC answers the requester in a request's thread: it acknowledges what
+-- they wrote, says what it added to the request, or answers their question.
+-- Unlike a question, the request doesn't wait on the requester. The caller
+-- names the message and its outbox row, so a retry adds nothing. False when
+-- the request is closed or has no thread to answer in.
+create or replace function public.intake_answer_automated(p_org uuid, p_request uuid, p_outbound uuid,
+  p_message uuid, p_body text)
+returns boolean language plpgsql set search_path = public, pg_temp as $$
+declare r public.intake_requests; link uuid;
+begin
+  perform 1 from public.organizations where id = p_org and kind in ('team', 'personal')
+    and deleted_at is null for update;
+  if not found then raise exception 'Intake not found' using errcode = 'P0002'; end if;
+  select * into r from public.intake_requests where org_id = p_org and id = p_request for update;
+  if not found then raise exception 'Request not found' using errcode = 'P0002'; end if;
+  if p_message is null or p_outbound is null
+    or p_body is null or char_length(p_body) not between 1 and 20000 or btrim(p_body) = '' then
+    raise exception 'Invalid answer' using errcode = '22023';
+  end if;
+  if exists(select 1 from public.intake_messages where id = p_message) then return true; end if;
+  select id into link from public.intake_channel_links where org_id = p_org and request_id = p_request;
+  if link is null or r.state in ('resolved', 'cancelled') then return false; end if;
+  insert into public.intake_messages(id, org_id, request_id, author_id, kind, body, automated)
+    values(p_message, p_org, p_request, null, 'answer', p_body, true);
+  insert into public.intake_outbound(id, org_id, request_id, link_id, message_id, kind)
+    values(p_outbound, p_org, p_request, link, p_message, 'answer');
+  return true;
 end $$;
 
 -- A requester's message in a request's thread, recorded once as a reply. An
@@ -13060,5 +13087,7 @@ insert into public.schema_migrations (filename) values
   ('20261110_02_intake_conversations_email.sql'),
   ('20261111_01_intake_agent.sql'),
   ('20261111_02_intake_edit_preserves_unread.sql'),
+  ('20261111_03_intake_retire_postmark.sql'),
+  ('20261111_04_intake_answer_automated.sql'),
   ('20261112_01_org_profiles.sql')
 on conflict (filename) do nothing;

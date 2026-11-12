@@ -89,6 +89,10 @@ export function describeIntakeMessage(
 }
 
 /** What a message sent to the requester is called, to name it in a control. */
-export function intakeOutgoingName(kind: "question" | "resolution") {
-  return kind === "question" ? "the question" : "the resolution reply";
+export function intakeOutgoingName(kind: "question" | "answer" | "resolution") {
+  return kind === "question"
+    ? "the question"
+    : kind === "answer"
+      ? "the reply"
+      : "the resolution reply";
 }

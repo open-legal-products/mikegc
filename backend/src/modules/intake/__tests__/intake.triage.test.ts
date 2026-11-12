@@ -27,7 +27,7 @@ import {
 } from "../intake.triage";
 
 const message = (overrides: Partial<InboundMessage> = {}): InboundMessage => ({
-  source: "email",
+  source: "gmail",
   sender: { name: "Jane Business", email: "jane@acme.test" },
   sentAt: new Date("2026-11-02T09:14:00Z"),
   subject: "NDA with Supplier Co",
@@ -72,7 +72,7 @@ describe("the request recorded from a message", () => {
   it("puts the summary above the original message, with the files left off below", () => {
     const description = composeDescription({ summary: "Jane needs the NDA reviewed.", message: message() });
     expect(description).toMatch(
-      /^Jane needs the NDA reviewed\.\n\n--- Original message ---\nFrom: Jane Business <jane@acme\.test>\nSent: 2 Nov 2026, 09:14 UTC\nSubject: NDA with Supplier Co\n\nHi Legal/,
+      /^Jane needs the NDA reviewed\.\n\n--- Original message ---\nFrom: Jane Business <jane@acme\.test> in Gmail\nSent: 2 Nov 2026, 09:14 UTC\nSubject: NDA with Supplier Co\n\nHi Legal/,
     );
     expect(description).toMatch(/--- Not attached ---\n- photo\.png: not a PDF, Word, Excel or PowerPoint file$/);
   });

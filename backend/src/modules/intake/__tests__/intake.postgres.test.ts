@@ -163,6 +163,10 @@ describe.skipIf(!container)("intake real PostgreSQL transactions", () => {
     sql(migration("20261111_01_intake_agent.sql"));
     sql(migration("20261111_02_intake_edit_preserves_unread.sql"));
     sql(migration("20261111_02_intake_edit_preserves_unread.sql"));
+    sql(migration("20261111_03_intake_retire_postmark.sql"));
+    sql(migration("20261111_03_intake_retire_postmark.sql"));
+    sql(migration("20261111_04_intake_answer_automated.sql"));
+    sql(migration("20261111_04_intake_answer_automated.sql"));
   }, 90000);
   afterAll(() => {
     execFileSync("docker", [
@@ -1112,7 +1116,7 @@ describe.skipIf(!container)("intake real PostgreSQL transactions", () => {
     ]);
   });
   // A message received for intake, before MikeGC records it.
-  const inbound = (id = 70, source = "email", org = 10) =>
+  const inbound = (id = 70, source = "gmail", org = 10) =>
     sql(`insert into public.intake_inbound(id,org_id,source,external_id,payload)
       values(${q(id)},${q(org)},'${source}','message-${id}','{"text":"Please review"}')`);
   const automated = (message = 70, request = 21, reviewer = "null") =>
@@ -1129,7 +1133,7 @@ describe.skipIf(!container)("intake real PostgreSQL transactions", () => {
     ).toMatchObject({
       created_by: null,
       created_by_name: "MikeGC",
-      source: "email",
+      source: "gmail",
       state: "in_review",
       assignee_id: uid(3),
     });
@@ -1192,8 +1196,8 @@ describe.skipIf(!container)("intake real PostgreSQL transactions", () => {
     inbound(73, "slack");
     // An email still waiting, with an attachment staged in storage.
     sql(`insert into public.intake_inbound(id,org_id,source,external_id,payload)
-      values(${q(74)},${q(10)},'email','message-74',
-        '{"kind":"email","attachments":[{"key":"intake-inbound/org/74/0"},{"key":""}]}')`);
+      values(${q(74)},${q(10)},'gmail','message-74',
+        '{"kind":"mail","attachments":[{"key":"intake-inbound/org/74/0"},{"key":""}]}')`);
     sql(`select public.intake_purge(${q(10)},${q(1)})`);
     expect(sql("select count(*) from public.intake_inbound")).toBe("0");
     expect(
@@ -1201,8 +1205,8 @@ describe.skipIf(!container)("intake real PostgreSQL transactions", () => {
     ).toBe('["intake-inbound/org/74/0"]');
     // An organization's purge cascades to its messages the same way.
     sql(`insert into public.intake_inbound(id,org_id,source,external_id,payload)
-      values(${q(75)},${q(11)},'email','message-75',
-        '{"kind":"email","attachments":[{"key":"intake-inbound/other/75/0"}]}')`);
+      values(${q(75)},${q(11)},'gmail','message-75',
+        '{"kind":"mail","attachments":[{"key":"intake-inbound/other/75/0"}]}')`);
     sql(`delete from public.organizations where id=${q(11)}`);
     expect(
       sql("select count(*) from public.db_jobs where kind='storage.cleanup' and payload->'keys' ? 'intake-inbound/other/75/0'"),
@@ -1373,6 +1377,33 @@ describe.skipIf(!container)("intake real PostgreSQL transactions", () => {
       `select to_jsonb(public.intake_update_automated(${q(10)},${q(request)},${q(note)},${subject},null,${date},` +
         `'{"subject":"the subject to \\"NDA for Acme\\"","requested_by_date":"the due date to 14 Nov 2026"}'::jsonb))`,
     );
+  const answer = (n: number, request = 21, body = "Thanks, I added the contract value to your request.") =>
+    sql(
+      `select public.intake_answer_automated(${q(10)},${q(request)},${q(n)},${q(n + 1)},'${body}')`,
+    );
+  it("answers in a request's thread once, without making the request wait", () => {
+    thread(21, 70, q(3));
+    const before = sql(`select state||':'||version from public.intake_requests where id=${q(21)}`);
+    expect(answer(600)).toBe("t");
+    // Named by the caller: answering again adds nothing.
+    expect(answer(600)).toBe("t");
+    expect(sql(`select state||':'||version from public.intake_requests where id=${q(21)}`)).toBe(before);
+    expect(
+      json(`select jsonb_agg(jsonb_build_object('kind',kind,'automated',automated,'author_id',author_id))
+        from public.intake_messages where request_id=${q(21)} and kind='answer'`),
+    ).toEqual([{ kind: "answer", automated: true, author_id: null }]);
+    expect(outbox()).toEqual([
+      expect.objectContaining({ kind: "answer", message_id: uid(601), author_id: null, status: "pending" }),
+    ]);
+    expect(() => answer(602, 21, " ")).toThrow(/22023/);
+    // Not on a closed request, nor one with no thread.
+    sql(`update public.intake_requests set state='resolved' where id=${q(21)}`);
+    expect(answer(604)).toBe("f");
+    inbound(71);
+    sql(automated(71, 22));
+    expect(answer(606, 22)).toBe("f");
+    expect(() => answer(608, 99)).toThrow(/P0002/);
+  });
   it("updates MikeGC's request from a reply once, noting what changed", () => {
     thread();
     expect(agentUpdate(500, "'NDA for Acme'", "'2026-11-14'")).toEqual(["subject", "requested_by_date"]);
@@ -1803,6 +1834,7 @@ describe.skipIf(!container)("intake real PostgreSQL transactions", () => {
         "intake_record_delivery(uuid,uuid,text,text,text,jsonb)",
         "intake_mark_reply_seen(uuid,uuid,uuid,timestamptz)",
         "intake_update_automated(uuid,uuid,uuid,text,text,date,jsonb)",
+        "intake_answer_automated(uuid,uuid,uuid,uuid,text)",
       ])
         expect(sql(`select has_function_privilege('${role}','public.${fn}','EXECUTE')`)).toBe("f");
     }

@@ -51,10 +51,10 @@ describe("what MikeGC did", () => {
   });
 
   it("is a request from email or Slack with no creator", () => {
-    expect(isMikeGCRequest({ created_by: null, source: "email" })).toBe(true);
+    expect(isMikeGCRequest({ created_by: null, source: "gmail" })).toBe(true);
     expect(isMikeGCRequest({ created_by: null, source: "slack" })).toBe(true);
     // A typed request whose creator's account was erased is not MikeGC's.
     expect(isMikeGCRequest({ created_by: null, source: "manual" })).toBe(false);
-    expect(isMikeGCRequest({ created_by: "u1", source: "email" })).toBe(false);
+    expect(isMikeGCRequest({ created_by: "u1", source: "gmail" })).toBe(false);
   });
 });

@@ -762,12 +762,8 @@ export interface IntakeRequestSummary extends Omit<IntakeDetails, "description">
   capabilities: { assign: boolean; cancel: boolean; delete: boolean };
 }
 export interface IntakeRequestPage { requests: IntakeRequestSummary[]; next_cursor: string | null }
-/**
- * Where a request came from: typed by a member, or recorded by MikeGC from a
- * channel. "email" is a request recorded through Postmark, before MikeGC
- * read the intake mailbox itself.
- */
-export type IntakeSource = "manual" | "email" | "slack" | "outlook" | "gmail" | "teams";
+/** Where a request came from: typed by a member, or recorded by MikeGC from a channel. */
+export type IntakeSource = "manual" | "slack" | "outlook" | "gmail" | "teams";
 /** A channel MikeGC holds a conversation with the requester in. */
 export type IntakeChannel = "slack" | "outlook" | "gmail" | "teams";
 /**
@@ -938,8 +934,6 @@ export interface IntakeAutomationSettings {
       /** Why the connection isn't working, in words an admin can act on. */
       error: string | null;
     };
-    /** The organization recorded email through Postmark: it stops until a mailbox is connected. */
-    needs_reconnect: boolean;
   };
   slack: {
     enabled: boolean;
