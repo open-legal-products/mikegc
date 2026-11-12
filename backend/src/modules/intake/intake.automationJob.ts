@@ -22,7 +22,7 @@ import {
   type ConversationSource,
 } from "./intake.channels";
 import { runIntakeAgent } from "./intake.agent";
-import type { InboundRow } from "./intake.agentJob";
+import type { InboundRow } from "./intake.inboundStore";
 import { stableId } from "./intake.clarify";
 import { requestLink } from "./intake.deliver";
 import {
