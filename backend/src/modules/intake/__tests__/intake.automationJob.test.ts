@@ -617,6 +617,31 @@ describe("recording a Slack thread", () => {
       }),
     ]);
   });
+  it("never answers twice when a retry follows an answer Slack took", async () => {
+    setup({ payload: slackPayload({ thread_ts: null, ts: "1793610840.000100", user: "U1", text: "<@UBOT> hi there" }), source: "slack" });
+    modelCalls([replyCall("Hi! What do you need from Legal?")]);
+    // Slack posts the answer, but its response is lost on the way back.
+    let posted: Record<string, string> | null = null;
+    stubSlack({
+      "conversations.replies": () => ({
+        ok: true,
+        messages: posted ? [{ ts: "1793610999.000900", bot_id: "B1", metadata: JSON.parse(posted.metadata!) }] : [],
+      }),
+    });
+    const fetchMock = vi.mocked(globalThis.fetch);
+    const inner = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation(async (url: string | URL | Request, init?: RequestInit) => {
+      if (String(url).endsWith("chat.postMessage")) {
+        posted = Object.fromEntries(new URLSearchParams(String(init?.body ?? "")));
+        throw new TypeError("fetch failed");
+      }
+      return inner(url, init);
+    });
+    await expect(handleIntakeAgent(memory.db, job())).rejects.toBeTruthy();
+    await expect(handleIntakeAgent(memory.db, job())).resolves.toMatchObject({ replied: true });
+    expect(fetchMock.mock.calls.filter(([url]) => String(url).endsWith("chat.postMessage"))).toHaveLength(1);
+    expect(memory.rows("intake_conversations")).toEqual([expect.objectContaining({ rounds: 1 })]);
+  });
   it("reads the next message in the thread with MikeGC's earlier answer, and records it once it's clear", async () => {
     setup({ payload: slackPayload({ thread_ts: "1793610840.000100", ts: "1793610900.000300", user: "U1", text: "It's a supplier NDA" }), source: "slack" });
     memory.rows("intake_conversations").push({

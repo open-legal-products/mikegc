@@ -623,7 +623,7 @@ export function slackMessageText(
 }
 
 /** A Slack ts a little before `iso`, so a search starts before the first attempt. */
-function slackTsBefore(iso: string | null): string | undefined {
+export function slackTsBefore(iso: string | null): string | undefined {
   if (!iso) return undefined;
   const ms = Date.parse(iso);
   if (!Number.isFinite(ms)) return undefined;

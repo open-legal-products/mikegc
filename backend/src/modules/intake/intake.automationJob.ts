@@ -16,6 +16,9 @@ import {
 } from "./intake.attachments";
 import {
   ChannelDeliveryError,
+  type ChannelContext,
+  type ChannelLink,
+  type OutboundMessage,
   findConversation,
   linkThread,
   rememberConversation,
@@ -55,7 +58,9 @@ import {
   slackChannelName,
   slackPermalink,
   slackEscape,
+  slackFindByMetadata,
   slackPostMessage,
+  slackTsBefore,
   slackTextToPlain,
   slackThreadMessages,
   slackUserInfo,
@@ -490,7 +495,9 @@ function conversationThread(
  * MikeGC's own answer in the chat or email thread a message came from, the
  * agent's `reply` when it found no request to record. Nothing is recorded,
  * so it goes out without a request or a link: an email replies to the
- * message itself.
+ * message itself. It is marked with the message's ID as an outbox row's
+ * would be, so with `attemptedAt` (an earlier attempt's start) the channel
+ * is first asked whether that attempt landed, and nothing is sent again.
  */
 export async function sendChatReply(
   db: Db,
@@ -498,12 +505,26 @@ export async function sendChatReply(
   settings: AutomationRow | null,
   payload: InboundPayload,
   text: string,
+  attemptedAt: string | null = null,
 ) {
   if (payload.kind === "slack") {
-    await slackPostMessage(requireSlackToken(settings), {
+    const token = requireSlackToken(settings);
+    const threadTs = payload.thread_ts ?? payload.ts;
+    if (
+      attemptedAt &&
+      (await slackFindByMetadata(token, {
+        channel: payload.channel,
+        threadTs,
+        outboundId: row.id,
+        oldest: slackTsBefore(attemptedAt),
+      }))
+    )
+      return;
+    await slackPostMessage(token, {
       channel: payload.channel,
-      threadTs: payload.thread_ts ?? payload.ts,
+      threadTs,
       text: slackEscape(text),
+      outboundId: row.id,
     });
     return;
   }
@@ -523,35 +544,34 @@ export async function sendChatReply(
       : payload.provider === "gmail"
         ? gmailAdapter
         : outlookAdapter;
+  const ctx: ChannelContext = {
+    db,
+    settings,
+    fromName: settings.email_from_name?.trim() || "Legal",
+    readDocument: () => Promise.reject(new Error("No documents to read.")),
+    saveProgress: () => Promise.resolve(),
+  };
+  const link: ChannelLink = {
+    // No request, so no link: Teams keys its post by the message, and
+    // email records no Message-IDs, which belong to a link.
+    id: payload.kind === "teams" ? row.id : "",
+    org_id: row.org_id,
+    request_id: "",
+    source: thread.source,
+    thread_key: thread.key,
+    address: thread.address,
+  };
+  const message: OutboundMessage = {
+    id: row.id,
+    kind: "answer",
+    author: { kind: "mikegc" },
+    text,
+    requestSubject: "",
+    documents: [],
+  };
   try {
-    await adapter.deliver(
-      {
-        db,
-        settings,
-        fromName: settings.email_from_name?.trim() || "Legal",
-        readDocument: () => Promise.reject(new Error("No documents to read.")),
-        saveProgress: () => Promise.resolve(),
-      },
-      {
-        // No request, so no link: Teams keys its post by the message, and
-        // email records no Message-IDs, which belong to a link.
-        id: payload.kind === "teams" ? row.id : "",
-        org_id: row.org_id,
-        request_id: "",
-        source: thread.source,
-        thread_key: thread.key,
-        address: thread.address,
-      },
-      {
-        id: row.id,
-        kind: "answer",
-        author: { kind: "mikegc" },
-        text,
-        requestSubject: "",
-        documents: [],
-      },
-      null,
-    );
+    if (attemptedAt && (await adapter.findDelivered(ctx, link, message, attemptedAt))) return;
+    await adapter.deliver(ctx, link, message, null);
   } catch (error) {
     if (error instanceof ChannelDeliveryError && error.permanent)
       throw new NonRetryableJobError(error.sentence);
@@ -617,10 +637,16 @@ async function processInbound(db: Db, row: InboundRow): Promise<Record<string, u
   const plan = payload.agent;
   // Nothing to record: MikeGC answers in the thread, and no request is made.
   if (!plan.record && plan.reply && !row.request_id && !payload.recorded) {
-    // Saved straight after the send, and the round counted apart, so a
-    // retry neither answers twice nor counts the answer twice.
+    // Its first attempt is saved before the send and its success straight
+    // after, and the round is counted apart, so a retry neither answers
+    // twice (it first looks for an answer that landed) nor counts it twice.
     if (!payload.conversed) {
-      await sendChatReply(db, row, settings, payload, plan.reply);
+      const attemptedAt = payload.conversing ?? null;
+      if (!attemptedAt) {
+        payload.conversing = new Date().toISOString();
+        await save();
+      }
+      await sendChatReply(db, row, settings, payload, plan.reply, attemptedAt);
       payload.conversed = true;
       await save();
     }

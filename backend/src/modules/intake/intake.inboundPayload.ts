@@ -124,6 +124,11 @@ const progress = {
    * the request is deleted, and this tells that apart from never recorded.
    */
   recorded: z.boolean().optional(),
+  /**
+   * When MikeGC first tried that answer, saved before sending, so a retry
+   * looks for an earlier send that landed rather than answering twice.
+   */
+  conversing: z.string().optional(),
   /** Set once MikeGC answered in the chat instead of recording a request. */
   conversed: z.boolean().optional(),
   /** Set once that answer is counted against the thread's rounds. */
