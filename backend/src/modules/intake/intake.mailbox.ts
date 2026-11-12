@@ -55,7 +55,12 @@ import {
   graphSubscribe,
   type ReadMail,
 } from "./intake.outlook";
-import { automationByWebhook, loadAutomationRow, type AutomationRow } from "./intake.settingsRow";
+import {
+  automationByWebhook,
+  intakeOrgDeleted,
+  loadAutomationRow,
+  type AutomationRow,
+} from "./intake.settingsRow";
 import { dispatchIntakeJob } from "./intake.shared";
 
 /**
@@ -399,6 +404,9 @@ export async function handleIntakeMailboxPoll(
   const settings = await loadAutomationRow(db, ids.data.orgId);
   if (!settings?.email_enabled || !settings.email_provider || !settings.email_mailbox)
     return { stopped: true };
+  // A deleted organization's mailbox is left unread through its recovery
+  // window; the sweep starts the poll again and it reads once restored.
+  if (await intakeOrgDeleted(db, settings.org_id)) return { stopped: true };
   const provider = settings.email_provider;
   let problem: string | null = null;
   try {
@@ -465,7 +473,17 @@ export async function ensureIntakeMailboxPolls(db: Db): Promise<number> {
     .not("email_provider", "is", null);
   if (error) throw error;
   const rows = (data ?? []) as { org_id: string }[];
-  for (const row of rows) await startMailboxPolling(db, row.org_id);
+  // One organization's poll that can't be queued must not leave the ones
+  // after it without theirs until the next sweep.
+  let failed: unknown = null;
+  for (const row of rows) {
+    try {
+      await startMailboxPolling(db, row.org_id);
+    } catch (error) {
+      failed ??= error;
+    }
+  }
+  if (failed) throw failed;
   return rows.length;
 }
 

@@ -284,6 +284,16 @@ describe("reading the mailbox", () => {
     result: null,
     created_at: "",
   });
+  it("doesn't read the mailbox of an organization being deleted", async () => {
+    const fetch = vi.fn();
+    vi.stubGlobal("fetch", fetch);
+    memory.rows("organizations").push({ id: org, deleted_at: "2026-11-12T00:00:00Z" });
+    await expect(handleIntakeMailboxPoll(memory.db, poll())).resolves.toEqual({ stopped: true });
+    expect(fetch).not.toHaveBeenCalled();
+    // Restored, it is read again.
+    memory.rows("organizations")[0]!.deleted_at = null;
+    await expect(handleIntakeMailboxPoll(memory.db, poll())).rejects.toBeInstanceOf(DbJobDeferredError);
+  });
   it("stops once email is switched off", async () => {
     memory.rows("intake_automation")[0]!.email_enabled = false;
     await expect(handleIntakeMailboxPoll(memory.db, poll())).resolves.toEqual({ stopped: true });

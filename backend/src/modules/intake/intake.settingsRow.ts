@@ -105,3 +105,20 @@ export async function automationByWebhook(
   if (error) throw error;
   return (data as AutomationRow | null) ?? null;
 }
+
+/**
+ * Whether an organization's deletion has begun. For its recovery window the
+ * organization and its intake settings still exist, but nothing of it is in
+ * use: its mailbox is not read and messages for it are not worked on. An
+ * organization with no row left counts as not deleted here; its intake rows
+ * went with it.
+ */
+export async function intakeOrgDeleted(db: Db, orgId: string): Promise<boolean> {
+  const { data, error } = await db
+    .from("organizations")
+    .select("deleted_at")
+    .eq("id", orgId)
+    .maybeSingle();
+  if (error) throw error;
+  return !!(data as { deleted_at?: string | null } | null)?.deleted_at;
+}

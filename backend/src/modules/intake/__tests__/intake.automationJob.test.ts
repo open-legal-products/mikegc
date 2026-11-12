@@ -291,6 +291,17 @@ async function deliverQueued(attempts = 1) {
 }
 
 describe("recording an email", () => {
+  it("leaves a message for an organization being deleted unread by the model", async () => {
+    setup({ payload: emailPayload() });
+    const organizations = memory.rows("organizations");
+    if (!organizations.length) organizations.push({ id: org });
+    for (const row of organizations) row.deleted_at = "2026-11-12T00:00:00Z";
+    await expect(handleIntakeAgent(memory.db, job())).resolves.toEqual({
+      skipped: "organization_deleted",
+    });
+    expect(mocks.stream).not.toHaveBeenCalled();
+    expect(memory.rows("intake_requests")).toEqual([]);
+  });
   it("records MikeGC's triaged request with the relevant documents, then forgets the message", async () => {
     setup({ payload: emailPayload() });
     await expect(handleIntakeAgent(memory.db, job())).resolves.toEqual({

@@ -5,6 +5,7 @@ import type { Db } from "../../lib/supabase";
 import { markInboundFailed, runInbound } from "./intake.automationJob";
 import { markReplyFailed, runReply } from "./intake.reply";
 import type { InboundRow } from "./intake.inboundStore";
+import { intakeOrgDeleted } from "./intake.settingsRow";
 import { dispatchIntakeJob } from "./intake.shared";
 
 /**
@@ -36,7 +37,8 @@ async function loadInbound(
 
 /**
  * The job body. A message no longer waiting (handled, or purged with the
- * organization's intake data) is skipped.
+ * organization's intake data) is skipped, as is one for an organization
+ * whose deletion has begun: it is not read by a model or answered.
  */
 export async function handleIntakeAgent(
   db: Db,
@@ -47,6 +49,7 @@ export async function handleIntakeAgent(
   const row = await loadInbound(db, ids.data);
   if (!row) return { skipped: "missing" };
   if (row.status !== "pending") return { skipped: row.status };
+  if (await intakeOrgDeleted(db, row.org_id)) return { skipped: "organization_deleted" };
   return row.kind === "reply" ? runReply(db, row) : runInbound(db, row);
 }
 
