@@ -51,3 +51,7 @@ regexes = ['''^8f742231b10e8888abcd99yyyzzz85a5$''']
 [[allowlists]]
 description = "scripts/local-secrets.test.sh fixture (first committed as cae936e57 on fix/hoogvliets-hardening-stack): a fake 64-hex DOWNLOAD_SIGNING_SECRET used to prove a real operator value is left alone; the branch since uses a low-entropy fixture, but the old blob stays in history"
 regexes = ['''^0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef$''']
+
+[[allowlists]]
+description = "Gmail grant unit-test fixtures (backend/src/modules/intake/__tests__/intake.gmailGrants.test.ts, first committed as 6de039f95): two fake service-account keys whose whole body is the word 'shared' or 'own'. Each alone is too short for the private-key rule; together in one file the rule's match runs from the first BEGIN to the second END. Anchored on the fake body, which no real key can start with."
+regexes = ['''^-----BEGIN PRIVATE KEY-----\\nshared\\n-----END PRIVATE KEY-----\\n",''']

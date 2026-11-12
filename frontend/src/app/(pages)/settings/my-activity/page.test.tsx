@@ -199,7 +199,29 @@ describe("MyActivitySettingsPage", () => {
     vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
   });
 
-  afterEach(() => {
+  afterEach(async () => {
+    // An export a test starts keeps polling after the test's last assertion.
+    // Left running, its next poll lands in the following test and is counted
+    // there ("called 2 times, but got 3" on a slow runner), so every test
+    // waits for the exports it started to end before the next one begins.
+    await waitFor(async () => {
+      const started = (
+        await Promise.allSettled(
+          mockedStartUserExport.mock.results.map((result) => result.value),
+        )
+      ).filter((outcome) => outcome.status === "fulfilled").length;
+      const polls = await Promise.allSettled(
+        mockedGetUserExportStatus.mock.results.map((result) => result.value),
+      );
+      const ended = (name: string) =>
+        polls.filter(
+          (poll) => poll.status === "fulfilled" && poll.value?.status === name,
+        ).length;
+      expect(ended("done") + ended("failed")).toBeGreaterThanOrEqual(started);
+      expect(mockedDownloadUserExport.mock.calls.length).toBeGreaterThanOrEqual(
+        ended("done"),
+      );
+    });
     vi.useRealTimers();
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
