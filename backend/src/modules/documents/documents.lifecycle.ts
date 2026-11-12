@@ -29,6 +29,15 @@ export type DocumentVersionRecord = NewDocumentVersion & {
   deleted_at: string | null;
 };
 
+type StoredDocumentEdit = {
+  id: string;
+  change_id: string;
+  deleted_text: string;
+  inserted_text: string;
+  context_before: string | null;
+  context_after: string | null;
+};
+
 /**
  * Trusted persistence operation. The caller must authorize the destination
  * (and independently authorize any copy source). Upload workers use their
@@ -74,6 +83,32 @@ export async function activateDocumentVersion(
     p_version_id: versionId,
   });
   return { activated: data === true, error };
+}
+
+/** Intake preprocessing commits only while its request snapshot is still open.
+ * The RPC locks the request through version creation, edit insertion and activation.
+ */
+export async function commitIntakeDocumentEdits(
+  db: Db,
+  request: { orgId: string; id: string; version: number },
+  version: NewDocumentVersion,
+  expected: { id: string; storagePath: string },
+  edits: Record<string, unknown>[],
+) {
+  const { document_id, ...metadata } = version;
+  const { data, error } = await db.rpc("commit_intake_document_edits", {
+    p_org: request.orgId,
+    p_request: request.id,
+    p_request_version: request.version,
+    p_document: document_id,
+    p_expected_version: expected.id,
+    p_expected_path: expected.storagePath,
+    p_version: metadata,
+    p_edits: edits,
+  });
+  if (!error && data?.version?.id)
+    await processDocumentTextInline(db, [data.version.id]).catch((err) => logError("document-text", safeError(err)));
+  return { data: data as { version: DocumentVersionRecord; edits: StoredDocumentEdit[] } | null, error };
 }
 
 export type DocumentVersionPatch = Partial<

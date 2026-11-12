@@ -155,6 +155,8 @@ describe.skipIf(!container)("intake real PostgreSQL transactions", () => {
     sql(migration("20261104_07_intake_delivery_message.sql"));
     sql(migration("20261104_08_intake_notifications.sql"));
     sql(migration("20261104_08_intake_notifications.sql"));
+    sql(migration("20261105_01_intake_preprocess_edits.sql"));
+    sql(migration("20261105_01_intake_preprocess_edits.sql"));
     sql(migration("20261110_01_intake_conversations.sql"));
     sql(migration("20261110_01_intake_conversations.sql"));
     sql(migration("20261110_02_intake_conversations_email.sql"));
@@ -1075,6 +1077,8 @@ describe.skipIf(!container)("intake real PostgreSQL transactions", () => {
     sql(migration("20261104_06_intake_always_clarify.sql"));
     sql(migration("20261104_07_intake_delivery_message.sql"));
     sql(migration("20261104_08_intake_notifications.sql"));
+    sql(migration("20261105_01_intake_preprocess_edits.sql"));
+    sql(migration("20261105_01_intake_preprocess_edits.sql"));
     sql(migration("20261110_01_intake_conversations.sql"));
     sql(migration("20261110_02_intake_conversations_email.sql"));
     sql(migration("20261111_01_intake_agent.sql"));
@@ -1817,6 +1821,110 @@ describe.skipIf(!container)("intake real PostgreSQL transactions", () => {
             and has_function_privilege('${role}', p.oid, 'EXECUTE')`),
       ).toBe("");
   });
+
+  describe("preprocessing document commit", () => {
+    const commit = (requestVersion = 1, version = 951, org = 10, request = 20, document = 950, edits = '[{"change_id":"change-1","deleted_text":"five","inserted_text":"two"}]') =>
+      `select coalesce(public.commit_intake_document_edits(${q(org)},${q(request)},${requestVersion},${q(document)},${q(1950)},
+        'documents/intake-${uid(10)}/${uid(950)}/nda.docx',
+        '{"id":"${uid(version)}","storage_path":"documents/intake-${uid(10)}/${uid(950)}/edited.docx","source":"assistant_edit","filename":"Supplier NDA.docx","file_type":"docx"}',
+        '${edits}')::text,'null');`;
+    beforeEach(() => { sql(submit()); orgDocument(950, 20); });
+    const counts = () => sql(`select (select count(*) from public.document_versions where document_id=${q(950)})||':'||
+      (select count(*) from public.document_edits where document_id=${q(950)})`);
+    it("commits version, edit rows and activation together and safely replays after closure", () => {
+      const receipt = json(commit());
+      expect(receipt.version.id).toBe(uid(951));
+      expect(receipt.edits).toHaveLength(1);
+      expect(counts()).toBe("2:1");
+      sql(cmd("resolve", 2, 910, 1, ",null"));
+      expect(json(commit())).toEqual(receipt);
+      expect(counts()).toBe("2:1");
+    });
+    it.each(["resolve", "cancel"])("rejects a %s before creating any version or edit", (action) => {
+      sql(cmd(action, 2, 910, 1, action === "cancel" ? ",'No longer required'" : ",null"));
+      expect(json(commit())).toBeNull();
+      expect(counts()).toBe("1:0");
+      expect(sql(`select current_version_id from public.documents where id=${q(950)}`)).toBe(uid(1950));
+    });
+    it("rejects close-and-reopen and wrong request/org/document scopes", () => {
+      sql(cmd("resolve", 2, 910, 1, ",null")); sql(cmd("reopen", 2, 911, 2));
+      expect(json(commit())).toBeNull();
+      expect(json(commit(3,951,11))).toBeNull();
+      expect(json(commit(3,951,10,21))).toBeNull();
+      expect(json(commit(3,951,10,20,999))).toBeNull();
+      expect(counts()).toBe("1:0");
+    });
+    it("rolls the entire edit back if an edit row cannot be saved", () => {
+      expect(() => sql(commit(1,951,10,20,950,'[{}]'))).toThrow();
+      expect(counts()).toBe("1:0");
+      expect(sql(`select current_version_id from public.documents where id=${q(950)}`)).toBe(uid(1950));
+    });
+    const awaitWait = async (tag: string, event = "PgSleep") => {
+      for (let i=0; i<20; i++) {
+        if (sql(`select count(*) from pg_stat_activity where application_name='${tag}' and ${event === "Lock" ? "wait_event_type" : "wait_event"}='${event}'`) === "1") return;
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      throw new Error("Concurrent transaction did not reach the barrier");
+    };
+    it("a concurrent committed close wins over queued edits", async () => {
+      const closing = parallel(`set application_name='intake-close-wins'; begin; ${cmd("resolve",2,910,1,",null")} select pg_sleep(2); commit;`);
+      await awaitWait("intake-close-wins");
+      const editing = parallel(`set application_name='intake-edit-waits'; ${commit()}`);
+      await awaitWait("intake-edit-waits", "Lock");
+      expect((await closing).code).toBe(0);
+      const edit = await editing;
+      expect(edit.code).toBe(0); expect(edit.out.trim()).toBe("null");
+      expect(counts()).toBe("1:0");
+    });
+    it("a concurrent edit finishes atomically before a later close", async () => {
+      const editing = parallel(`set application_name='intake-edit-wins'; begin; ${commit()} select pg_sleep(2); commit;`);
+      await awaitWait("intake-edit-wins");
+      const closing = parallel(`set application_name='intake-close-waits'; ${cmd("resolve",2,910,1,",null")}`);
+      await awaitWait("intake-close-waits", "Lock");
+      expect((await editing).code).toBe(0); expect((await closing).code).toBe(0);
+      expect(counts()).toBe("2:1"); expect(state().startsWith("resolved:")).toBe(true);
+      expect(sql(`select current_version_id from public.documents where id=${q(950)}`)).toBe(uid(951));
+    });
+    it("waits for an original-version replacement and rejects its stale source snapshot", async () => {
+      const replacing = parallel(`set application_name='intake-source-replace'; begin;
+        update public.document_versions set storage_path='documents/intake-${uid(10)}/${uid(950)}/replacement.docx',
+          content_sha256=repeat('b',64) where id=${q(1950)}; select pg_sleep(2); commit;`);
+      await awaitWait("intake-source-replace");
+      const editing = parallel(`set application_name='intake-source-edit-waits'; ${commit()}`);
+      await awaitWait("intake-source-edit-waits", "Lock");
+      expect((await replacing).code).toBe(0);
+      const edit = await editing; expect(edit.code).toBe(0); expect(edit.out.trim()).toBe("null");
+      expect(counts()).toBe("1:0");
+      expect(sql(`select current_version_id from public.documents where id=${q(950)}`)).toBe(uid(1950));
+    });
+    it("holds the original version stable until its edit transaction commits", async () => {
+      sql(`create function public.test_pause_intake_version() returns trigger language plpgsql as $$
+        begin perform pg_sleep(2); return new; end $$;
+        create trigger test_pause_intake_version before insert on public.document_versions
+          for each row when (new.source='assistant_edit') execute function public.test_pause_intake_version();`);
+      let editing: ReturnType<typeof parallel> | undefined;
+      let replacing: ReturnType<typeof parallel> | undefined;
+      try {
+        editing = parallel(`set application_name='intake-source-edit'; ${commit()}`);
+        await awaitWait("intake-source-edit");
+        replacing = parallel(`set application_name='intake-source-replace-waits';
+          update public.document_versions set storage_path='documents/intake-${uid(10)}/${uid(950)}/replacement.docx',
+            content_sha256=repeat('b',64) where id=${q(1950)};`);
+        await awaitWait("intake-source-replace-waits", "Lock");
+        expect((await editing).code).toBe(0); expect((await replacing).code).toBe(0);
+        expect(counts()).toBe("2:1");
+        expect(sql(`select current_version_id from public.documents where id=${q(950)}`)).toBe(uid(951));
+      } finally {
+        await Promise.allSettled([editing, replacing].filter(Boolean));
+        sql("drop trigger test_pause_intake_version on public.document_versions; drop function public.test_pause_intake_version()");
+      }
+    });
+    it("keeps the commit RPC inaccessible to browser roles", () => {
+      for (const role of ["anon", "authenticated"])
+        expect(sql(`select has_function_privilege('${role}','public.commit_intake_document_edits(uuid,uuid,integer,uuid,uuid,text,jsonb,jsonb)','EXECUTE')`)).toBe("f");
+    });
+  });
+
   // Toasts for the member a request is assigned to.
   type Claimed = { change: string; kind: string; created_at: string } & Record<string, unknown>;
   const claim = (actor: number): Claimed[] =>

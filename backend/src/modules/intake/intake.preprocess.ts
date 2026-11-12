@@ -317,12 +317,12 @@ type MarkUp = { name: string; changes: number } | { name: string; failed: string
  */
 async function markUp(
   db: Db,
-  orgId: string,
+  request: { orgId: string; id: string; version: number },
   doc: ReadDocument,
   edits: EditInput[],
 ): Promise<MarkUp | null> {
   if (!doc.isDocx || doc.versionCount !== 1 || edits.length === 0) return null;
-  const result = await applyOrgTrackedEdits({ db, orgId, doc, author: AUTHOR, edits });
+  const result = await applyOrgTrackedEdits({ db, orgId: request.orgId, request: { id: request.id, version: request.version }, doc, author: AUTHOR, edits });
   if (!result.ok) return { name: doc.filename, failed: result.error };
   const changes = result.annotations.length;
   return changes ? { name: doc.filename, changes } : null;
@@ -450,6 +450,7 @@ async function reviewRequest(args: {
   actorId: string;
   model: TriageModel;
   playbookId: string;
+  requestVersion: number;
   request: PreprocessRequest;
   documents: ReadDocument[];
 }): Promise<{ sections: string[]; marked: MarkUp[] }> {
@@ -465,6 +466,7 @@ async function reviewRequest(args: {
     `DATA ${boundary} END`,
   ].join("\n");
   for (const doc of args.documents) {
+    if (!(await requestUnchanged(args.db, args.job, args.requestVersion))) break;
     try {
       const review = await reviewWithPlaybook({
         db: args.db,
@@ -479,9 +481,10 @@ async function reviewRequest(args: {
         // The intake organization's keys, even for a personal playbook.
         keysOrgId: args.job.orgId,
       });
+      if (!(await requestUnchanged(args.db, args.job, args.requestVersion))) break;
       const result = await markUp(
         args.db,
-        args.job.orgId,
+        { orgId: args.job.orgId, id: args.job.requestId, version: args.requestVersion },
         doc,
         playbookFindingEdits(review.findings).map((p) => p.edit),
       );
@@ -503,6 +506,14 @@ async function reviewRequest(args: {
   return { sections, marked };
 }
 
+/** A prompt from an earlier request revision must not write into a newer one. */
+async function requestUnchanged(db: Db, job: JobPayload, version: number): Promise<boolean> {
+  const { data, error } = await db.from("intake_requests")
+    .select("state, version").eq("org_id", job.orgId).eq("id", job.requestId).maybeSingle();
+  if (error) throw error;
+  return !!data && data.version === version && data.state !== "resolved" && data.state !== "cancelled";
+}
+
 type PreprocessOutcome = Record<string, unknown> | void;
 
 async function preprocess(
@@ -510,6 +521,25 @@ async function preprocess(
   job: JobPayload,
   lastAttempt: boolean,
 ): Promise<PreprocessOutcome> {
+  const { data: requestRow, error } = await db
+    .from("intake_requests")
+    .select("subject, description, state, version, clarify_stage, clarify_rounds, clarify_stopped")
+    .eq("org_id", job.orgId)
+    .eq("id", job.requestId)
+    .maybeSingle();
+  if (error) throw error;
+  if (!requestRow) return;
+  const request = requestRow as {
+    subject: string;
+    description: string;
+    state: string;
+    version: number;
+    clarify_stage: "rule" | "readiness" | null;
+    clarify_rounds: number;
+    clarify_stopped: boolean;
+  };
+  if (request.state === "resolved" || request.state === "cancelled")
+    return { skipped: "closed" };
   // The acknowledgement waited for this run; it goes before the note.
   const acknowledge = () =>
     job.acknowledge ? acknowledgeRequest(db, job.orgId, job.requestId) : Promise.resolve();
@@ -546,22 +576,6 @@ async function preprocess(
         ? `${title} didn't run: its model no longer has an API key. An owner or admin can choose another in Model Preferences, or add its key in Bring Your Own Keys.`
         : `${title} didn't run: no preprocessing model is chosen. An owner or admin can choose one in Model Preferences.`,
     );
-  const { data: requestRow, error } = await db
-    .from("intake_requests")
-    .select("subject, description, state, clarify_stage, clarify_rounds, clarify_stopped")
-    .eq("org_id", job.orgId)
-    .eq("id", job.requestId)
-    .maybeSingle();
-  if (error) throw error;
-  if (!requestRow) return;
-  const request = requestRow as {
-    subject: string;
-    description: string;
-    state: string;
-    clarify_stage: "rule" | "readiness" | null;
-    clarify_rounds: number;
-    clarify_stopped: boolean;
-  };
   // Waiting on an answer to a later round: this run is stale.
   if (
     request.clarify_stage === "rule" ||
@@ -613,12 +627,17 @@ async function preprocess(
       missing = check.questions;
     }
   }
-  if (request.clarify_stage === "readiness")
-    await settleClarify(db, {
+  let requestVersion = request.version;
+  if (request.clarify_stage === "readiness") {
+    const settled = await settleClarify(db, {
       orgId: job.orgId,
       requestId: job.requestId,
       stage: "readiness",
     });
+    if (!settled) return { skipped: "superseded" };
+    requestVersion += 1;
+  }
+  if (!(await requestUnchanged(db, job, requestVersion))) return { skipped: "superseded" };
   await acknowledge();
   // What preprocessing reads: the request, then its thread with the requester.
   const withThread: PreprocessRequest = {
@@ -642,9 +661,11 @@ async function preprocess(
       actorId,
       model,
       playbookId: job.with.id,
+      requestVersion,
       request: withThread,
       documents: read,
     });
+    if (!(await requestUnchanged(db, job, requestVersion))) return { skipped: "superseded" };
     return postNote(db, job, `${stillMissing}${title}\n\n${sections.join("\n\n")}${markedLines(marked)}${skippedLine}`);
   }
 
@@ -654,9 +675,10 @@ async function preprocess(
     documents: read,
     instructions: rule?.instructions ?? null,
   });
+  if (!(await requestUnchanged(db, job, requestVersion))) return { skipped: "superseded" };
   const marked: MarkUp[] = [];
   for (const [index, list] of edits) {
-    const result = await markUp(db, job.orgId, read[index]!, list);
+    const result = await markUp(db, { orgId: job.orgId, id: job.requestId, version: requestVersion }, read[index]!, list);
     if (result) marked.push(result);
   }
   return postNote(db, job, `${stillMissing}${title}\n\n${answer}${markedLines(marked)}${skippedLine}`);

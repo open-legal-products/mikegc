@@ -14,6 +14,7 @@ import type { Db } from "../../lib/supabase";
 import { profileAttributionName } from "../../lib/userLookup";
 import {
   activateDocumentVersion,
+  commitIntakeDocumentEdits,
   createDocumentVersion,
   updateDocumentVersion,
 } from "./documents.lifecycle";
@@ -143,6 +144,7 @@ export async function writeTrackedEdits(params: {
   edits: EditInput[];
   db: Db;
   expectedVersion?: { id: string; storagePath: string };
+  intakeRequest?: { orgId: string; id: string; version: number };
   reuseVersion?: {
     versionId: string;
     versionNumber: number;
@@ -186,11 +188,51 @@ export async function writeTrackedEdits(params: {
     editedBytes.byteOffset + editedBytes.byteLength,
   ) as ArrayBuffer;
 
+  const editRowsFor = (versionId: string) => changes.map((c) => ({
+    document_id: documentId,
+    version_id: versionId,
+    change_id: c.id,
+    del_w_id: c.delId ?? null,
+    ins_w_id: c.insId ?? null,
+    deleted_text: c.deletedText,
+    inserted_text: c.insertedText,
+    context_before: c.contextBefore ?? "",
+    context_after: c.contextAfter ?? "",
+    status: "pending" as const,
+  }));
+
   let versionRowId: string;
   let newPath: string;
   let nextVersionNumber: number;
+  let intakeCommit: Awaited<ReturnType<typeof commitIntakeDocumentEdits>>["data"] = null;
 
-  if (reuseVersion) {
+  if (params.intakeRequest) {
+    if (!params.expectedVersion || reuseVersion)
+      return { ok: false, error: "Intake edits require an original document snapshot." };
+    versionRowId = crypto.randomUUID();
+    newPath = `documents/${storageOwner}/${documentId}/edits/${versionRowId}.docx`;
+    await uploadFile(newPath, ab, "application/vnd.openxmlformats-officedocument.wordprocessingml.document");
+    const committed = await commitIntakeDocumentEdits(db, params.intakeRequest, {
+      id: versionRowId,
+      document_id: documentId,
+      storage_path: newPath,
+      source: "assistant_edit",
+      filename: versionFilename,
+      file_type: "docx",
+      size_bytes: editedBytes.byteLength,
+      content_sha256: contentSha256(editedBytes),
+    }, params.expectedVersion, editRowsFor(versionRowId));
+    if (committed.error || !committed.data) {
+      // Only a definite rejection proves the new object is unowned. A lost
+      // response can follow a commit, so retain bytes on ambiguous errors.
+      if (!committed.error) await deleteFileBestEffort(newPath, "intake-edit-superseded");
+      return { ok: false, error: committed.error
+        ? "Could not save intake edits. Check the document before retrying."
+        : "The request or document changed. Automated edits were not applied." };
+    }
+    intakeCommit = committed.data;
+    nextVersionNumber = intakeCommit.version.version_number;
+  } else if (reuseVersion) {
     // Reuse the version number, but never overwrite bytes an extraction job
     // may be reading. Publish the new path/hash together after storage succeeds.
     if (activeVersion?.id !== reuseVersion.versionId || current.storage_path !== reuseVersion.storagePath) {
@@ -256,22 +298,11 @@ export async function writeTrackedEdits(params: {
     nextVersionNumber = versionRow.version_number;
   }
 
-  // Insert one row per change
-  const editRows = changes.map((c) => ({
-    document_id: documentId,
-    version_id: versionRowId,
-    change_id: c.id,
-    del_w_id: c.delId ?? null,
-    ins_w_id: c.insId ?? null,
-    deleted_text: c.deletedText,
-    inserted_text: c.insertedText,
-    context_before: c.contextBefore ?? "",
-    context_after: c.contextAfter ?? "",
-    status: "pending" as const,
-  }));
-  const { data: insertedEdits, error: editsErr } = await db
+  const { data: insertedEdits, error: editsErr } = intakeCommit
+    ? { data: intakeCommit.edits, error: null }
+    : await db
     .from("document_edits")
-    .insert(editRows)
+    .insert(editRowsFor(versionRowId))
     .select(
       "id, change_id, del_w_id, ins_w_id, deleted_text, inserted_text, context_before, context_after",
     );
@@ -280,7 +311,9 @@ export async function writeTrackedEdits(params: {
     return { ok: false, error: "Failed to record edits." };
   }
 
-  const activation = await activateDocumentVersion(db, documentId, versionRowId);
+  const activation = intakeCommit
+    ? { activated: true, error: null }
+    : await activateDocumentVersion(db, documentId, versionRowId);
   if (activation.error || !activation.activated) {
     return { ok: false, error: "Failed to activate document version." };
   }

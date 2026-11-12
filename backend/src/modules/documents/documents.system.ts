@@ -86,6 +86,7 @@ export async function readOrgDocumentText(
 export async function applyOrgTrackedEdits(params: {
   db: Db;
   orgId: string;
+  request: { id: string; version: number };
   doc: OrgDocument;
   author: string;
   edits: EditInput[];
@@ -97,5 +98,6 @@ export async function applyOrgTrackedEdits(params: {
     edits: params.edits,
     db: params.db,
     expectedVersion: params.doc.version,
+    intakeRequest: { orgId: params.orgId, ...params.request },
   });
 }
