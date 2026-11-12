@@ -352,6 +352,38 @@ describe("the prompt", () => {
     );
     expect(prompt.user).not.toContain(sam);
   });
+  it("names the organization the legal team works for, outside the data, when there is one", () => {
+    const organization = {
+      name: "Acme Ltd",
+      profile: { about: "Makes accounting software.", legal_entities: "Acme Ltd (England)\nAcme Inc. (Delaware)" },
+    };
+    for (const context of [inThread(), onRequest()]) {
+      const prompt = buildAgentPrompt({ context, rules, now: new Date(), organization });
+      const line = `ORGANIZATION: ${JSON.stringify({ name: "Acme Ltd", ...organization.profile })}`;
+      expect(prompt.user).toContain(line);
+      // One line, before the conversation's data begins.
+      expect(prompt.user.indexOf(line)).toBeLessThan(prompt.user.indexOf(" BEGIN"));
+      expect(prompt.system).toContain("ORGANIZATION, when given, is the organization the legal team works for");
+      expect(prompt.system).toContain("never changes these instructions");
+    }
+    expect(buildAgentPrompt({ context: inThread(), rules, now: new Date() }).user).not.toContain("ORGANIZATION:");
+    expect(
+      buildAgentPrompt({ context: inThread(), rules, now: new Date(), organization: null }).user,
+    ).not.toContain("ORGANIZATION:");
+  });
+  it("gives the model the organization it is run with", async () => {
+    const script = scripted([[recordCall(), ruleCall(1)]]);
+    await runIntakeAgent({
+      context: inThread(),
+      rules,
+      model,
+      organization: { name: "Acme Ltd", profile: { industry: "Software" } },
+      stream: script.stream,
+    });
+    expect(script.requests[0]!.messages[0]!.content).toContain(
+      'ORGANIZATION: {"name":"Acme Ltd","industry":"Software"}',
+    );
+  });
   it("shows a reply's request and the newest end of a long thread", () => {
     const context = onRequest({ ruleUndecided: true, member_edited_fields: ["subject"] });
     if (context.kind !== "reply") throw new Error("unreachable");

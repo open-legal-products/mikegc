@@ -1837,6 +1837,45 @@ export async function deleteOrgLogo(orgId: string): Promise<void> {
     await apiRequest(`/orgs/${orgId}/logo`, { method: "DELETE" });
 }
 
+/** A field of an organization's profile. */
+export type OrgProfileField =
+    | "about"
+    | "industry"
+    | "headquarters"
+    | "jurisdictions"
+    | "legal_entities"
+    | "legal_team"
+    | "additional_context";
+
+/**
+ * What an organization's owners and admins tell the assistant and the intake
+ * agent about it. Every field is null until set.
+ */
+export type OrgProfile = Record<OrgProfileField, string | null> & {
+    /** When it last changed, or null before anything was ever set. */
+    updated_at: string | null;
+};
+
+/** The organization's profile (any member may read it). */
+export async function getOrgProfile(orgId: string): Promise<OrgProfile> {
+    return apiRequest<OrgProfile>(`/orgs/${orgId}/profile`);
+}
+
+/**
+ * Change the fields given (owner or admin); an empty string or null clears
+ * one. Answers with the whole profile.
+ */
+export async function updateOrgProfile(
+    orgId: string,
+    changes: Partial<Record<OrgProfileField, string | null>>,
+): Promise<OrgProfile> {
+    return apiRequest<OrgProfile>(`/orgs/${orgId}/profile`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(changes),
+    });
+}
+
 /**
  * An organization's model provider keys, as its members see them. Never a
  * key itself: only which providers are set up.

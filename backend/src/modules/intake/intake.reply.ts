@@ -3,6 +3,7 @@ import type { IntakeExternalAuthor } from "@mike/contracts";
 import { NonRetryableJobError } from "../../lib/dbq/runner";
 import type { DbJob } from "../../lib/dbq/types";
 import { safeError } from "../../lib/safeError";
+import { loadOrgContext } from "../../lib/orgProfile";
 import type { Db } from "../../lib/supabase";
 import {
   addDocuments,
@@ -310,17 +311,19 @@ async function runAgentOnReply(
   const orgId = link.org_id;
   const requestId = reply.request_id;
   if (!payload.agent) {
-    const [request, thread, rules, model] = await Promise.all([
+    const [request, thread, rules, model, organization] = await Promise.all([
       loadAgentRequest(db, orgId, reply),
       loadThreadEntries(db, orgId, requestId),
       loadTriageRules(db, orgId),
       resolveIntakeModel(db, orgId, settings.configured_by, settings.triage_model),
+      loadOrgContext(db, orgId),
     ]);
     if (!request) return;
     payload.agent = await runIntakeAgent({
       context: { kind: "reply", channel: link.source, request, thread, sentAt: new Date() },
       rules,
       model,
+      organization,
     });
     payload.agentStage = reply.clarify_stage === "rule" ? "rule" : null;
     payload.agentRound = reply.clarify_rounds;

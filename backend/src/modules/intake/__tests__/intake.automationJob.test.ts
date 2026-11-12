@@ -644,6 +644,16 @@ describe("recording a Slack thread", () => {
     expect(prompt).toContain("--- MikeGC's earlier replies in this thread ---\nMikeGC, 2 Nov 2026, 09:14 UTC:\nIs Acme a customer or a supplier?");
     expect(memory.rows("intake_requests")[0]).toMatchObject({ assignee_id: sam });
   });
+  it("tells the agent about the organization from its name and profile", async () => {
+    setup({ payload: emailPayload() });
+    memory.rows("organizations")[0]!.name = "Acme Ltd";
+    memory.rows("org_profiles").push({ org_id: org, about: "Makes accounting software.", industry: null });
+    modelCalls([recordCall(), ruleCall(1)]);
+    await handleIntakeInbound(memory.db, job());
+    expect(model.requests[0]!.messages[0]!.content).toContain(
+      'ORGANIZATION: {"name":"Acme Ltd","about":"Makes accounting software."}',
+    );
+  });
   it("records the message once MikeGC has answered in its thread a few times", async () => {
     setup({ payload: slackPayload({ thread_ts: null, ts: "1793610840.000100", user: "U1", text: "<@UBOT> wassup" }), source: "slack" });
     memory.rows("intake_conversations").push({ org_id: org, source: "slack", thread_key: ":C42:1793610840.000100", rounds: 3 });

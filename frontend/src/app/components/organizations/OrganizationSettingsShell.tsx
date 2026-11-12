@@ -29,6 +29,8 @@ import { PillButtonUI } from "@/shared/ui/PillButtonUI";
 // with its sections down the side.
 //
 //   General          everyone in the organization
+//   Profile          its owners and admins: what the assistant and the intake
+//                    agent are told about the organization
 //   Members          everyone in the organization; a full table page of its
 //                    own rather than a section inside the frame
 //   Model Preferences    its owners and admins: the models its features run
@@ -84,6 +86,7 @@ export function organizationSettingsHref(
 
 type OrganizationSettingsSection =
   | "general"
+  | "profile"
   | "members"
   | "audit"
   | "models"
@@ -209,6 +212,16 @@ export function OrganizationSettingsFrame({
         label: "General",
         href: organizationSettingsHref(orgId),
       },
+      // Not offered to a member, nor before the caller's role is known.
+      ...(canManage
+        ? [
+            {
+              id: "profile",
+              label: "Profile",
+              href: organizationSettingsHref(orgId, "profile"),
+            },
+          ]
+        : []),
       // A table page of its own; its header leads back here.
       {
         id: "members",

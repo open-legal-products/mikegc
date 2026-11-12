@@ -3,6 +3,7 @@ import { enqueueDbJob } from "../../lib/dbq/enqueue";
 import { NonRetryableJobError, dbJobsEnabled } from "../../lib/dbq/runner";
 import type { DbJob } from "../../lib/dbq/types";
 import { safeError } from "../../lib/safeError";
+import { loadOrgContext } from "../../lib/orgProfile";
 import { deleteFile } from "../../lib/storage";
 import type { Db } from "../../lib/supabase";
 import { loadAutomationRow, type AutomationRow } from "./intake.settingsRow";
@@ -639,7 +640,7 @@ async function planInbound(
   const thread = conversationThread(settings, payload);
   // The agent runs with the model the organization chose for triage; with
   // none, or once its key has gone, the message is recorded as it arrived.
-  const [conversation, rules, model] = await Promise.all([
+  const [conversation, rules, model, organization] = await Promise.all([
     thread ? findConversation(db, row.org_id, thread.source, thread.key) : null,
     loadTriageRules(db, row.org_id),
     resolveIntakeModel(
@@ -648,6 +649,7 @@ async function planInbound(
       settings?.configured_by ?? null,
       settings?.triage_model ?? null,
     ),
+    loadOrgContext(db, row.org_id),
   ]);
   return runIntakeAgent({
     context: {
@@ -659,6 +661,7 @@ async function planInbound(
     },
     rules,
     model,
+    organization,
   });
 }
 

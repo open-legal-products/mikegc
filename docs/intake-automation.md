@@ -108,6 +108,18 @@ greeting is one reply, a clear request one step with two tool calls). If it
 ends without answering or recording, the message is recorded as it arrived,
 unassigned, so a message is never lost.
 
+The agent is also told the organization's name and its **Profile**, which
+owners and admins fill in under the organization's settings
+(`/organizations/<id>/settings/profile`): what the organization does, its
+industry, headquarters and jurisdictions, its legal entities, its legal team
+and any other context. It uses them to understand which business, entity or
+jurisdiction a message is about and to word subjects and summaries, and a
+reply may name the organization ("Acme's legal team"). The profile is
+background only: it never changes the agent's instructions. The assistant
+(chat and project chat) is given the same name and profile in that
+organization's workspace, as data rather than instructions; personal work
+gets neither.
+
 ## Rules and AI preprocessing
 
 The rules page is a table of rules, opened with **Edit** under **Triage

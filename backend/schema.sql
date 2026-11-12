@@ -807,6 +807,46 @@ create trigger org_logos_sync_updated_at
   after insert or update or delete on public.org_logos
   for each row execute procedure public.sync_org_logo_updated_at();
 
+-- An organization's profile: what its owners and admins tell the assistant
+-- and the intake agent about it. In a table of its own so that reading an
+-- organization (`select *`, in many places) never carries it. Every field is
+-- optional and bounded, because the whole profile goes to the model with
+-- every chat turn and every intake message.
+create table if not exists public.org_profiles (
+  org_id uuid primary key references public.organizations(id) on delete cascade,
+  -- What the organization does: its business, products or services, customers.
+  about text
+    constraint org_profiles_about_length check (char_length(about) <= 2000),
+  industry text
+    constraint org_profiles_industry_length check (char_length(industry) <= 200),
+  headquarters text
+    constraint org_profiles_headquarters_length
+    check (char_length(headquarters) <= 200),
+  -- Where it does business.
+  jurisdictions text
+    constraint org_profiles_jurisdictions_length
+    check (char_length(jurisdictions) <= 500),
+  -- The companies in its group, so the assistant can tell which party to a
+  -- document is the organization.
+  legal_entities text
+    constraint org_profiles_legal_entities_length
+    check (char_length(legal_entities) <= 1000),
+  -- Who is in the legal team and what it covers.
+  legal_team text
+    constraint org_profiles_legal_team_length
+    check (char_length(legal_team) <= 1000),
+  -- Anything else: standard positions, preferred governing law, risk appetite.
+  additional_context text
+    constraint org_profiles_additional_context_length
+    check (char_length(additional_context) <= 2000),
+  -- Who changed it last. Provenance for the organization's admins; the
+  -- profile outlives the account.
+  updated_by uuid references auth.users(id) on delete set null,
+  updated_at timestamptz not null default now()
+);
+
+alter table public.org_profiles enable row level security;
+
 -- An organization's own model list for each "model list" provider. Where
 -- the organization holds the key (org_api_keys), this list decides which
 -- models it may run; a member's own list (user_router_models) still decides
@@ -8009,6 +8049,7 @@ revoke all on public.auth_handoff_tickets from anon, authenticated;
 revoke all on public.user_router_models from anon, authenticated;
 revoke all on public.org_router_models from anon, authenticated;
 revoke all on public.org_logos from anon, authenticated;
+revoke all on public.org_profiles from anon, authenticated;
 revoke all on public.user_mcp_connectors from anon, authenticated;
 revoke all on public.user_mcp_oauth_tokens from anon, authenticated;
 revoke all on public.user_mcp_oauth_states from anon, authenticated;
@@ -13012,5 +13053,6 @@ insert into public.schema_migrations (filename) values
   ('20261110_01_intake_conversations.sql'),
   ('20261110_02_intake_conversations_email.sql'),
   ('20261111_01_intake_agent.sql'),
-  ('20261111_02_intake_edit_preserves_unread.sql')
+  ('20261111_02_intake_edit_preserves_unread.sql'),
+  ('20261112_01_org_profiles.sql')
 on conflict (filename) do nothing;
