@@ -132,9 +132,14 @@ export function IntakeDetail({
   orgId: string;
   requestId: string;
 }) {
-  const { accountId, workspaceId } = useWorkspace();
+  const { accountId, workspaceId, organizations } = useWorkspace();
   // Personal is no organization to the workspace switcher.
   useItemWorkspace(requestId, orgId === PERSONAL_WORKSPACE ? null : orgId);
+  // The switch above only goes to an organization this account is in.
+  const notMember =
+    orgId !== PERSONAL_WORKSPACE &&
+    !!organizations &&
+    !organizations.some((org) => org.id === orgId);
   if (!accountId || workspaceId !== orgId)
     return (
       <div className="flex h-full min-h-0 flex-1 flex-col">
@@ -142,7 +147,11 @@ export function IntakeDetail({
           <EmptyState
             icon={<IntakeSkeuoIcon />}
             title="Intake"
-            description="Open this request in its workspace."
+            description={
+              notMember
+                ? "This request belongs to a workspace this account can’t open."
+                : "Open this request in its workspace."
+            }
           />
         </TableEmptyState>
       </div>

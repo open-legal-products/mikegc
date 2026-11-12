@@ -54,7 +54,12 @@ const mocks = vi.hoisted(() => ({
   workspace: {
     accountId: "account-a",
     workspaceId: "org-a",
-    activeOrganization: { id: "org-a" } as { id: string } | null,
+    activeOrganization: { id: "org-a" },
+  } as {
+    accountId: string;
+    workspaceId: string;
+    activeOrganization: { id: string } | null;
+    organizations?: { id: string }[] | null;
   },
 }));
 vi.mock("@/app/lib/mikeApi", () => ({
@@ -2779,6 +2784,29 @@ describe("request detail", () => {
     await waitFor(() => expect(mocks.command).toHaveBeenCalledTimes(3));
     expect(mocks.command.mock.calls[2]).toEqual(original);
     await act(async () => recheck.reject({ status: 403 }));
+  });
+
+  it("says a request in an organization this account left can't be opened", async () => {
+    mocks.workspace = {
+      ...mocks.workspace,
+      organizations: [{ id: "org-a" }],
+    };
+    const view = render(<IntakeDetail orgId="org-b" requestId="request-a" />);
+    expect(
+      screen.getByText(
+        "This request belongs to a workspace this account can’t open.",
+      ),
+    ).toBeInTheDocument();
+    // One of theirs is opened in its workspace, which the page switches to.
+    mocks.workspace = {
+      ...mocks.workspace,
+      organizations: [{ id: "org-a" }, { id: "org-b" }],
+    };
+    view.rerender(<IntakeDetail orgId="org-b" requestId="request-a" />);
+    expect(
+      screen.getByText("Open this request in its workspace."),
+    ).toBeInTheDocument();
+    expect(mocks.request).not.toHaveBeenCalled();
   });
 
   it("does not display a late request response after the account changes", async () => {
