@@ -420,9 +420,12 @@ as it. One mailbox per organization, on Microsoft 365 or Google Workspace.
 
 ### What counts as a request
 
-- A new email with the intake address in To or Cc. A forward counts too: the
-  forwarder is the requester, and the agent names the original sender in the
-  summary.
+- A new email delivered to the intake mailbox: with the intake address in To
+  or Cc, or through an alias or distribution list that delivers into it, or a
+  Bcc. Mail that doesn't name the intake address in To or Cc is answered to
+  its sender alone, so no one else learns it was sent a copy. A forward
+  counts too: the forwarder is the requester, and the agent names the
+  original sender in the summary.
 - From an accepted **sender domain**. The list starts with the intake
   address's own domain; add the company's other domains (`example.com` also
   accepts its subdomains, such as `eu.example.com`). Mail from other domains
@@ -478,7 +481,9 @@ MikeGC marks recorded mail with the "MikeGC" category.
 
 The intake address must be a licensed Workspace user account, such as
 `intake@example.com`: the Gmail API reads only user mailboxes, so a Google
-Group can't be connected, but a group can deliver into the account.
+Group can't be connected. To receive mail at another address, add it to the
+account as an alternate email address (alias). A Google Group that delivers
+into the account marks its mail as list mail, which is ignored.
 
 1. In Google Cloud, enable the Gmail API in a project, create a service
    account and download its JSON key. Organizations can skip this when the

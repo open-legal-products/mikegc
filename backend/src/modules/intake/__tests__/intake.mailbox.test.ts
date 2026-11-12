@@ -28,6 +28,8 @@ import { encryptString } from "../../../lib/mcp/client";
 import { handleIntakeDeliver } from "../intake.deliver";
 import { handleIntakeMailboxPoll, recordMail } from "../intake.mailbox";
 import { gmailAdapter } from "../intake.gmail";
+import type { MailInboundPayload } from "../intake.inboundPayload";
+import { mailThread } from "../intake.mail";
 import { clearMicrosoftTokens } from "../intake.microsoft";
 import type { ReadMail } from "../intake.outlook";
 import type { AutomationRow } from "../intake.settingsRow";
@@ -183,10 +185,18 @@ describe("recording email from the intake mailbox", () => {
       expect.objectContaining({ kind: "intake.agent", dedupeKey: "intake.agent:other-poll" }),
     );
   });
-  it("ignores automatic mail, mail not to the intake address, other domains and an unauthenticated sender", async () => {
+  it("records mail an alias, list or Bcc delivered, and answers only its sender", async () => {
+    // The To header names the alias, not the mailbox it delivers into.
+    const viaAlias = mail({ to: ["legal@firm.test"], cc: ["ben@acme.test"] });
+    expect(await recordMail(memory.db, settings(), viaAlias)).toBe("received");
+    const payload = inbound()[0]!.payload as MailInboundPayload;
+    expect(mailThread(settings(), payload)?.address).toMatchObject({ to: ["jane@acme.test"], cc: [] });
+    // Mail naming the intake address copies the others accepted, as before.
+    expect(mailThread(settings(), { ...payload, to: ["intake@firm.test"] })?.address.cc).toEqual(["ben@acme.test"]);
+  });
+  it("ignores automatic mail, other domains and an unauthenticated sender", async () => {
     const cases: [Partial<ReadMail>, RegExp][] = [
       [{ headers: [{ name: "Auto-Submitted", value: "auto-replied" }] }, /automatic reply/],
-      [{ to: ["someone@firm.test"], cc: [] }, /wasn't addressed to the intake address/],
       [{ from: { name: "Eve", email: "eve@elsewhere.test" } }, /elsewhere\.test, isn't one of the accepted domains/],
       [{ headers: [{ name: "Authentication-Results", value: "mx.google.com; spf=fail; dmarc=fail header.from=acme.test" }] }, /didn't authenticate/],
     ];
@@ -197,7 +207,7 @@ describe("recording email from the intake mailbox", () => {
     // Mail the mailbox sent itself, and drafts, are skipped without a row.
     expect(await recordMail(memory.db, settings(), mail({ from: { name: "Legal", email: "intake@firm.test" } }))).toBe("skipped");
     expect(await recordMail(memory.db, settings(), mail({ isDraft: true }))).toBe("skipped");
-    expect(inbound()).toHaveLength(4);
+    expect(inbound()).toHaveLength(3);
     expect(kinds()).toEqual([]);
   });
   it("records a reply in a request's thread, from someone on it, without the history it quotes", async () => {

@@ -111,7 +111,7 @@ export function graphNotificationUrl(webhookId: string): string {
  * Record one email from the mailbox: once, by its Message-ID. A message in
  * a request's thread from someone on that thread is a reply; from anyone
  * else at an accepted domain it becomes a new request, with a note on the
- * other. A new email addressed to the intake address from an accepted,
+ * other. A new email delivered to the intake mailbox from an accepted,
  * authenticated domain is a request. Automatic mail, and mail the mailbox
  * sent itself, is recorded as ignored or skipped.
  */
@@ -213,9 +213,12 @@ export async function recordMail(
     return routed.data;
   }
 
-  // A new request.
-  const addressed = [...mail.to, ...mail.cc].includes(mailbox) || !!link;
-  if (!addressed) return ignored("It wasn't addressed to the intake address, so no request was recorded.");
+  // A new request. Everything read here was delivered to the mailbox's
+  // Inbox, so it may name an alias, a distribution list or a group instead
+  // of the intake address, or have been Bcc'd: none of these can be told
+  // apart from the headers, and the domain and authentication checks below
+  // apply to all of them. Mail that doesn't name the intake address is
+  // answered to its sender alone (see mailThread), so a Bcc isn't revealed.
   const allowed = settings.email_allowed_domains ?? [];
   if (allowed.length === 0)
     return ignored("No sender domains are accepted yet. Add one in Intake settings.");

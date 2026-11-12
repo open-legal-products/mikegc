@@ -360,7 +360,12 @@ export type MailAddress = {
   references?: string[];
 };
 
-/** The thread a new email starts: replies go to its sender, cc the others accepted. */
+/**
+ * The thread a new email starts: replies go to its sender, cc the others
+ * accepted. Mail that reached the mailbox without naming it in To or Cc (an
+ * alias, a list, or a Bcc) is answered to its sender alone, so the others
+ * never learn the intake address was sent a copy.
+ */
 export function mailThread(
   settings: AutomationRow,
   payload: MailInboundPayload,
@@ -369,8 +374,8 @@ export function mailThread(
   if (!requester) return null;
   const mailbox = payload.mailbox.toLowerCase();
   const allowed = settings.email_allowed_domains ?? [];
-  const cc = [...payload.to, ...payload.cc]
-    .map((a) => a.toLowerCase())
+  const recipients = [...payload.to, ...payload.cc].map((a) => a.toLowerCase());
+  const cc = (recipients.includes(mailbox) ? recipients : [])
     .filter(
       (a, i, all) =>
         a !== mailbox &&
