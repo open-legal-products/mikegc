@@ -184,6 +184,26 @@ describe("IntakeActionCard", () => {
         visibility.mockRestore();
     });
 
+    it("keeps the newest read when an older recheck answers after it", async () => {
+        let answerRecheck!: (value: unknown) => void;
+        getIntakeRequest
+            .mockResolvedValueOnce(request("in_review", { resolve: true }))
+            // The recheck on returning to the tab, still on its way…
+            .mockReturnValueOnce(new Promise((resolve) => (answerRecheck = resolve)))
+            // …when the read after Confirm answers.
+            .mockResolvedValueOnce(request("cancelled", { reopen: true }));
+        commandIntakeRequest.mockRejectedValue(new Error("conflict"));
+        render(<IntakeActionCard event={event("resolve")} />);
+        const confirm = await screen.findByRole("button", { name: "Resolve" });
+        window.dispatchEvent(new Event("focus"));
+        await userEvent.click(confirm);
+        await screen.findByText("This change no longer applies. The request is Cancelled.");
+        answerRecheck(request("in_review", { resolve: true }));
+        await waitFor(() => expect(getIntakeRequest).toHaveBeenCalledTimes(3));
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        expect(screen.queryByRole("button", { name: "Resolve" })).toBeNull();
+    });
+
     it("shows a failure without claiming the change was made", async () => {
         getIntakeRequest.mockResolvedValue(request("in_review", { resolve: true }));
         commandIntakeRequest.mockRejectedValue(new Error("conflict"));

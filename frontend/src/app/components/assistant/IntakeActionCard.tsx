@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useId, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
 import Link from "next/link";
 import { Check } from "lucide-react";
 import type {
@@ -120,13 +120,28 @@ export function IntakeActionCard({
     const [busy, setBusy] = useState(false);
     const [confirmed, setConfirmed] = useState(false);
 
-    const load = useCallback(
-        () =>
-            getIntakeRequest(event.org_id, event.request_id).then(
-                (request) => setLoaded({ status: "ready", request }),
-                () => setLoaded({ status: "unavailable" }),
-            ),
+    // Only the latest read answers. A recheck sent just before Confirm could
+    // land after the read that follows it and put the request's old version
+    // back, so the next Confirm was refused as out of date.
+    const latestRead = useRef(0);
+    const read = useCallback(
+        (failed: () => void) => {
+            const mine = ++latestRead.current;
+            return getIntakeRequest(event.org_id, event.request_id).then(
+                (request) => {
+                    if (mine === latestRead.current)
+                        setLoaded({ status: "ready", request });
+                },
+                () => {
+                    if (mine === latestRead.current) failed();
+                },
+            );
+        },
         [event.org_id, event.request_id],
+    );
+    const load = useCallback(
+        () => read(() => setLoaded({ status: "unavailable" })),
+        [read],
     );
     useEffect(() => {
         void load();
@@ -137,10 +152,7 @@ export function IntakeActionCard({
     useEffect(() => {
         const recheck = () => {
             if (document.visibilityState !== "visible") return;
-            getIntakeRequest(event.org_id, event.request_id).then(
-                (request) => setLoaded({ status: "ready", request }),
-                () => {},
-            );
+            void read(() => {});
         };
         window.addEventListener("focus", recheck);
         document.addEventListener("visibilitychange", recheck);
@@ -148,7 +160,7 @@ export function IntakeActionCard({
             window.removeEventListener("focus", recheck);
             document.removeEventListener("visibilitychange", recheck);
         };
-    }, [event.org_id, event.request_id]);
+    }, [read]);
 
     /** Confirm shows only for a request on screen, at the version shown. */
     async function confirm(current: IntakeRequest) {
