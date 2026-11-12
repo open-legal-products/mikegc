@@ -30,6 +30,7 @@ import {
   type InboundMessage,
   type TriageModel,
   type TriageRule,
+  chatThreadText,
 } from "./intake.triage";
 
 /**
@@ -245,16 +246,11 @@ export function buildAgentPrompt(args: {
       type: c.file_type,
       ...(c.size !== null ? { size_kb: Math.ceil(c.size / 1024) } : {}),
     }));
-    // A Slack or Teams thread reads oldest first and ends with the message
-    // that mentions MikeGC, so a long one keeps its end; an email keeps its
-    // start, where its newest text is.
-    const threaded = message.source === "slack" || message.source === "teams";
-    const head = clip(message.text, PROMPT_MESSAGE_CHARS);
-    const body = threaded
-      ? tail(message.text, PROMPT_MESSAGE_CHARS)
-      : head.length < message.text.length
-        ? `${head}\n[Message shortened.]`
-        : head;
+    // A chat thread reads oldest first and ends with the message that
+    // mentions MikeGC: a long one keeps that message and the ones just
+    // before it. A message on its own, like an email, keeps its start,
+    // where its instruction and its newest text are.
+    const body = chatThreadText(message.parts ?? [message.text], PROMPT_MESSAGE_CHARS);
     const replies = context.earlierReplies.map((r) => ({ author: "MikeGC", at: r.at, text: r.text }));
     const user = [
       `TODAY: ${today(message.sentAt, args.now)} (UTC)`,

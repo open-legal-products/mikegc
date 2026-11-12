@@ -36,7 +36,6 @@ import {
   MAX_MESSAGE_CHARS,
   cleanText,
   clip,
-  clipStart,
   inboundPayload,
   stagedKeys,
   type InboundPayload,
@@ -82,6 +81,7 @@ import {
   loadTriageRules,
   resolveIntakeModel,
   type InboundMessage,
+  chatThreadText,
 } from "./intake.triage";
 
 /**
@@ -299,12 +299,10 @@ async function slackMessage(
     ...m,
     text: slackTextToPlain(m.text, names, botUserId),
   }));
-  const text =
+  const parts =
     plain.length === 1
-      ? plain[0]!.text
-      : plain
-          .map((m) => `${nameOf(m.user)}, ${formatSent(slackDate(m.ts))}:\n${m.text}`)
-          .join("\n\n");
+      ? [plain[0]!.text]
+      : plain.map((m) => `${nameOf(m.user)}, ${formatSent(slackDate(m.ts))}:\n${m.text}`);
   const seen = new Set<string>();
   const files = plain
     .flatMap((m) => m.files)
@@ -327,7 +325,8 @@ async function slackMessage(
     sentAt: slackDate(payload.ts),
     subject: null,
     subjectHint: firstLine,
-    text: clipStart(text, MAX_MESSAGE_CHARS),
+    text: chatThreadText(parts, MAX_MESSAGE_CHARS),
+    parts,
     ...channelAttachments(files, "slack"),
   };
 }

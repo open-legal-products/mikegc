@@ -414,11 +414,23 @@ describe("the prompt", () => {
       'ORGANIZATION: {"name":"Acme Ltd","industry":"Software"}',
     );
   });
-  it("keeps the newest end of a long Slack thread, and the start of a long email", () => {
-    const thread = `Jane, 2 Nov 2026, 09:00 UTC:\n${"x".repeat(40_000)}\n\nBob, 2 Nov 2026, 10:00 UTC:\n@MikeGC please log this: review the Acme NDA by Friday`;
-    const slack = buildAgentPrompt({ context: inThread({ message: message({ text: thread }) }), rules, now: new Date() }).user;
-    expect(slack).toContain("[Earlier messages left out.]");
-    expect(slack).toContain("please log this: review the Acme NDA by Friday");
+  it("keeps the mention at the end of a long chat thread, and the start of a long email", () => {
+    const parts = [
+      `Jane, 2 Nov 2026, 09:00 UTC:\n${"x".repeat(40_000)}`,
+      "Sam, 2 Nov 2026, 09:30 UTC:\nI can look at it this week.",
+      "Bob, 2 Nov 2026, 10:00 UTC:\n@MikeGC please log this: review the Acme NDA by Friday",
+    ];
+    for (const source of ["slack", "teams"] as const) {
+      const chat = buildAgentPrompt({
+        context: inThread({ message: message({ source, text: parts.join("\n\n"), parts }) }),
+        rules,
+        now: new Date(),
+      }).user;
+      // Whole messages are left out, oldest first: never half of one.
+      expect(chat).toContain("[Earlier messages left out.]\nSam, 2 Nov 2026, 09:30 UTC:");
+      expect(chat).toContain("please log this: review the Acme NDA by Friday");
+      expect(chat).not.toContain("xxxx");
+    }
     const email = buildAgentPrompt({
       context: inThread({ message: message({ source: "gmail", text: `The newest words. ${"x".repeat(40_000)} old quoted text` }) }),
       rules,
@@ -427,6 +439,29 @@ describe("the prompt", () => {
     expect(email).toContain("The newest words.");
     expect(email).toContain("[Message shortened.]");
     expect(email).not.toContain("old quoted text");
+  });
+  it("keeps the instruction that opens a long chat message sent on its own", () => {
+    // One message, not a thread: an instruction, then a pasted contract.
+    const text = `@MikeGC please review this draft by Friday:\n${"clause ".repeat(8_000)}THE END`;
+    for (const source of ["slack", "teams"] as const) {
+      const chat = buildAgentPrompt({
+        context: inThread({ message: message({ source, text, parts: [text] }) }),
+        rules,
+        now: new Date(),
+      }).user;
+      expect(chat).toContain("please review this draft by Friday");
+      expect(chat).toContain("[Message shortened.]");
+      expect(chat).not.toContain("[Earlier messages left out.]");
+      expect(chat).not.toContain("THE END");
+    }
+    // The message being acted on is kept even when it alone fills the prompt.
+    const parts = ["Jane, 2 Nov 2026, 09:00 UTC:\nSome context.", `Bob, 2 Nov 2026, 10:00 UTC:\n${text}`];
+    const chat = buildAgentPrompt({
+      context: inThread({ message: message({ source: "slack", text: parts.join("\n\n"), parts }) }),
+      rules,
+      now: new Date(),
+    }).user;
+    expect(chat).toContain("[Earlier messages left out.]\nBob, 2 Nov 2026, 10:00 UTC:\n@MikeGC please review this draft by Friday");
   });
   it("shows a reply's request and the newest end of a long thread", () => {
     const context = onRequest({ ruleUndecided: true, member_edited_fields: ["subject"] });

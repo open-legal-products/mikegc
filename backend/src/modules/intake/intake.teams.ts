@@ -15,7 +15,6 @@ import {
   MAX_MESSAGE_CHARS,
   cleanText,
   clip,
-  clipStart,
   type TeamsFileRef,
   type TeamsInboundPayload,
 } from "./intake.inboundPayload";
@@ -34,7 +33,7 @@ import {
 } from "./intake.microsoft";
 import { teamsClientSecret } from "./intake.secrets";
 import type { AutomationRow } from "./intake.settingsRow";
-import type { InboundMessage } from "./intake.triage";
+import { chatThreadText, type InboundMessage } from "./intake.triage";
 
 /**
  * Microsoft Teams through the organization's own single-tenant bot: what
@@ -384,10 +383,10 @@ export async function teamsInboundMessage(
   }
   const sent = (d: Date) =>
     `${new Intl.DateTimeFormat("en-GB", { timeZone: "UTC", day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" }).format(d)} UTC`;
-  const text =
+  const parts =
     entries.length === 1
-      ? entries[0]!.text
-      : entries.map((e) => `${e.author}, ${sent(e.at)}:\n${e.text}`).join("\n\n");
+      ? [entries[0]!.text]
+      : entries.map((e) => `${e.author}, ${sent(e.at)}:\n${e.text}`);
   const seen = new Set<string>();
   const files = entries
     .flatMap((e) => e.files)
@@ -406,7 +405,8 @@ export async function teamsInboundMessage(
     sentAt: new Date(payload.date),
     subject: null,
     subjectHint: firstLine,
-    text: clipStart(text, MAX_MESSAGE_CHARS),
+    text: chatThreadText(parts, MAX_MESSAGE_CHARS),
+    parts,
     ...channelAttachments(files, "teams"),
   };
 }

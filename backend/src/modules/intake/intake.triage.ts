@@ -67,9 +67,38 @@ export type InboundMessage = {
   subjectHint: string | null;
   /** The message, or the Slack thread with each message's author and time. */
   text: string;
+  /**
+   * A chat thread's messages as they read in `text`, oldest first and ending
+   * with the one that mentioned MikeGC; one entry for a message on its own.
+   * Absent for email. Kept apart so a long thread is shortened by whole
+   * messages rather than by where its characters happen to fall.
+   */
+  parts?: string[];
   candidates: AttachmentCandidate[];
   skipped: SkippedAttachment[];
 };
+
+/**
+ * A chat thread within `max` characters: always the message being acted on
+ * (the last), from its start, then as many of the messages before it as fit,
+ * newest first. A message on its own therefore keeps its opening, where its
+ * instruction is, and a long thread keeps the mention at its end. Says what
+ * it left out.
+ */
+export function chatThreadText(parts: string[], max: number): string {
+  const last = parts[parts.length - 1] ?? "";
+  const kept = [last.length > max ? `${clip(last, max)}\n[Message shortened.]` : last];
+  let room = max - last.length;
+  let at = parts.length - 2;
+  for (; at >= 0; at--) {
+    const part = parts[at]!;
+    if (part.length + 2 > room) break;
+    kept.unshift(part);
+    room -= part.length + 2;
+  }
+  const text = kept.join("\n\n");
+  return at >= 0 ? `[Earlier messages left out.]\n${text}` : text;
+}
 
 /** How a channel is named in prompts and the request's description. */
 export const CHANNEL_NAMES: Record<InboundMessage["source"], string> = {
