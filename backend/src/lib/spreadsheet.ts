@@ -25,7 +25,12 @@ function cellDisplayText(cell: XLSX.CellObject | undefined): string {
 
 /** Escape a cell value so it can't break the markdown table layout. */
 function sanitizeCellText(value: string): string {
-  return value.replace(/\r?\n/g, " ").replace(/\|/g, "\\|").trim();
+  // Backslashes first: otherwise "\\|" in a cell stays an unescaped pipe.
+  return value
+    .replace(/\r?\n/g, " ")
+    .replace(/\\/g, "\\\\")
+    .replace(/\|/g, "\\|")
+    .trim();
 }
 
 function renderSheet(sheetName: string, ws: XLSX.WorkSheet): string | null {

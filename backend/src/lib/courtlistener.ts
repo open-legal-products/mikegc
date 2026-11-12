@@ -265,35 +265,60 @@ function escapeHtml(value: string): string {
         .replace(/'/g, "&#39;");
 }
 
+const NAMED_HTML_ENTITIES: Record<string, string> = {
+    nbsp: " ",
+    amp: "&",
+    lt: "<",
+    gt: ">",
+    quot: '"',
+};
+
+/**
+ * Each entity is decoded once, in a single pass. Decoding "&amp;" first and
+ * the others after it turned "&amp;lt;" (the text "&lt;") into "<".
+ */
 function decodeHtmlEntities(value: string): string {
-    return value
-        .replace(/&nbsp;/g, " ")
-        .replace(/&amp;/g, "&")
-        .replace(/&lt;/g, "<")
-        .replace(/&gt;/g, ">")
-        .replace(/&quot;/g, '"')
-        .replace(/&#39;/g, "'")
-        .replace(/&#(\d+);/g, (_match, code) =>
-            String.fromCharCode(Number.parseInt(code, 10)),
-        )
-        .replace(/&#x([0-9a-f]+);/gi, (_match, code) =>
-            String.fromCharCode(Number.parseInt(code, 16)),
-        );
+    return value.replace(
+        /&(?:(nbsp|amp|lt|gt|quot)|#(\d+)|#x([0-9a-f]+));/gi,
+        (match, name?: string, decimal?: string, hex?: string) => {
+            if (name) return NAMED_HTML_ENTITIES[name.toLowerCase()] ?? match;
+            return String.fromCharCode(
+                decimal ? Number.parseInt(decimal, 10) : Number.parseInt(hex!, 16),
+            );
+        },
+    );
+}
+
+/**
+ * Applies a removal until nothing more is removed. One pass over
+ * "<scr<script></script>ipt>" leaves "<script>" behind.
+ */
+function removeAll(value: string, pattern: RegExp): string {
+    let current = value;
+    for (;;) {
+        const next = current.replace(pattern, "");
+        if (next === current) return current;
+        current = next;
+    }
 }
 
 function stripOpinionMarkup(value: string | null): string | null {
     if (!value) return null;
-    return decodeHtmlEntities(
+    const text = removeAll(
         value
             .replace(/<page-number[^>]*>(.*?)<\/page-number>/gis, "$1")
             .replace(/<\/p>/gi, "\n\n")
             .replace(/<br\s*\/?>/gi, "\n")
-            .replace(/<\/(div|section|opinion|blockquote|li|h[1-6])>/gi, "\n")
-            .replace(/<[^>]+>/g, "")
-            .replace(/[ \t]+\n/g, "\n")
-            .replace(/\n{3,}/g, "\n\n")
-            .trim(),
-    );
+            .replace(/<\/(div|section|opinion|blockquote|li|h[1-6])>/gi, "\n"),
+        /<[^>]+>/g,
+    )
+        // Whole runs, kept or dropped: /[ \t]+\n/ is quadratic on a long run.
+        .replace(/[ \t]+/g, (run, at: number, all: string) =>
+            all[at + run.length] === "\n" ? "" : run,
+        )
+        .replace(/\n{3,}/g, "\n\n")
+        .trim();
+    return decodeHtmlEntities(text);
 }
 
 function safeCourtlistenerHref(rawHref: string | null): string | null {
@@ -302,7 +327,9 @@ function safeCourtlistenerHref(rawHref: string | null): string | null {
     if (!href) return null;
     if (href.startsWith("#")) return href;
     if (href.startsWith("/")) return `${COURTLISTENER_WEB_BASE}${href}`;
-    if (href.startsWith(COURTLISTENER_WEB_BASE)) return href;
+    // By parsed origin: a prefix test also accepts
+    // "https://www.courtlistener.com.example.net/".
+    if (URL.canParse(href) && new URL(href).origin === COURTLISTENER_WEB_BASE) return href;
     if (/^https?:\/\//i.test(href)) return null;
     return null;
 }
@@ -414,10 +441,12 @@ function sanitizeOpinionHtmlAttrs(tagName: string, attrs: string): string {
 
 function sanitizeOpinionHtml(value: string | null): string | null {
     if (!value) return null;
-    const normalized = value
-        .replace(/<!--[\s\S]*?-->/g, "")
-        .replace(/<(script|style|iframe|object|embed|form|svg|math)\b[\s\S]*?<\/\1>/gi, "")
-        .replace(/<(script|style|iframe|object|embed|form|svg|math)\b[^>]*\/?>/gi, "")
+    const withoutActiveContent = [
+        /<!--[\s\S]*?-->/g,
+        /<(script|style|iframe|object|embed|form|svg|math)\b[\s\S]*?<\/\1>/gi,
+        /<(script|style|iframe|object|embed|form|svg|math)\b[^>]*\/?>/gi,
+    ].reduce(removeAll, value);
+    const normalized = removeAll(withoutActiveContent, /<!--|-->/g)
         .replace(
             /<page-number\b[^>]*>([\s\S]*?)<\/page-number>/gi,
             (_m, inner) =>
