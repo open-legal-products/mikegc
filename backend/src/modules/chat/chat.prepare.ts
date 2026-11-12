@@ -21,7 +21,7 @@ import {
     type WebSearchPlan,
 } from "../../lib/webSearch";
 import { resolveRequestTimeZone } from "../../lib/userTime";
-import { createAssistantHistoryLoader, attachPriorReasoning, buildDocContext, buildMessages, buildUserPersonalisationPrompt, devLog, enrichWithPriorEvents, loadUserMessageSentTimes, buildWorkflowStore, appendAskInputsResponseToAssistantMessage, runApprovedConnectorActions, generateSpotlightNonce, spotlight, type AskInputsResponseRequest, type ChatMessage, type SubagentDefaults } from "./engine/index";
+import { createAssistantHistoryLoader, attachPriorReasoning, buildDocContext, buildMessages, buildOrganizationPrompt, buildUserPersonalisationPrompt, devLog, enrichWithPriorEvents, loadUserMessageSentTimes, buildWorkflowStore, appendAskInputsResponseToAssistantMessage, runApprovedConnectorActions, generateSpotlightNonce, spotlight, type AskInputsResponseRequest, type ChatMessage, type SubagentDefaults } from "./engine/index";
 import type { McpToolEvent } from "@mike/contracts";
 import { getUserModelSettings, resolveUserChatSelection } from "../user/user.service";
 import {
@@ -31,6 +31,7 @@ import {
     resolveStandaloneOrgId,
 } from "../../lib/access";
 import { teamOrgIdOf } from "../../lib/personalOrgs";
+import { loadOrgContext } from "../../lib/orgProfile";
 import {
     DOCUMENT_WORKSPACE_MISMATCH_CODE,
     DOCUMENT_WORKSPACE_MISMATCH_DETAIL,
@@ -507,6 +508,8 @@ export async function prepareChatStream(
     // the conversation turn opened above: the route's finally block only runs
     // once this function has returned it. Release on the way out instead.
     try {
+        // Read alongside the document context below; it never rejects.
+        const organization = loadOrgContext(db, contentOrgId);
         // A chat started from an intake request reads it afresh each turn,
         // as this person sees it; once they can't, it reads nothing of it.
         let intakeBrief: {
@@ -557,6 +560,13 @@ export async function prepareChatStream(
             title_model: titleModel,
             personalisation,
         } = modelSettings;
+        // The workspace's organization, when it is a team's (a personal
+        // workspace has none), before the user's own profile: the broader
+        // background first.
+        const organizationPrompt = buildOrganizationPrompt(
+            await organization,
+            nonce,
+        );
         const personalisationPrompt = buildUserPersonalisationPrompt(
             personalisation,
             nonce,
@@ -567,7 +577,9 @@ This chat was started from a request to the legal team in MikeGC's intake. The r
 ${spotlight(intakeBrief.brief, nonce)}`
             : "";
         const systemPromptExtra =
-            [personalisationPrompt, intakePrompt].filter(Boolean).join("\n\n") ||
+            [organizationPrompt, personalisationPrompt, intakePrompt]
+                .filter(Boolean)
+                .join("\n\n") ||
             undefined;
         const userSentAt = await loadUserMessageSentTimes(
             db,

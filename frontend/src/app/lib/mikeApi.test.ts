@@ -121,6 +121,8 @@ import {
     getOrgLogo,
     saveOrgLogo,
     deleteOrgLogo,
+    getOrgProfile,
+    updateOrgProfile,
     getOrgApiKeys,
     saveOrgApiKey,
     saveOrgRouterModels,
@@ -3429,6 +3431,15 @@ describe("thin endpoint wrappers", () => {
         {
             name: "deleteOrgLogo", call: () => deleteOrgLogo("org-1"),
             url: "/orgs/org-1/logo", method: "DELETE",
+        },
+        {
+            name: "getOrgProfile", call: () => getOrgProfile("org-1"), url: "/orgs/org-1/profile",
+        },
+        {
+            name: "updateOrgProfile",
+            call: () => updateOrgProfile("org-1", { industry: null, jurisdictions: ["England and Wales"] }),
+            url: "/orgs/org-1/profile", method: "PATCH",
+            body: { industry: null, jurisdictions: ["England and Wales"] },
         },
         {
             name: "getOrgApiKeys", call: () => getOrgApiKeys("org-1"), url: "/orgs/org-1/api-keys",

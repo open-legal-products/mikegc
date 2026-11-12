@@ -190,6 +190,16 @@ vi.mock("../../lib/documentWorkspace", async (importOriginal) => ({
     findNewAttachmentsOutsideWorkspace,
 }));
 
+// The organization's profile has its own tests (lib/__tests__/orgProfile.test.ts);
+// here it is only what the project's organization hands the prompt.
+const { loadOrgContext } = vi.hoisted(() => ({
+    loadOrgContext: vi.fn(async (): Promise<unknown> => null),
+}));
+vi.mock("../../lib/orgProfile", async (importOriginal) => ({
+    ...(await importOriginal<typeof import("../../lib/orgProfile")>()),
+    loadOrgContext,
+}));
+
 vi.mock("../../lib/access", () => ({
     checkProjectAccess: (...args: unknown[]) => checkProjectAccess(...args),
     ensureDocAccess: vi.fn(async () => ({ ok: true, isCreator: true })),
@@ -442,6 +452,35 @@ describe("POST /projects/:projectId/chat", () => {
             "u1",
             expect.anything(),
             { orgId: "org-1" },
+        );
+    });
+
+    it("tells the assistant about the project's organization, before the user's own profile", async () => {
+        checkProjectAccess.mockResolvedValue({
+            ok: true,
+            isCreator: true,
+            orgRole: "member",
+            projectRole: "owner",
+            project: { id: "p1", user_id: "u1", org_id: "org-1" },
+        });
+        loadOrgContext.mockResolvedValueOnce({
+            name: "Acme LLP",
+            profile: { industry: "Legal services" },
+        });
+
+        const res = await request(app)
+            .post("/projects/p1/chat")
+            .set("Authorization", "Bearer test")
+            .send(VALID_BODY);
+
+        expect(res.status).toBe(200);
+        expect(loadOrgContext).toHaveBeenCalledWith(expect.anything(), "org-1");
+        const systemPromptExtra = buildMessages.mock.calls[0]?.[2] as string;
+        expect(systemPromptExtra).toContain('"name": "Acme LLP"');
+        expect(systemPromptExtra).toContain('"industry": "Legal services"');
+        expect(systemPromptExtra.indexOf("ORGANIZATION:")).toBeGreaterThan(0);
+        expect(systemPromptExtra.indexOf("ORGANIZATION:")).toBeLessThan(
+            systemPromptExtra.indexOf("USER PERSONALISATION"),
         );
     });
 

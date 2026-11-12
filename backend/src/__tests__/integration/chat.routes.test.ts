@@ -2222,6 +2222,8 @@ function makeRbacDb(
         orgMembers?: Record<string, unknown>[];
         profiles?: Record<string, unknown>[];
         chatWriteError?: string;
+        organization?: Record<string, unknown>;
+        orgProfile?: Record<string, unknown>;
     } = {},
 ) {
     return {
@@ -2292,6 +2294,10 @@ function makeRbacDb(
                 );
             if (table === "user_profiles")
                 return tableQuery(overrides.profiles ?? [], table);
+            if (table === "organizations")
+                return tableQuery(overrides.organization ?? null, table);
+            if (table === "org_profiles")
+                return tableQuery(overrides.orgProfile ?? null, table);
             return tableQuery(null, table);
         }),
         rpc: vi.fn((fn: string, args: unknown) => {
@@ -2433,6 +2439,44 @@ describe("chat writes are gated on content.edit (org RBAC)", () => {
                 orgId: "org-1",
             }),
         );
+    });
+
+    it("tells the assistant about the organization whose workspace the chat is in, and nothing for personal work", async () => {
+        const chatLib = await import("../../modules/chat/engine/index.js");
+        await seedResolvableModel();
+        mockedCreate.mockImplementation(
+            () =>
+                makeRbacDb("member", "u1", {
+                    chat: { project_id: null, org_id: "org-1" },
+                    organization: { id: "org-1", name: "Acme LLP", kind: "team" },
+                    orgProfile: {
+                        org_id: "org-1",
+                        about: "A law firm for software companies.",
+                        industry: null,
+                    },
+                }) as never,
+        );
+
+        await request(app)
+            .post("/chat")
+            .set("Authorization", "Bearer test")
+            .send({ ...VALID_BODY, model: "gpt-6-luna", chat_id: "chat-1" });
+
+        const inOrg = vi.mocked(chatLib.buildMessages).mock.calls.at(-1)?.[2] as string;
+        expect(inOrg).toContain("ORGANIZATION:");
+        expect(inOrg).toContain('"name": "Acme LLP"');
+        expect(inOrg).toContain('"about": "A law firm for software companies."');
+        expect(inOrg).not.toContain('"industry"');
+
+        await seedResolvableModel();
+        mockedCreate.mockImplementation(() => makeRbacDb("member", "u1") as never);
+        await request(app)
+            .post("/chat")
+            .set("Authorization", "Bearer test")
+            .send({ ...VALID_BODY, model: "gpt-6-luna" });
+
+        const personal = vi.mocked(chatLib.buildMessages).mock.calls.at(-1)?.[2];
+        expect(String(personal ?? "")).not.toContain("ORGANIZATION:");
     });
 
     it("treats a chat in an organization's project as a shared audience", async () => {

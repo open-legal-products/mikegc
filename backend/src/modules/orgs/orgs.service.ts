@@ -47,6 +47,12 @@ export {
     removeOrgLogo,
 } from "./orgs.logo";
 
+export {
+    getOrgProfile,
+    saveOrgProfile,
+    type OrgProfileSettings,
+} from "./orgs.profile";
+
 // Recovery-period suspension is separate from the trusted content-cleanup
 // primitives composed by application/organizations/purgeContent.
 export { deleteOrg } from "./orgs.deletion";

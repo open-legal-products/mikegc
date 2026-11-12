@@ -203,7 +203,7 @@ describe("docker-compose db-init", () => {
     // for an upstream one. Both sets have shipped and cannot be renamed
     // (a database that ran one would run it again under the new name), and
     // migrate.sh orders by whole filename, so the pairs are tolerated here
-    // by name. 20261112_01_intake_after_upstream_sync.sql makes the result
+    // by name. 20261112_02_intake_after_upstream_sync.sql makes the result
     // the same in either order. Nothing may be added to this list.
     const UPSTREAM_MERGE_SHARED_SLOTS = new Set([
         "20261029_01_", "20261030_01_", "20261030_02_", "20261030_03_",

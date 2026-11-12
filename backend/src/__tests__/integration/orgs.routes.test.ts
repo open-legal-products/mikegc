@@ -420,6 +420,8 @@ describe("a personal organization", () => {
         ["get", "/orgs/mine/logo", undefined],
         ["put", "/orgs/mine/logo", { data_url: "data:image/png;base64,AAAA" }],
         ["delete", "/orgs/mine/logo", undefined],
+        ["get", "/orgs/mine/profile", undefined],
+        ["patch", "/orgs/mine/profile", { about: "Ours" }],
         ["get", "/orgs/mine/resources", undefined],
         ["get", "/orgs/mine/members", undefined],
         ["patch", "/orgs/mine/members/owner-1", { role: "member" }],
@@ -1861,6 +1863,175 @@ describe("organization logo", () => {
             "org.logo.updated",
             "org.logo.removed",
         ]);
+    });
+});
+
+// ---------------------------------------------------------------------------
+// Organization profile
+// ---------------------------------------------------------------------------
+
+describe("organization profile", () => {
+    beforeEach(() => {
+        tables.org_profiles = [];
+        tables.org_members.push({
+            id: "m-3",
+            org_id: "org-1",
+            user_id: "admin-1",
+            role: "admin",
+            created_at: "t3",
+        });
+    });
+
+    const patchProfile = (body: unknown) =>
+        request(app).patch("/orgs/org-1/profile").set(...AUTH).send(body as object);
+    const getProfile = () => request(app).get("/orgs/org-1/profile").set(...AUTH);
+    const EMPTY = {
+        about: null,
+        industry: null,
+        headquarters_city: null,
+        headquarters_country: null,
+        jurisdictions: [],
+        legal_entities: null,
+        legal_team_scope: null,
+        additional_context: null,
+        updated_at: null,
+    };
+
+    it("is empty until set", async () => {
+        const res = await getProfile();
+        expect(res.status).toBe(200);
+        expect(res.body).toEqual(EMPTY);
+    });
+
+    it("lets an owner set fields, tidied, and every member read them back", async () => {
+        const saved = await patchProfile({
+            about: "  We make accounting software.\r\nFor small firms.  ",
+            industry: "Software",
+        });
+
+        expect(saved.status).toBe(200);
+        expect(saved.body).toMatchObject({
+            about: "We make accounting software.\nFor small firms.",
+            industry: "Software",
+            headquarters_city: null,
+            jurisdictions: [],
+        });
+        expect(typeof saved.body.updated_at).toBe("string");
+        expect(tables.org_profiles).toEqual([
+            expect.objectContaining({
+                org_id: "org-1",
+                about: "We make accounting software.\nFor small firms.",
+                industry: "Software",
+                updated_by: "owner-1",
+            }),
+        ]);
+        // Which fields changed, never what they say.
+        expect(tables.audit_events).toEqual([
+            expect.objectContaining({
+                action: "org.profile.updated",
+                detail: { org_id: "org-1", fields: ["about", "industry"] },
+            }),
+        ]);
+        expect(JSON.stringify(tables.audit_events)).not.toContain("accounting");
+
+        as("member-1", "member@firm.example");
+        const read = await getProfile();
+        expect(read.status).toBe(200);
+        expect(read.body).toMatchObject({ industry: "Software" });
+    });
+
+    it("changes only the fields named, clears with an empty string, and records nothing for no change", async () => {
+        await patchProfile({ about: "Accounting software", industry: "Software" });
+        as("admin-1", "admin@firm.example");
+
+        const cleared = await patchProfile({
+            industry: "",
+            headquarters_city: "London",
+            headquarters_country: "United Kingdom",
+            jurisdictions: ["England and Wales", "Delaware"],
+        });
+        expect(cleared.status).toBe(200);
+        expect(cleared.body).toMatchObject({
+            about: "Accounting software",
+            industry: null,
+            headquarters_city: "London",
+            headquarters_country: "United Kingdom",
+            jurisdictions: ["England and Wales", "Delaware"],
+        });
+        // Only the changed columns are written.
+        expect(tables.org_profiles).toHaveLength(1);
+        expect(tables.org_profiles[0]).toMatchObject({
+            about: "Accounting software",
+            industry: null,
+            headquarters_city: "London",
+            jurisdictions: ["England and Wales", "Delaware"],
+            updated_by: "admin-1",
+        });
+
+        // The same values again change nothing; a reordered list does.
+        const same = await patchProfile({
+            headquarters_city: " London ",
+            jurisdictions: ["England and Wales", "Delaware", "england and wales"],
+        });
+        expect(same.status).toBe(200);
+        await patchProfile({ jurisdictions: ["Delaware", "England and Wales"] });
+        await patchProfile({ jurisdictions: [] });
+        expect(tables.org_profiles[0]).toMatchObject({ jurisdictions: [] });
+        expect(tables.audit_events.map((event) => event.detail)).toEqual([
+            { org_id: "org-1", fields: ["about", "industry"] },
+            {
+                org_id: "org-1",
+                fields: ["industry", "headquarters_city", "headquarters_country", "jurisdictions"],
+            },
+            { org_id: "org-1", fields: ["jurisdictions"] },
+            { org_id: "org-1", fields: ["jurisdictions"] },
+        ]);
+    });
+
+    it("refuses a plain member and hides the organization from an outsider", async () => {
+        as("member-1", "member@firm.example");
+        expect((await patchProfile({ about: "Ours" })).status).toBe(403);
+
+        as("stranger-1", "stranger@elsewhere.example");
+        expect((await patchProfile({ about: "Ours" })).status).toBe(404);
+        expect((await getProfile()).status).toBe(404);
+        expect(tables.org_profiles).toEqual([]);
+    });
+
+    it("refuses unknown fields, wrong types and text over a field's limit", async () => {
+        for (const body of [
+            { website: "https://acme.example" },
+            { about: 42 },
+            { industry: ["Software"] },
+            { legal_team: "Commercial" },
+            { jurisdictions: "England and Wales" },
+            { jurisdictions: ["x".repeat(101)] },
+            { about: "x".repeat(2001) },
+            { industry: "x".repeat(201) },
+            { headquarters_city: "x".repeat(101) },
+            [],
+        ]) {
+            const res = await patchProfile(body);
+            expect([body, res.status]).toEqual([body, 400]);
+        }
+        const tooLong = await patchProfile({ legal_team_scope: "x".repeat(1001) });
+        expect(tooLong.body.detail).toBe(
+            "Scope of legal team must be 1,000 characters or fewer.",
+        );
+        expect(tables.org_profiles).toEqual([]);
+        expect(tables.audit_events).toEqual([]);
+    });
+
+    it("answers a generic 500 when the write fails", async () => {
+        const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+        writeErrors.org_profiles = { message: "relation org_profiles: secret detail" };
+
+        const res = await patchProfile({ about: "Ours" });
+
+        expect(res.status).toBe(500);
+        expect(JSON.stringify(res.body)).not.toContain("secret detail");
+        expect(tables.audit_events).toEqual([]);
+        consoleError.mockRestore();
     });
 });
 
