@@ -118,10 +118,18 @@ export function senderAuthenticated(
 /** Addresses in a header such as To or Cc, lowercased. */
 export function addressList(value: string | null): string[] {
   if (!value) return [];
-  return [...value.matchAll(/[^\s<>,;"']+@[^\s<>,;"']+/g)]
-    .map((m) => m[0]!.toLowerCase().replace(/[.)]+$/, ""))
-    .filter((a, i, all) => all.indexOf(a) === i)
-    .slice(0, 50);
+  // A header is whatever its sender wrote. Each token is a whole run of
+  // address characters, so the scan is linear however long a run is; an
+  // address is a run with an "@" that is neither its first nor last
+  // character. (Matching "…+@…+" directly rescans a long run without one
+  // from every position.)
+  const found = new Set<string>();
+  for (const [token] of value.matchAll(/[^\s<>,;"']+/g)) {
+    if (!token.slice(1, -1).includes("@")) continue;
+    found.add(token.toLowerCase().replace(/[.)]+$/, ""));
+    if (found.size === 50) break;
+  }
+  return [...found];
 }
 
 /** "Jane Business" <jane@acme.test> as a name and address. */
@@ -202,7 +210,12 @@ export function htmlToText(html: string): string {
     .replace(/&quot;/gi, '"')
     .replace(/&#39;/gi, "'")
     .replace(/&amp;/gi, "&")
-    .replace(/[ \t]+\n/g, "\n")
+    // Trailing spaces go. Each run is matched whole and then kept or
+    // dropped: /[ \t]+\n/ retries a long run with no line end after it from
+    // every position, which is quadratic in a message's length.
+    .replace(/[ \t]+/g, (run, at: number, all: string) =>
+      all[at + run.length] === "\n" ? "" : run,
+    )
     .replace(/\n{3,}/g, "\n\n")
     .trim();
 }

@@ -96,6 +96,16 @@ describe("reading email", () => {
     expect(parseMailbox('"Jane Business" <Jane@Acme.test>')).toEqual({ name: "Jane Business", email: "jane@acme.test" });
     expect(parseMailbox("jane@acme.test")).toEqual({ name: null, email: "jane@acme.test" });
   });
+  it("reads a hostile header in linear time", () => {
+    // Either of these took seconds: a long run with no "@" was rescanned
+    // from every position, and duplicates were found by indexOf.
+    const started = performance.now();
+    expect(addressList("a".repeat(60_000))).toEqual([]);
+    const many = Array.from({ length: 30_000 }, (_, i) => `u${i % 60}@x.test`).join(", ");
+    expect(addressList(many)).toHaveLength(50);
+    expect(performance.now() - started).toBeLessThan(1_000);
+    expect(addressList("@a.test, a@, <@>, x@y.test.), b@c@d.test")).toEqual(["x@y.test", "b@c@d.test"]);
+  });
   it("knows automatic mail", () => {
     expect(isAutomaticMail(headers([["Auto-Submitted", "auto-replied"]]))).toBe(true);
     expect(isAutomaticMail(headers([["X-Auto-Submitted", "auto-generated"]]))).toBe(true);

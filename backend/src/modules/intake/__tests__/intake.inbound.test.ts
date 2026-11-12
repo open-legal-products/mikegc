@@ -307,6 +307,13 @@ describe("Slack events", () => {
 });
 
 describe("htmlToText", () => {
+  it("drops trailing spaces in linear time", () => {
+    expect(htmlToText("<p>One  \t</p><p>Two words</p>")).toBe("One\nTwo words");
+    // 60,000 spaces with no line end after them took seconds to scan.
+    const started = performance.now();
+    expect(htmlToText(`A${"&nbsp;".repeat(60_000)}B`)).toBe(`A${" ".repeat(60_000)}B`);
+    expect(performance.now() - started).toBeLessThan(1_000);
+  });
   it("reads an HTML email as text, leaving no markup even when tags are nested", () => {
     expect(
       htmlToText("<head><title>x</title></head><p>Hi &amp; thanks</p><ul><li>One</li></ul>"),
