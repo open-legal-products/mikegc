@@ -497,6 +497,7 @@ export function Detail({
       notePicked.length > 0 ||
       !!reason ||
       operation.locked,
+    operation.busy || operation.uncertain,
   );
   function openNoteForResolution() {
     // The comment box is always there; bring it into view.
