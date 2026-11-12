@@ -475,7 +475,7 @@ on published images to keep all runtimes on their baked release. Release
 overrides must not contain customer information.
 
 Each release uses the original image digests. The workflow retains each build
-in GHCR as `mike-{backend,frontend}:build-<version>`, with the source commit and
+in GHCR as `mikegc-{backend,frontend}:build-<version>`, with the source commit and
 version in its image labels. It builds only after a registry lookup confirms
 the image is absent; authentication, network and unexpected registry errors
 stop the run. An existing version must match its saved build exactly.
@@ -639,7 +639,7 @@ fails the run if not.
 
 Where events go is decided together with where maps go, so a fork never
 reports upstream by accident. The image owner is the repository owner, so a
-fork publishes to `ghcr.io/<owner>/mike-*` with no setup, and:
+fork publishes to `ghcr.io/<owner>/mikegc-*` with no setup, and:
 
 | Repository | Events | Source maps |
 | --- | --- | --- |

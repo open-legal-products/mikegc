@@ -746,8 +746,12 @@ once in CI and publishes them to GitHub Container Registry
 
 | Image | Tags |
 | --- | --- |
-| `ghcr.io/open-legal-products/mike-backend` | `<version>`, `latest` (releases); `<version>-dev.<run>`, `main` (every commit on main) |
-| `ghcr.io/open-legal-products/mike-frontend` | same |
+| `ghcr.io/open-legal-products/mikegc-backend` | `<version>`, `latest` (releases); `<version>-dev.<run>`, `main` (every commit on main) |
+| `ghcr.io/open-legal-products/mikegc-frontend` | same |
+
+MikeGC's images are named `mikegc-*` because it shares the
+`open-legal-products` namespace with upstream Mike, whose images are
+`mike-*`.
 
 Pin a version in the compose-root `.env` and pull instead of building. The
 default tag is the version in `/VERSION` of the checkout you run compose from,

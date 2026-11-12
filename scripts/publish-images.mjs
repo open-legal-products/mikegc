@@ -139,7 +139,7 @@ async function main() {
   if (!/^[a-z0-9][a-z0-9-]*$/.test(owner ?? '') ||
       !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(version ?? '') ||
       !/^[a-f0-9]{40}$/.test(sha ?? '') || !actor || !password) throw new Error('Missing or invalid publication identity/credentials');
-  const registries = Object.fromEntries(IMAGES.map(image => [image, new Registry(`${owner}/mike-${image}`, { actor, password })]));
+  const registries = Object.fromEntries(IMAGES.map(image => [image, new Registry(`${owner}/mikegc-${image}`, { actor, password })]));
   const identity = { version, sha };
   const command = process.argv[2];
   if (command === 'prepare') {
