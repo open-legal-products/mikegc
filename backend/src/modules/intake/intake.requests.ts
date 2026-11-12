@@ -1,5 +1,6 @@
 import type {
   IntakeDetails,
+  IntakeDelivery,
   IntakeEvent,
   IntakeMember,
   IntakeRequester,
@@ -308,4 +309,11 @@ export async function markIntakeReplySeen(
     p_seen: seenAt,
   });
   return result.ok ? ok({ ok: true }) : result;
+}
+
+/** Only the known outbox rows that the page is still waiting on. */
+export function getIntakeDeliveryStatus(db: Db, scope: IntakeScope, requestId: string, ids: string[]) {
+  return intakeRpc<IntakeDelivery[]>(db, "intake_delivery_status", {
+    ...scoped(scope), p_request: requestId, p_outbound: ids,
+  });
 }

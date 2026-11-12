@@ -415,6 +415,7 @@ export const outlookAdapter: ChannelAdapter = {
         list
           .filter((a) => a.toLowerCase() !== credentials.mailbox.toLowerCase())
           .map((a) => ({ emailAddress: { address: a } }));
+      await ctx.assertActive();
       const draft = await microsoftFetch<{ id?: string; internetMessageId?: string }>(
         `${mailboxUrl(credentials.mailbox)}/messages/${encodeURIComponent(thread.reply_to_message_id)}/createReplyAll`,
         {
@@ -459,6 +460,7 @@ export const outlookAdapter: ChannelAdapter = {
       const draftUrl = `${mailboxUrl(credentials.mailbox)}/messages/${encodeURIComponent(draft.id)}`;
       for (const doc of attached) {
         const bytes = await ctx.readDocument(doc);
+        await ctx.assertActive();
         if (bytes.byteLength <= SIMPLE_ATTACHMENT_BYTES) {
           await microsoftFetch(`${draftUrl}/attachments`, {
             token: t,
@@ -480,11 +482,12 @@ export const outlookAdapter: ChannelAdapter = {
           );
           if (!isMicrosoftUploadUrl(session?.uploadUrl))
             throw new MicrosoftApiError({ status: 0, code: "invalid_session", permanent: false, sentence: "Microsoft wouldn't take a document." });
-          await uploadInSession(session.uploadUrl, bytes);
+          await uploadInSession(session.uploadUrl, bytes, ctx.assertActive);
         }
         doc.externalId = "attached";
       }
       for (const doc of tooLarge) doc.leftOut = true;
+      await ctx.assertActive();
       await microsoftFetch(`${draftUrl}/send`, { token: t, method: "POST", refused: MAILBOX_REFUSED });
       const externalId = draft.internetMessageId ?? draft.id;
       if (draft.internetMessageId)

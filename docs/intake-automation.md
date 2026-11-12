@@ -795,3 +795,24 @@ raw body Slack signs, so `API_PUBLIC_URL` can be the usual same-origin
 gateway. For local development, run a tunnel and set
 `API_PUBLIC_URL` to it, as for the Slack connector in
 [connectors.md](connectors.md).
+
+### Background work after updates and deletion
+
+Apply `20261112_06_intake_side_effect_guards.sql` before deploying the follow-up
+workers. Deleting an organization cancels its pending deliveries. Restoring it
+does not automatically send those cancelled messages; a member can explicitly
+retry them. Workers check suspension again before external writes and upload
+chunks. A provider request already in flight when deletion commits cannot be
+recalled.
+
+Preprocessing reads member-uploaded intake attachments as well as channel
+attachments. Its document versions and tracked edits commit together only while
+the request is open, at the request and document versions that were reviewed.
+Changed, closed, deleted or unlinked targets reject the write. Unreadable linked
+attachments are named as unavailable instead of silently disappearing.
+Persisted update plans from older releases that lack a request version are
+replanned before application.
+
+Pending-delivery checks read at most 100 outbox statuses per call, without
+reloading the complete request history. They have an authenticated per-user
+budget of 600 calls per 15 minutes and back off on failures, honoring Retry-After.

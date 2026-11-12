@@ -66,6 +66,7 @@ describe("Gmail: MikeGC's answer to an email that isn't a request", () => {
         settings,
         fromName: "Legal",
         readDocument: () => Promise.reject(new Error("no documents")),
+        assertActive: () => Promise.resolve(),
         saveProgress: () => Promise.resolve(),
       },
       {

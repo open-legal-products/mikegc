@@ -8,7 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AssistantEvent, Chat } from "@/app/components/shared/types";
 import { subscribeTabularReviewChanges } from "./tabularReviewChanges";
 import { getTabularReviewHistoryStatuses } from "./mikeApi";
-import { claimIntakeNotifications } from "./mikeApi";
+import { getIntakeDeliveryStatus, claimIntakeNotifications } from "./mikeApi";
 
 // Backend 5xx responses are reported to Sentry from the client with the
 // request id; the reporter is mocked so these tests assert the call, and
@@ -3980,4 +3980,12 @@ describe("intake API boundary", () => {
         await expect(copyIntakeDocuments("org-1", "request-1", ids)).rejects.toBeTruthy();
         expect(fetchMock).toHaveBeenCalledTimes(2);
     });
+});
+
+it.each(["120", new Date(Date.now() + 120_000).toUTCString()])("preserves Retry-After %s for delivery polling", async retryAfter => {
+    fetchMock.mockResolvedValue(jsonResponse({ code: "rate_limited", detail: "Try later" }, {
+        status: 429, headers: { "Retry-After": retryAfter },
+    }));
+    await expect(getIntakeDeliveryStatus("org", "request", ["outbound"]))
+        .rejects.toMatchObject({ status: 429, retryAfterMs: expect.any(Number) });
 });

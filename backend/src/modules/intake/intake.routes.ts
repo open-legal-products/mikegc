@@ -1,3 +1,4 @@
+import { z } from "zod";
 import { Router, type Response } from "express";
 import rateLimit from "express-rate-limit";
 import { requireAuth } from "../../middleware/auth";
@@ -15,6 +16,7 @@ import {
   editIntakeRequest,
   getIntakeDashboard,
   getIntakeRequest,
+  getIntakeDeliveryStatus,
   listIntakeDocuments,
   copyIntakeDocuments,
   connectIntakeMailbox,
@@ -52,6 +54,18 @@ import {
 
 export const intakeRouter = Router();
 intakeRouter.use(requireAuth);
+const deliveryStatusLimiter = rateLimit({
+  windowMs: 15 * 60_000, max: 600, standardHeaders: true, legacyHeaders: false,
+  keyGenerator: (_req, res) => String(res.locals.userId),
+  message: rateLimitedBody("Messages were checked too often. Please try again shortly."),
+});
+// Apply the polling budget before workspace/ID parameter resolution, so even
+// inaccessible or malformed scopes cannot bypass it and repeatedly query auth.
+intakeRouter.use((req, res, next) => {
+  if (req.method === "POST" && req.path.endsWith("/deliveries/status"))
+    return deliveryStatusLimiter(req, res, next);
+  next();
+});
 
 // Every open tab polls this about twice a minute, and a whole office can share
 // one address, so app.ts keeps it out of the shared per-address budget and it
@@ -292,6 +306,13 @@ intakeRouter.post(
       ),
       201,
     );
+  }),
+);
+intakeRouter.post("/:orgId/requests/:requestId/deliveries/status",
+  asyncRoute(async (req, res) => {
+    const parsed = z.object({ ids: z.array(intakeId).max(100) }).safeParse(req.body);
+    if (!parsed.success) return void res.status(400).json({ detail: "Invalid message IDs." });
+    send(res, await getIntakeDeliveryStatus(createServerSupabase(), scopeOf(res), req.params.requestId, parsed.data.ids));
   }),
 );
 intakeRouter.post(

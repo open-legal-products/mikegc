@@ -61,7 +61,7 @@ export async function intakeRpc<T>(
       new AppError(
         "db.query_failed",
         `Intake database operation ${name} failed (${error.code ?? "unknown"})`,
-        { cause: error },
+        { cause: error, operation: name },
       ),
     );
   }

@@ -1,7 +1,6 @@
-// Documents an organization owns rather than a member, such as the
-// attachments MikeGC records for intake: no uploader, so no user's access
-// applies. Their callers are trusted jobs acting for the organization, which
-// name it, and these helpers only reach documents it owns that way.
+// Trusted reads and edits for organization jobs. The general loader accepts
+// organization-owned documents only; the intake loader also accepts member
+// uploads after verifying the request association and document scope.
 
 import { extractDocxBodyText, type EditInput } from "../../lib/docxTrackedChanges";
 import { loadActiveVersion } from "../../lib/documentVersions";
@@ -25,14 +24,27 @@ export async function loadOrgDocument(
   orgId: string,
   documentId: string,
 ): Promise<OrgDocument | null> {
+  return loadDocument(db, orgId, documentId, false);
+}
+
+/** A document attached to this request, including a member's intake upload. */
+export async function loadIntakeDocument(db: Db, orgId: string, requestId: string, documentId: string): Promise<OrgDocument | null> {
+  const { data, error } = await db.from("intake_request_documents").select("document_id")
+    .eq("org_id", orgId).eq("request_id", requestId).eq("document_id", documentId).maybeSingle();
+  if (error) throw error;
+  if (!data) return null;
+  return loadDocument(db, orgId, documentId, true);
+}
+
+async function loadDocument(db: Db, orgId: string, documentId: string, intake: boolean): Promise<OrgDocument | null> {
   const { data: doc, error } = await db
     .from("documents")
-    .select("id, org_id, user_id")
+    .select("id, org_id, user_id, library_kind")
     .eq("id", documentId)
     .maybeSingle();
   if (error) throw error;
-  const row = doc as { id: string; org_id: string | null; user_id: string | null } | null;
-  if (!row || row.org_id !== orgId || row.user_id !== null) return null;
+  const row = doc as { id: string; org_id: string | null; user_id: string | null; library_kind?: string } | null;
+  if (!row || row.org_id !== orgId || (intake ? row.library_kind !== "intake_attachment" : row.user_id !== null)) return null;
   const version = await loadActiveVersion(documentId, db);
   if (!version) return null;
   const { count, error: countError } = await db
@@ -80,12 +92,14 @@ export async function readOrgDocumentText(
 }
 
 /**
- * Mark up the organization's Word document with tracked changes signed by
- * `author`, against the version its text was read from.
+ * Mark up an intake document at the request and document versions reviewed.
+ * Persistence rechecks its live scope under the request's lifecycle locks.
  */
-export async function applyOrgTrackedEdits(params: {
+export async function applyIntakeTrackedEdits(params: {
   db: Db;
   orgId: string;
+  requestId: string;
+  requestVersion: number;
   doc: OrgDocument;
   author: string;
   edits: EditInput[];
@@ -97,5 +111,6 @@ export async function applyOrgTrackedEdits(params: {
     edits: params.edits,
     db: params.db,
     expectedVersion: params.doc.version,
+    intake: { orgId: params.orgId, requestId: params.requestId, requestVersion: params.requestVersion },
   });
 }

@@ -328,3 +328,34 @@ describe("sending a message to the requester", () => {
     expect(outbox().error).toMatch(/Slack is turned off/);
   });
 });
+
+it("a deleted organization cannot send a queued message or attachments",async()=>{
+ setup();
+ memory.rows("organizations")[0]!.deleted_at="2026-11-12T00:00:00Z";
+ await handleIntakeDeliver(memory.db,job());
+ expect(slackCalls).toHaveLength(0);
+ expect(mocks.downloadFile).not.toHaveBeenCalled();
+});
+
+it("stops attachments if the organization is deleted after the message lands", async () => {
+  setup();
+  stubSlack({ "chat.postMessage": () => {
+    memory.rows("organizations")[0]!.deleted_at = new Date().toISOString();
+    return { ok: true, ts: "1793611111.000100" };
+  } });
+  await expect(handleIntakeDeliver(memory.db, job())).rejects.toBeInstanceOf(NonRetryableJobError);
+  expect(slackCalls.filter(c => c.method === "files.getUploadURLExternal")).toHaveLength(0);
+  expect(uploads).toHaveLength(0);
+});
+
+it("does not revive a delivery cancelled by deletion even if the workspace is restored", async () => {
+  setup();
+  stubSlack({ "chat.postMessage": () => {
+    // Deletion's trigger cancels the outbox; restoration leaves it cancelled.
+    outbox().status = "failed";
+    return { ok: true, ts: "1793611111.000100" };
+  } });
+  await expect(handleIntakeDeliver(memory.db, job())).rejects.toBeInstanceOf(NonRetryableJobError);
+  expect(outbox().status).toBe("failed");
+  expect(uploads).toHaveLength(0);
+});

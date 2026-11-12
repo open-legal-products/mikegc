@@ -106,6 +106,7 @@ const generalLimiter = makeLimiter({
   // authenticated per-user limiters. Keep them and the dedicated Word
   // tool-result lane out of the shared IP budget.
   skip: (req) =>
+    (req.method === "POST" && /^\/intake\/(?:personal|[0-9a-f-]{36})\/requests\/[0-9a-f-]{36}\/deliveries\/status$/i.test(req.path)) ||
     req.path === TOOL_RESULT_PATH ||
     (req.method === "POST" && req.path === INTAKE_NOTIFICATIONS_PATH) ||
     req.path === "/upload-sessions" ||

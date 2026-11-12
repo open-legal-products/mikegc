@@ -1,3 +1,4 @@
+import { readFile } from "node:fs/promises";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import JSZip from "jszip";
 import { setStorageAdapter, StorageOperationError } from "../../../lib/storage";
@@ -31,7 +32,7 @@ const db = {
 beforeEach(() => {
   download.mockReset().mockResolvedValue(new Uint8Array([1, 2, 3]).buffer);
   upload.mockReset().mockResolvedValue(undefined);
-  setStorageAdapter({ enabled: true, configurationHint: "test", downloadFile: download, uploadFile: upload } as never);
+  setStorageAdapter({ enabled: true, configurationHint: "test", openReadStream: async (key: string) => { const data = await download(key); return data ? [new Uint8Array(data)] : null; }, uploadFileFromPath: async (key: string, path: string, type: string) => upload(key, (await readFile(path)) as never, type) } as never);
 });
 
 describe("required document export reads", () => {

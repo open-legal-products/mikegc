@@ -119,3 +119,20 @@ export async function updateDocumentVersion(
   if (!result.error && result.data && ("storage_path" in patch || "content_sha256" in patch || "file_type" in patch)) await processDocumentTextInline(db, [versionId]).catch((err) => logError("document-text", safeError(err)));
   return result;
 }
+
+/** All intake edits and the active pointer commit under request lifecycle locks. */
+export async function createIntakeDocumentEdits(db: Db, args: {
+  orgId: string; requestId: string; requestVersion: number;
+  documentId: string; expectedVersion: string;
+  version: Omit<NewDocumentVersion, "document_id">;
+  edits: Record<string, unknown>[];
+}) {
+  const result = await db.rpc("create_intake_document_edits", {
+    p_org: args.orgId, p_request: args.requestId, p_request_version: args.requestVersion,
+    p_document: args.documentId, p_expected_version: args.expectedVersion,
+    p_version: args.version, p_edits: args.edits,
+  });
+  if (!result.error && result.data?.version?.id)
+    await processDocumentTextInline(db, [result.data.version.id]).catch(err => logError("document-text", safeError(err)));
+  return result;
+}

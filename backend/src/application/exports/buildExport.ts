@@ -11,8 +11,8 @@ import { createDocumentAccessChecker } from "../../lib/access";
 import { selectInBatches } from "../../lib/batchedQuery";
 import { mapWithConcurrency } from "../../lib/concurrency";
 import { attachActiveVersionPaths, downloadFilenameForVersion } from "../../lib/documentVersions";
-import { downloadFile, uploadFile } from "../../lib/storage";
-import { uniqueArchiveFilename } from "../../lib/zipExport";
+import { uploadFile, uploadFileFromPath } from "../../lib/storage";
+import { buildZipExportFile } from "../../lib/zipExportFile";
 import type { Db } from "../../lib/supabase";
 import type { ExportBuildRequest } from "./exportContracts";
 import { buildMemoryArchive } from "../../lib/memory/archive";
@@ -26,8 +26,7 @@ import {
     isWorkspaceExportType,
 } from "./exportContracts";
 /** One finished artifact, ready to park in storage. */
-type ExportArtifact = {
-    body: Buffer;
+type ExportArtifact = ({ body: Buffer } | { filePath: string; cleanup: () => Promise<void> }) & {
     filename: string;
     /** Stored on the object and replayed as the download's Content-Type. */
     contentType: string;
@@ -120,40 +119,13 @@ async function buildDocumentsZipExport(db: Db, job: ExportBuildRequest, userId: 
     ).filter((doc): doc is ExportDocument => doc !== null);
     await attachActiveVersionPaths(db, readable);
 
-    const JSZip = (await import("jszip")).default;
-    const zip = new JSZip();
-    // Two documents can share a filename; without this the later one
-    // replaces the earlier entry and the export silently loses a file.
-    const usedNames = new Set<string>();
-    let added = 0;
-    for (const doc of readable) {
-        if (!doc.storage_path) continue;
-        const active = {
-            storage_path: doc.storage_path,
-            filename: doc.filename ?? "Untitled document",
-            version_number: doc.active_version_number ?? null,
-            source: doc.source ?? null,
-        };
-        const raw = await downloadFile(active.storage_path);
-        if (!raw)
-            continue;
-        // Sequential, unlike the sync route's Promise.all: this path exists
-        // for selections large enough that fetching every file at once is
-        // what would blow the memory ceiling.
-        zip.file(uniqueArchiveFilename(downloadFilenameForVersion(active.filename, active.version_number, active.source === "assistant_edit"), usedNames), Buffer.from(raw));
-        added++;
-    }
-    if (added === 0) {
-        throw new Error(`[export.build] no accessible documents for job ${job.id}`);
-    }
-    return {
-        body: await zip.generateAsync({
-            type: "nodebuffer",
-            compression: "DEFLATE",
-        }),
-        filename: "documents.zip",
-        contentType: "application/zip",
-    };
+    const entries = readable.flatMap(doc => doc.storage_path ? [{
+        storagePath: doc.storage_path,
+        filename: downloadFilenameForVersion(doc.filename ?? "Untitled document",
+            doc.active_version_number ?? null, doc.source === "assistant_edit"),
+    }] : []);
+    if (!entries.length) throw new Error("No accessible documents for export");
+    return { ...await buildZipExportFile(entries), filename: "documents.zip", contentType: "application/zip" };
 }
 async function buildMemoryZipExport(
     db: Db,
@@ -197,8 +169,13 @@ export async function buildExport(db: Db, job: ExportBuildRequest): Promise<Reco
     // Path is namespaced under the user (account erasure purges the prefix)
     // and keyed by job id (a re-run overwrites its own artifact — idempotent).
     const storagePath = `exports/${userId}/${job.id}-${artifact.filename}`;
-    const body = artifact.body;
-    await uploadFile(storagePath, body.buffer.slice(body.byteOffset, body.byteOffset + body.byteLength) as ArrayBuffer, artifact.contentType);
+    try {
+        if ("filePath" in artifact) await uploadFileFromPath(storagePath, artifact.filePath, artifact.contentType);
+        else {
+            const body = artifact.body;
+            await uploadFile(storagePath, body.buffer.slice(body.byteOffset, body.byteOffset + body.byteLength) as ArrayBuffer, artifact.contentType);
+        }
+    } finally { if ("cleanup" in artifact) await artifact.cleanup(); }
     // The completion audit row replaces the one the old sync route wrote.
     // The filtered exports have no such row: neither of their sync routes
     // recorded one, and inventing it here would change the history feed.

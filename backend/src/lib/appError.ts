@@ -18,11 +18,11 @@ export type { ErrorKind };
 export class AppError extends Error {
   readonly kind: ErrorKind;
 
-  constructor(kind: ErrorKind, message: string, options?: { cause?: unknown }) {
+  constructor(kind: ErrorKind, message: string, options?: { cause?: unknown; operation?: string }) {
     super(message, options?.cause === undefined ? undefined : { cause: options.cause });
     this.name = new.target.name;
     this.kind = kind;
-    identifyApplicationError(this, kind);
+    identifyApplicationError(this, kind, options?.operation);
   }
 }
 

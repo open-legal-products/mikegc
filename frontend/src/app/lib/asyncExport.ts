@@ -4,6 +4,7 @@
 // export survives a slow build and a closed tab alike.
 
 import {
+    MikeApiError,
     downloadUserExport,
     getUserExportStatus,
     startUserExport,
@@ -22,7 +23,13 @@ export async function runUserExport(
     for (let i = 0; i < POLL_LIMIT; i++) {
         await new Promise((resolve) => setTimeout(resolve, POLL_MS));
         const status = await getUserExportStatus(export_id);
-        if (status.status === "failed") throw new Error("Export build failed");
+        if (status.status === "failed") {
+            if (status.reason === "size_limit") throw new MikeApiError({
+                status: 413, code: "request_too_large",
+                message: "This ZIP exceeds the 2 GB limit. Select fewer documents and try again.",
+            });
+            throw new Error("Export build failed");
+        }
         if (status.status === "done") {
             const { blob, filename } = await downloadUserExport(export_id);
             return { blob, filename: filename ?? status.filename };

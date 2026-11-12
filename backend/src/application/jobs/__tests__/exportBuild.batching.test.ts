@@ -1,3 +1,4 @@
+import { readFile } from "node:fs/promises";
 import { expect, it, vi } from "vitest";
 import JSZip from "jszip";
 import { setStorageAdapter } from "../../../lib/storage";
@@ -19,7 +20,7 @@ it("exports a 120-document selection with batched lookups instead of two reads p
     document_versions: ids.map((id) => ({ id: `v-${id}`, document_id: id, storage_path: `${id}.docx`, filename: `${id}.docx`, version_number: 1, deleted_at: null })),
   });
   const upload = vi.fn(async () => {});
-  setStorageAdapter({ enabled: true, configurationHint: "test", downloadFile: async () => new Uint8Array([1]).buffer, uploadFile: upload } as never);
+  setStorageAdapter({ enabled: true, configurationHint: "test", openReadStream: async () => [new Uint8Array([1])], uploadFileFromPath: async (key: string, path: string, type: string) => (upload as (...args: unknown[]) => Promise<void>)(key, await readFile(path), type) } as never);
   const job = {
     id: "export-1", kind: "export.build", payload: { userId: "u1", type: "documents-zip", document_ids: ids },
     status: "running", attempts: 1, max_attempts: 3,

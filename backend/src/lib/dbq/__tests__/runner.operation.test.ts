@@ -20,7 +20,7 @@ it.each(["future.kind", "storage.cleanup"])("isolates an unknown %s job's dispat
   resetSentryForTests("official", { initialized: true });
   vi.spyOn(console, "error").mockImplementation(() => {});
   const updates: Array<Record<string, unknown>> = [];
-  const query = { eq: () => query, then: (done: (result: unknown) => unknown) => Promise.resolve({ error: null }).then(done) };
+  const query = { select: () => query, eq: () => query, then: (done: (result: unknown) => unknown) => Promise.resolve({ data: [{ id: "job-1" }], error: null }).then(done) };
   const db = { from: () => ({ update: (payload: Record<string, unknown>) => { updates.push(payload); return query; } }) };
   const job = { id: "job-1", kind, attempts: 1, max_attempts: 3, claimed_at: "2026-10-26T00:00:00Z" } as DbJob;
   await Sentry.withIsolationScope(async () => {

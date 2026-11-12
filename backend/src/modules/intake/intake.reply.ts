@@ -322,6 +322,11 @@ async function runAgentOnReply(
   const { row, settings, link, reply, payload, save } = args;
   const orgId = link.org_id;
   const requestId = reply.request_id;
+  // Pre-version-fence deployments persisted plans without their read version.
+  // Such a plan cannot safely be applied, even on its first attempt after upgrade.
+  if (payload.agent?.update && !payload.updated && payload.agentVersion == null) {
+    payload.agent = undefined;
+  }
   // A plan whose request has changed since it was made (a newer reply's
   // update, a member's edit) is made again from the request as it is now,
   // rather than overwriting the newer details with older ones.

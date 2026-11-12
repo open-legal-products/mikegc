@@ -1,5 +1,6 @@
 export const MAX_ZIP_EXPORT_DOCUMENTS = 200;
 export const MAX_ZIP_EXPORT_BYTES = 2 * 1024 * 1024 * 1024;
+export const ZIP_EXPORT_LIMIT_DETAIL = "The ZIP exceeds the 2 GB export limit. Select fewer documents.";
 
 export function zipExportLimitDetail(
   documentCount: number,

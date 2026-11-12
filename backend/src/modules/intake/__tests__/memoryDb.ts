@@ -342,6 +342,8 @@ export const automatedIntakeRpc: Record<string, RpcHandler> = {
       .rows("intake_requests")
       .find((r) => r.id === args.p_request && r.org_id === args.p_org);
     if (!request) return { data: null, error: { code: "P0002" } };
+    if (args.p_purpose === "preprocessing" && ["resolved", "cancelled"].includes(String(request.state)))
+      return { data: false, error: null };
     const notes = memory.rows("intake_messages");
     if (notes.some((n) => n.id === args.p_note)) return { data: false, error: null };
     notes.push({
@@ -608,7 +610,7 @@ export function requesterLoopRpc(): Record<string, RpcHandler> {
     },
     intake_record_delivery: (args, memory) => {
       const row = memory.rows("intake_outbound").find((o) => o.id === args.p_outbound && o.org_id === args.p_org);
-      if (!row) return { data: false, error: null };
+      if (!row || row.status !== "pending") return { data: false, error: null };
       Object.assign(row, {
         status: args.p_status,
         external_id: args.p_external_id ?? row.external_id ?? null,

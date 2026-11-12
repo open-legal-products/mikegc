@@ -1,3 +1,5 @@
+import { ZIP_EXPORT_LIMIT_DETAIL } from "../../lib/zipExport";
+import type { UserExportStatus as ExportStatusBody } from "@mike/contracts";
 import { validateIntakeExport } from "../../modules/intake/intake.service";
 // Data export: scheduling the durable export jobs, polling their status and
 // loading the finished artifact.
@@ -7,7 +9,8 @@ import { AUDIT_EXPORT_LIMIT, canReadOrgAudit, parseQuery, type AuditQuery } from
 import { enqueueDbJob } from "../../lib/dbq/enqueue";
 import { EXPORT_TYPES, MAX_ZIP_EXPORT_DOCUMENTS, type ExportType, } from "./exportContracts";
 import type { DbJob } from "../../lib/dbq/types";
-import { downloadFile } from "../../lib/storage";
+import type { Readable } from "node:stream";
+import { downloadFile, headFile, createFileReadStream } from "../../lib/storage";
 import { AppError } from "../../lib/appError";
 import type { Db } from "../../lib/supabase";
 import { errorMessage } from "../../modules/user/user.service";
@@ -132,10 +135,10 @@ async function loadOwnExportJob(
     db: Db,
     exportId: string,
     userId: string,
-): Promise<Pick<DbJob, "id" | "status" | "result"> | null> {
+): Promise<Pick<DbJob, "id" | "status" | "result" | "last_error" | "payload"> | null> {
     const { data: job } = await db
         .from("db_jobs")
-        .select("id, kind, status, payload, result")
+        .select("id, kind, status, payload, result, last_error")
         .eq("id", exportId)
         .eq("kind", "export.build")
         .maybeSingle();
@@ -143,12 +146,10 @@ async function loadOwnExportJob(
         return null;
     const orgId = (job.payload as { query?: AuditQuery })?.query?.orgId;
     if (orgId && !(await canReadOrgAudit(db, userId, orgId))) return null;
-    return job as Pick<DbJob, "id" | "status" | "result">;
+    return job as Pick<DbJob, "id" | "status" | "result" | "last_error" | "payload">;
 }
 export type UserExportStatus =
-    | { ok: true; body: { status: "done"; filename: unknown } }
-    | { ok: true; body: { status: "failed" } }
-    | { ok: true; body: { status: "pending" } }
+    | { ok: true; body: ExportStatusBody }
     | { ok: false; kind: "not_found" };
 /** Poll state for GET /user/exports/:exportId. */
 export async function getUserExportStatus(
@@ -161,14 +162,19 @@ export async function getUserExportStatus(
     if (row.status === "done" && row.result) {
         return {
             ok: true,
-            body: { status: "done", filename: row.result.filename ?? null },
+            body: { status: "done", filename: typeof row.result.filename === "string" ? row.result.filename : null },
         };
     }
-    if (row.status === "failed") return { ok: true, body: { status: "failed" } };
+    if (row.status === "failed") return { ok: true, body: {
+        status: "failed",
+        // Only this source-authored sentinel becomes a public reason. Never
+        // return job/provider/database error prose to the browser.
+        ...(row.last_error === ZIP_EXPORT_LIMIT_DETAIL ? { reason: "size_limit" as const } : {}),
+    } };
     return { ok: true, body: { status: "pending" } };
 }
 export type UserExportArtifact =
-    | { ok: true; contentType: string; filename: string; body: Buffer }
+    | { ok: true; contentType: string; filename: string; body: Buffer | Readable }
     | { ok: false; kind: "not_found" }
     | { ok: false; kind: "expired" };
 /**
@@ -199,6 +205,14 @@ export async function loadUserExportArtifact(
           ? validateIntakeExport(db, userId, row.result!.intake_manifest)
           : Promise.resolve(false);
     if (!(await intakeAllowed())) return { ok: false, kind: "expired" };
+    // New document archives contain no legacy intake manifest. Stream them
+    // through HTTP too: buffering a 2 GiB finished ZIP here would undo the
+    // builder's memory bound. Legacy account exports keep their second check.
+    if (row.payload.type === "documents-zip" && row.result.intake_format === undefined
+        && row.result.intake_manifest === undefined) {
+        if (!(await headFile(storagePath))) return { ok: false, kind: "expired" };
+        return { ok: true, filename, contentType: "application/zip", body: createFileReadStream(storagePath) };
+    }
     const raw = await downloadFile(storagePath);
     if (!(await intakeAllowed())) return { ok: false, kind: "expired" };
     if (!raw) return { ok: false, kind: "expired" };
