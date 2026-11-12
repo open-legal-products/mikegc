@@ -269,6 +269,8 @@ const replyProgress = {
   agentRound: z.number().int().nonnegative().optional(),
   /** The request's version the plan was made from, which its update requires. */
   agentVersion: z.number().int().optional(),
+  /** Plans made for the reply so far, across the job's attempts. */
+  agentPlans: z.number().int().nonnegative().optional(),
   /** Set once the plan's changes to the request's details are made. */
   updated: z.boolean().optional(),
   /** Set once the rule stage is settled: true when it was still waiting. */

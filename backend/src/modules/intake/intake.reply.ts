@@ -209,19 +209,28 @@ type ReplyResult = {
 };
 
 /**
- * The request as the agent reads it, with the version it was read at, or
- * null once it is gone.
+ * The request as the agent reads it now, with the version, clarifying stage
+ * and round it was read at, or null once it is gone. Read again for every
+ * plan, so a plan made again after a newer reply settled the rule doesn't
+ * still treat the rule as undecided.
  */
 async function loadAgentRequest(
   db: Db,
   orgId: string,
-  reply: ReplyResult,
-): Promise<{ request: AgentRequest; version: number | null } | null> {
+  requestId: string,
+): Promise<{
+  request: AgentRequest;
+  version: number | null;
+  stage: "rule" | null;
+  round: number;
+} | null> {
   const { data, error } = await db
     .from("intake_requests")
-    .select("subject, description, requested_by_date, state, member_edited_fields, version")
+    .select(
+      "subject, description, requested_by_date, state, member_edited_fields, version, clarify_stage, clarify_rounds, clarify_stopped",
+    )
     .eq("org_id", orgId)
-    .eq("id", reply.request_id)
+    .eq("id", requestId)
     .maybeSingle();
   if (error) throw error;
   if (!data) return null;
@@ -232,7 +241,11 @@ async function loadAgentRequest(
     state: string;
     member_edited_fields?: AgentField[] | null;
     version?: number | null;
+    clarify_stage?: "rule" | "readiness" | null;
+    clarify_rounds?: number | null;
+    clarify_stopped?: boolean | null;
   };
+  const round = request.clarify_rounds ?? 0;
   return {
     request: {
       subject: request.subject,
@@ -240,10 +253,12 @@ async function loadAgentRequest(
       requested_by_date: request.requested_by_date,
       state: request.state,
       member_edited_fields: request.member_edited_fields ?? [],
-      ruleUndecided: reply.clarify_stage === "rule",
-      canAsk: !reply.clarify_stopped && reply.clarify_rounds < MAX_CLARIFY_ROUNDS,
+      ruleUndecided: request.clarify_stage === "rule",
+      canAsk: !request.clarify_stopped && round < MAX_CLARIFY_ROUNDS,
     },
     version: request.version ?? null,
+    stage: request.clarify_stage === "rule" ? "rule" : null,
+    round,
   };
 }
 
@@ -282,7 +297,10 @@ async function updateRequest(
   throw updated.kind === "error" ? updated.error : new Error(updated.detail);
 }
 
-/** Plans made for one reply before a stale update is dropped instead. */
+/**
+ * Plans made for one reply, across the job's attempts, before a stale update
+ * is dropped instead.
+ */
 const MAX_PLANS = 3;
 
 /**
@@ -307,25 +325,32 @@ async function runAgentOnReply(
   // A plan whose request has changed since it was made (a newer reply's
   // update, a member's edit) is made again from the request as it is now,
   // rather than overwriting the newer details with older ones.
-  for (let plans = 1; ; plans++) {
+  for (;;) {
     if (!payload.agent) {
       const [loaded, thread, rules, model, organization] = await Promise.all([
-        loadAgentRequest(db, orgId, reply),
+        loadAgentRequest(db, orgId, requestId),
         loadThreadEntries(db, orgId, requestId),
         loadTriageRules(db, orgId),
         resolveIntakeModel(db, orgId, settings.configured_by, settings.triage_model),
         loadOrgContext(db, orgId),
       ]);
       if (!loaded) return;
-      payload.agent = await runIntakeAgent({
+      const plan = await runIntakeAgent({
         context: { kind: "reply", channel: link.source, request: loaded.request, thread, sentAt: new Date() },
         rules,
         model,
         organization,
       });
-      payload.agentStage = reply.clarify_stage === "rule" ? "rule" : null;
-      payload.agentRound = reply.clarify_rounds;
+      // At the rule stage a model run decides: it chooses a rule (or none)
+      // or asks. One that ended with neither failed, as when its provider
+      // is down, so the job is retried rather than leave it unassigned.
+      if (loaded.stage === "rule" && model && !plan.rule && !plan.questions.length)
+        throw new Error("The intake agent didn't decide the request's rule.");
+      payload.agent = plan;
+      payload.agentStage = loaded.stage;
+      payload.agentRound = loaded.round;
       payload.agentVersion = loaded.version ?? undefined;
+      payload.agentPlans = (payload.agentPlans ?? 0) + 1;
       await save();
     }
     const update = payload.agent.update;
@@ -337,12 +362,16 @@ async function runAgentOnReply(
       update,
       version: payload.agentVersion ?? null,
     });
-    if (!applied && plans < MAX_PLANS) {
+    if (!applied && (payload.agentPlans ?? 1) < MAX_PLANS) {
       payload.agent = undefined;
       continue;
     }
-    // Still changing under every plan: the newer details stand.
-    if (!applied) console.warn("[intake-reply] stale update dropped");
+    if (!applied) {
+      // Still changing under every plan: the newer details stand, and the
+      // plan's answer, which says what it changed, isn't sent.
+      console.warn("[intake-reply] stale update dropped");
+      payload.agent = { ...payload.agent, answer: null };
+    }
     payload.updated = true;
     await save();
     break;

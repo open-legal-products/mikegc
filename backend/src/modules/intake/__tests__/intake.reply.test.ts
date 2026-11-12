@@ -402,10 +402,84 @@ describe("a requester's reply in the thread", () => {
   });
   it("leaves a request that matches no rule unassigned once the rounds are used up", async () => {
     setup({ request: { clarify_stage: "rule", clarify_rounds: 2 } });
-    modelCalls([replyCall("Still unsure?")]);
+    modelCalls([replyCall("Still unsure?")], [ruleCall(0)]);
     await handleIntakeAgent(memory.db, job());
-    expect(model.results).toEqual([["refused: MikeGC can't ask again on this request: call choose_rule"]]);
+    expect(model.results).toEqual([
+      ["refused: MikeGC can't ask again on this request: call choose_rule"],
+      ["left for Legal to assign"],
+    ]);
     expect(request()).toMatchObject({ clarify_stage: null, assignee_id: null, state: "submitted" });
+    expect(memory.rows("intake_outbound")).toEqual([]);
+  });
+  it("retries, leaving the rule waiting, when the model fails at the rule stage", async () => {
+    setup({ request: { clarify_stage: "rule", clarify_rounds: 1 } });
+    mocks.stream.mockRejectedValue(new Error("provider overloaded"));
+    await expect(handleIntakeAgent(memory.db, job())).rejects.toThrow(/didn't decide the request's rule/);
+    expect(request()).toMatchObject({ clarify_stage: "rule", assignee_id: null, state: "needs_information" });
+    expect(memory.rows("intake_inbound")[0]!.payload).not.toHaveProperty("agent");
+  });
+  /** A plan saved before a retry, at the rule stage, from version 1. */
+  const stalePlan = (fields: Record<string, unknown> = {}) => ({
+    ...slackReply,
+    recorded: true,
+    agent: {
+      agent: true,
+      answer: "Thanks, I've added that Acme is a customer to your request.",
+      update: { subject: null, description: "An NDA with Acme, a customer.", requested_by_date: null, lines: {} },
+    },
+    agentStage: null,
+    agentRound: 1,
+    agentVersion: 1,
+    agentPlans: 1,
+    ...fields,
+  });
+  /** Before each automated update, something else changes the request. */
+  function changeBeforeUpdate(change: (request: Record<string, unknown>) => void) {
+    const rpc = memory.db.rpc.bind(memory.db);
+    (memory.db as unknown as { rpc: typeof rpc }).rpc = ((name: string, args?: Record<string, unknown>) => {
+      if (name === "intake_update_automated") change(request());
+      return rpc(name, args);
+    }) as typeof rpc;
+  }
+  it("plans again from the rule as it is now, once a newer reply has settled it", async () => {
+    setup({
+      request: { clarify_stage: "rule", clarify_rounds: 1, version: 1 },
+      payload: stalePlan({ agentStage: "rule" }),
+    });
+    // A newer reply's job settles rule 1 first.
+    let settled = false;
+    changeBeforeUpdate((r) => {
+      if (settled) return;
+      settled = true;
+      Object.assign(r, { clarify_stage: null, assignee_id: sam, state: "in_review", version: 2 });
+    });
+    modelCalls([replyCall("Thanks, noted.")]);
+    await handleIntakeAgent(memory.db, job());
+    expect(model.requests[0]!.messages[0]!.content).not.toContain("undecided");
+    // Answered, not asked: the request stays with the rule's member.
+    expect(request()).toMatchObject({ clarify_stage: null, assignee_id: sam, state: "in_review" });
+    expect(memory.rows("intake_messages").filter((m) => m.kind === "question")).toEqual([]);
+    expect(memory.rows("intake_messages").filter((m) => m.kind === "answer")).toEqual([
+      expect.objectContaining({ body: "Thanks, noted." }),
+    ]);
+  });
+  it("counts its plans across retries, dropping a stale update once they are used up", async () => {
+    setup({ request: { assignee_id: sam, state: "in_review", version: 1 }, payload: stalePlan({ agentPlans: 2 }) });
+    // The request moves on before every update.
+    changeBeforeUpdate((r) => {
+      r.version = Number(r.version) + 1;
+    });
+    modelCalls([updateCall({ summary: "An NDA with Acme, a customer." })]);
+    await handleIntakeAgent(memory.db, job());
+    expect(mocks.stream).toHaveBeenCalledTimes(1);
+    expect(memory.rows("intake_messages").filter((m) => m.kind === "note")).toEqual([]);
+  });
+  it("doesn't say it changed the request when its stale update is dropped", async () => {
+    setup({ request: { assignee_id: sam, state: "in_review", version: 2 }, payload: stalePlan({ agentPlans: 3 }) });
+    await handleIntakeAgent(memory.db, job());
+    expect(mocks.stream).not.toHaveBeenCalled();
+    expect(request()).toMatchObject({ description: "An NDA with Acme.\n\n--- Original message ---\nPlease review." });
+    expect(memory.rows("intake_messages").filter((m) => ["note", "answer"].includes(String(m.kind)))).toEqual([]);
     expect(memory.rows("intake_outbound")).toEqual([]);
   });
   it("queues the next round of preprocessing after an answer to its readiness check", async () => {

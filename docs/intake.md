@@ -440,6 +440,11 @@ Apply migrations before starting the new application build:
   member has edited (`member_edited_fields`, which MikeGC never changes),
   `intake_update_automated`, and MikeGC's own answers in a thread with no
   request (`intake_conversations.replies`).
+- `20261112_04_intake_update_expected_version.sql` makes
+  `intake_update_automated` take the request's version a reply's plan was
+  made from and refuse the update once the request has changed since, and
+  makes `intake_ask_automated` refuse a question to choose the rule once the
+  rule is settled.
 
 Use the existing migration runner documented in [deployment.md](deployment.md).
 Do not replay historical migrations over a fresh schema. Fresh installations use

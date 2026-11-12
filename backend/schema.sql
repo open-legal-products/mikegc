@@ -11603,6 +11603,9 @@ end $$;
 -- nothing. With p_acknowledge, the questions go in the acknowledgement when
 -- it hasn't been sent. False when MikeGC may no longer ask: a lawyer has
 -- taken over, the rounds are used up, the request is closed or has no thread.
+-- A question to choose the rule follows only the request's first message or
+-- a round still waiting on the rule: once the rule is settled (a newer
+-- reply's plan) it is false, so an older plan can't reopen it.
 create or replace function public.intake_ask_automated(p_org uuid, p_request uuid, p_outbound uuid,
   p_message uuid, p_body text, p_stage text, p_acknowledge boolean default false,
   p_preprocess jsonb default null)
@@ -11622,7 +11625,9 @@ begin
   if exists(select 1 from public.intake_messages where id = p_message) then return true; end if;
   select id into link from public.intake_channel_links where org_id = p_org and request_id = p_request;
   if link is null or r.clarify_stopped or r.clarify_rounds >= 2
-    or r.state in ('resolved', 'cancelled') then
+    or r.state in ('resolved', 'cancelled')
+    or (p_stage = 'rule' and r.clarify_stage is distinct from 'rule'
+      and (r.clarify_stage is not null or r.clarify_rounds > 0)) then
     return false;
   end if;
   if coalesce(p_acknowledge, false) and not exists(select 1 from public.intake_outbound

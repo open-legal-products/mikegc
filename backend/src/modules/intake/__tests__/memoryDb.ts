@@ -438,6 +438,10 @@ export function requesterLoopRpc(): Record<string, RpcHandler> {
       const rounds = Number(request.clarify_rounds ?? 0);
       if (!link || request.clarify_stopped || rounds >= MAX_ROUNDS || ["resolved", "cancelled"].includes(String(request.state)))
         return { data: false, error: null };
+      // A rule question follows only the first message or a round on the rule.
+      const stage = request.clarify_stage ?? null;
+      if (args.p_stage === "rule" && stage !== "rule" && (stage !== null || rounds > 0))
+        return { data: false, error: null };
       const acknowledged = memory
         .rows("intake_outbound")
         .some((o) => o.request_id === args.p_request && o.kind === "acknowledgement");

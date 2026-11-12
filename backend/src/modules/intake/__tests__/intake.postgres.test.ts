@@ -1535,6 +1535,19 @@ describe.skipIf(!container)("intake real PostgreSQL transactions", () => {
     // The acknowledgement goes once, with the questions.
     expect(sql(`select public.intake_acknowledge_automated(${q(10)},${q(21)},${q(320)})`)).toBe(uid(300));
   });
+  it("never reopens a settled rule with a question planned before it was settled", () => {
+    thread();
+    expect(ask(300)).toBe("t");
+    expect(sql(`select public.intake_settle_clarify_automated(${q(10)},${q(21)},'rule',true,${q(3)})`)).toBe("t");
+    const settled = state(21);
+    // An older reply's plan, made while the rule waited, asks too late.
+    expect(ask(302)).toBe("f");
+    expect(clarify()).toBe("-:1:false");
+    expect(state(21)).toBe(settled);
+    // The readiness check may still ask after it.
+    expect(ask(304, "readiness")).toBe("t");
+    expect(ask(306)).toBe("f");
+  });
   it.each([
     { field: "date", stage: "rule" },
     { field: "details", stage: "readiness" },

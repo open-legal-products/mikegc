@@ -645,7 +645,13 @@ channels are supported.
   `intake_ask_automated` asks once more or
   `intake_settle_clarify_automated` returns a request whose rule is chosen
   to New or In progress, and `intake_answer_automated` posts MikeGC's answer
-  without changing the request's state.
+  without changing the request's state. The plan carries the request's
+  `version` it was made from, and `intake_update_automated` refuses it
+  (P0001) once anything has changed the request since, such as a newer
+  reply's plan or a member's edit; the agent then plans again from the
+  request as it is now, at most three plans per reply, after which the stale
+  update and the answer describing it are dropped. A question to choose the
+  rule is refused once the rule is settled, so an older plan can't reopen it.
 - **Outbox.** Every requester-facing message (an acknowledgement, a question,
   MikeGC's answer or a resolution reply) is an `intake_outbound` row written in the same
   transaction as the message it carries, and sent by the `intake.deliver`

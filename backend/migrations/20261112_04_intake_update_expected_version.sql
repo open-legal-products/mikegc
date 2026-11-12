@@ -3,6 +3,8 @@
 -- plan, retried after a newer reply or a member changed the request) must
 -- not overwrite the newer details: the caller passes the version it planned
 -- from, and a changed request refuses the update so the plan is made again.
+-- Likewise a question to choose the rule from such a plan is refused once a
+-- newer reply has settled the rule, so it can't reopen it.
 -- MikeGC changes an open request's subject, description or due date from
 -- what the requester wrote, skipping any detail a member has edited, and
 -- says so in a note. p_lines names each change for the note, by field. The
@@ -70,11 +72,62 @@ begin
   return applied;
 end $$;
 
+-- MikeGC asks the requester for missing details: a question marked
+-- automated, its outbox row, and the request waiting on the requester.
+-- The caller names the question and its outbox row, so asking again adds
+-- nothing. With p_acknowledge, the questions go in the acknowledgement when
+-- it hasn't been sent. False when MikeGC may no longer ask: a lawyer has
+-- taken over, the rounds are used up, the request is closed or has no thread.
+-- A question to choose the rule follows only the request's first message or
+-- a round still waiting on the rule: once the rule is settled (a newer
+-- reply's plan) it is false, so an older plan can't reopen it.
+create or replace function public.intake_ask_automated(p_org uuid, p_request uuid, p_outbound uuid,
+  p_message uuid, p_body text, p_stage text, p_acknowledge boolean default false,
+  p_preprocess jsonb default null)
+returns boolean language plpgsql set search_path = public, pg_temp as $$
+declare r public.intake_requests; link uuid; outbound_kind text := 'question';
+begin
+  perform 1 from public.organizations where id = p_org and kind in ('team', 'personal')
+    and deleted_at is null for update;
+  if not found then raise exception 'Intake not found' using errcode = 'P0002'; end if;
+  select * into r from public.intake_requests where org_id = p_org and id = p_request for update;
+  if not found then raise exception 'Request not found' using errcode = 'P0002'; end if;
+  if p_message is null or p_outbound is null or p_stage is null or p_stage not in ('rule', 'readiness')
+    or p_body is null or char_length(p_body) not between 1 and 20000 or btrim(p_body) = ''
+    or (p_preprocess is not null and jsonb_typeof(p_preprocess) <> 'object') then
+    raise exception 'Invalid question' using errcode = '22023';
+  end if;
+  if exists(select 1 from public.intake_messages where id = p_message) then return true; end if;
+  select id into link from public.intake_channel_links where org_id = p_org and request_id = p_request;
+  if link is null or r.clarify_stopped or r.clarify_rounds >= 2
+    or r.state in ('resolved', 'cancelled')
+    or (p_stage = 'rule' and r.clarify_stage is distinct from 'rule'
+      and (r.clarify_stage is not null or r.clarify_rounds > 0)) then
+    return false;
+  end if;
+  if coalesce(p_acknowledge, false) and not exists(select 1 from public.intake_outbound
+      where request_id = p_request and kind = 'acknowledgement') then
+    outbound_kind := 'acknowledgement';
+  end if;
+  insert into public.intake_messages(id, org_id, request_id, author_id, kind, body, automated)
+    values(p_message, p_org, p_request, null, 'question', p_body, true);
+  insert into public.intake_outbound(id, org_id, request_id, link_id, message_id, kind)
+    values(p_outbound, p_org, p_request, link, p_message, outbound_kind);
+  update public.intake_requests set clarify_stage = p_stage, clarify_rounds = clarify_rounds + 1,
+    clarify_preprocess = coalesce(p_preprocess, clarify_preprocess),
+    state = 'needs_information', version = version + 1, updated_at = now() where id = p_request;
+  if r.state <> 'needs_information' then
+    insert into public.intake_events(org_id, request_id, actor_id, kind, from_state, to_state, assignee_id, automated)
+      values(p_org, p_request, null, 'wait', r.state, 'needs_information', r.assignee_id, true);
+  end if;
+  return true;
+end $$;
+
 -- Recreated functions start with default grants; only the backend's service
 -- role may call them.
 do $$ declare obj record; begin
   for obj in select p.oid::regprocedure as signature from pg_proc p join pg_namespace n on n.oid = p.pronamespace
-    where n.nspname = 'public' and p.proname = 'intake_update_automated' loop
+    where n.nspname = 'public' and p.proname in ('intake_update_automated', 'intake_ask_automated') loop
     execute format('revoke all on function %s from public,anon,authenticated', obj.signature);
     execute format('grant execute on function %s to service_role', obj.signature);
   end loop;
