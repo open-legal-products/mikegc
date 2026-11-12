@@ -12,6 +12,7 @@ import {
   builtInModelIds,
 } from "../../lib/llm/models";
 import { hasApiKeyForModel } from "../../lib/modelSelection";
+import { teamOrgIdOf } from "../../lib/personalOrgs";
 import type { Db } from "../../lib/supabase";
 import { envApiKeys, getEffectiveApiKeys } from "../../lib/providerCredentials/index";
 import type { IntakeChannel } from "@mike/contracts";
@@ -92,7 +93,8 @@ export type TriageModel = { model: string; apiKeys: UserApiKeys | undefined };
 /**
  * The keys intake's AI runs with: the organization's keys as the owner or
  * admin who last saved the settings, or only the deployment's own keys once
- * that person no longer administers the organization.
+ * that person no longer administers the organization. A Personal workspace
+ * is its owner's own work, so it runs on their own keys, as their chats do.
  */
 async function intakeApiKeys(
   db: Db,
@@ -101,7 +103,7 @@ async function intakeApiKeys(
 ): Promise<{ apiKeys: UserApiKeys | undefined; available: UserApiKeys }> {
   let apiKeys: UserApiKeys | undefined;
   if (configuredBy && isOrgAdmin(await getOrgRole(configuredBy, orgId, db)))
-    apiKeys = await getEffectiveApiKeys(configuredBy, orgId, db);
+    apiKeys = await getEffectiveApiKeys(configuredBy, await teamOrgIdOf(db, orgId), db);
   return { apiKeys, available: apiKeys ?? envApiKeys() };
 }
 

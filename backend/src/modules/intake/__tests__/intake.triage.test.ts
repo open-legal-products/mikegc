@@ -5,7 +5,9 @@ const mocks = vi.hoisted(() => ({
   getOrgRole: vi.fn(),
   getEffectiveApiKeys: vi.fn(),
   envApiKeys: vi.fn(),
+  teamOrgIdOf: vi.fn(),
 }));
+vi.mock("../../../lib/personalOrgs", () => ({ teamOrgIdOf: mocks.teamOrgIdOf }));
 vi.mock("../../../lib/access", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../../lib/access")>()),
   getOrgRole: mocks.getOrgRole,
@@ -91,6 +93,23 @@ describe("choosing the triage model", () => {
   const db = {} as Db;
   const org = "00000000-0000-4000-8000-000000000001";
   const admin = "00000000-0000-4000-8000-000000000002";
+  beforeEach(() => {
+    mocks.getEffectiveApiKeys.mockReset();
+    mocks.teamOrgIdOf.mockImplementation(async (_db: Db, id: string) => id);
+  });
+  it("runs a Personal workspace on its owner's own keys, as their chats run", async () => {
+    // A personal organization is no team: asked for its keys by its own id,
+    // the store answers with central keys only and the owner's key is unused.
+    mocks.teamOrgIdOf.mockResolvedValue(null);
+    mocks.getOrgRole.mockResolvedValue("owner");
+    mocks.getEffectiveApiKeys.mockImplementation(async (_user: string, orgId: string | null) =>
+      orgId === null ? { openai: "sk-own" } : {},
+    );
+    await expect(resolveIntakeModel(db, org, admin, "gpt-6.1-sol")).resolves.toEqual({
+      model: "gpt-6.1-sol",
+      apiKeys: { openai: "sk-own" },
+    });
+  });
   it("runs the chosen model on the organization's keys as the admin who saved the settings", async () => {
     mocks.getOrgRole.mockResolvedValue("admin");
     mocks.getEffectiveApiKeys.mockResolvedValue({ openai: "sk-org" });
