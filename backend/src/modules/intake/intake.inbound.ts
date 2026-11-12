@@ -3,12 +3,15 @@ import {
   failure,
   internalFailure,
   ok,
-  type ServiceFailure,
   type ServiceResult,
 } from "../../lib/serviceResult";
 import type { Db } from "../../lib/supabase";
-import { dispatchIntakeInbound } from "./intake.automationJob";
-import { findConversation, findThreadLink, routeThreadMessage } from "./intake.channels";
+import { dispatchIntakeAgent } from "./intake.agentJob";
+import {
+  findConversation,
+  findThreadLink,
+  routeThreadMessage,
+} from "./intake.channels";
 import {
   MAX_MESSAGE_CHARS,
   cleanText,
@@ -17,7 +20,6 @@ import {
   type TeamsInboundPayload,
 } from "./intake.inboundPayload";
 import { insertInbound, type InboundInsert } from "./intake.inboundStore";
-import { dispatchIntakeReply } from "./intake.reply";
 import { slackSigningSecret } from "./intake.secrets";
 import { automationByWebhook, type AutomationRow } from "./intake.settingsRow";
 import { verifySlackSignature } from "./intake.slack";
@@ -60,7 +62,7 @@ async function queue(
   inboundId: string,
 ): Promise<ServiceResult<null>> {
   try {
-    await dispatchIntakeInbound(db, orgId, inboundId);
+    await dispatchIntakeAgent(db, orgId, inboundId);
     return ok(null);
   } catch (cause) {
     return internalFailure(cause);
@@ -273,7 +275,7 @@ export async function receiveSlackEvent(
           thread_ts: message.thread_ts,
           user: message.user,
         },
-        dispatch: dispatchIntakeReply,
+        dispatch: dispatchIntakeAgent,
       });
       return routed.ok ? ok({}) : routed;
     }
@@ -380,7 +382,7 @@ export async function receiveTeamsActivity(
         text: clip(text, MAX_MESSAGE_CHARS),
         files,
       },
-      dispatch: dispatchIntakeReply,
+      dispatch: dispatchIntakeAgent,
     });
     return routed.ok ? ok({ status: routed.data }) : routed;
   }
@@ -415,16 +417,4 @@ export async function receiveTeamsActivity(
     files,
   };
   return storeRequest(db, settings.org_id, "teams", activity.id, payload);
-}
-
-/**
- * The retired Postmark webhook. Email is read from the intake mailbox now;
- * 403 tells Postmark to stop retrying, so a forwarding rule left in place
- * fails fast. Mail Postmark delivered earlier is still processed.
- */
-export async function receiveInboundEmail(): Promise<ServiceFailure> {
-  return failure(
-    "forbidden",
-    "Email intake reads the organization's mailbox now. Connect it in Intake settings.",
-  );
 }

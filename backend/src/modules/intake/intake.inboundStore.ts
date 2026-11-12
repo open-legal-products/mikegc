@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { internalFailure, ok, type ServiceResult } from "../../lib/serviceResult";
 import type { Db } from "../../lib/supabase";
+import type { ChannelSource } from "./intake.channels";
 
 /** Ownership of this attempt's payload, including its staged attachment keys. */
 type PayloadOwnership = "owned" | "unowned" | "unknown";
@@ -11,7 +12,7 @@ export type InboundStoreResult<T> = ServiceResult<T> & {
 export type InboundInsert = {
   id?: string;
   org_id: string;
-  source: "email" | "slack" | "outlook" | "gmail" | "teams";
+  source: ChannelSource;
   kind?: "request" | "reply";
   external_id: string;
   status: "pending" | "ignored";

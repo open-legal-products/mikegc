@@ -12,7 +12,7 @@ import {
   threadText,
   type ThreadEntry,
 } from "./intake.clarify";
-import { clip, type AgentPlan, type TriagePlan } from "./intake.inboundPayload";
+import { clip, type AgentPlan } from "./intake.inboundPayload";
 import {
   CHANNEL_NAMES,
   ORIGINAL_MESSAGE,
@@ -34,8 +34,9 @@ import {
 /**
  * The intake agent: one loop for every message in a Slack, Teams, Gmail or
  * Outlook thread. It reads the whole conversation and acts through four
- * tools: reply, record_request, update_request and choose_rule. The prompt
- * carries only judgement; every limit lives in the tools, which check what
+ * tools, offered every time: reply, record_request, update_request and
+ * choose_rule. The prompt carries only judgement; every limit lives in the
+ * tools, which check what
  * they are given against the message and the request and answer the model
  * with a short result, never an exception.
  *
@@ -90,7 +91,7 @@ export type AgentContext =
       message: InboundMessage;
       /** MikeGC's earlier answers in the thread, oldest first. */
       earlierReplies: EarlierReply[];
-      /** Whether the thread can be answered: not Postmark, not another request's thread. */
+      /** Whether the thread can be answered: not another request's email thread. */
       canReply: boolean;
       /** How many times MikeGC has answered in the thread. */
       rounds: number;
@@ -100,7 +101,7 @@ export type AgentContext =
       kind: "reply";
       channel: IntakeChannel;
       request: AgentRequest;
-      /** Questions to the requester and the requester's replies, oldest first, ending with this one. */
+      /** What was sent to the requester and the requester's replies, oldest first, ending with this one. */
       thread: ThreadEntry[];
       /** When the reply was recorded, which relative dates count from. */
       sentAt: Date;
@@ -117,9 +118,10 @@ If REQUEST is none:
 If there is a REQUEST, the requester has written in its thread:
 - Call update_request with what the newest message changes or adds: a new deadline, a corrected subject, facts the summary should include. Leave out anything that hasn't changed, and don't call it when nothing has.
 - If REQUEST's rule is undecided, then call choose_rule, or reply with up to 3 more questions if you still can't tell which rule fits.
+- Otherwise always end by calling reply, so the requester knows their message arrived: acknowledge it in one or two sentences, and if you updated the request, say in plain words what you added (for example "I've added the $500k contract value to your request."). If they asked something, answer only from REQUEST and the thread.
 
 How to write:
-- reply: like a friendly colleague, to the person as "you", in plain sentences. Never mention rules, conditions, tools or how you work, and never ask what the conversation already answers. Questions before a request is recorded must not say it has been passed on. Once a request is recorded, write only your questions, one per line: MikeGC adds its own opening line.
+- reply: like a friendly colleague, to the person as "you", in plain sentences. Never mention rules, conditions, tools or how you work, and never ask what the conversation already answers. Questions before a request is recorded must not say it has been passed on. When you ask questions on a recorded request, write only the questions, one per line: MikeGC adds its own opening line.
 - subject: a short title, under 100 characters, such as "Review supplier NDA with Acme".
 - summary: two to four plain sentences on what is needed and the key facts (parties, documents, deadline). No legal advice.
 - requester_name, requester_email: who needs the help, usually the sender, or the person a forwarded message is for. Give an email only if it is the sender's or written in the message, else an empty string.
@@ -152,7 +154,7 @@ const REPLY_TOOL = tool(
     text: {
       type: "string",
       description:
-        "Plain sentences, at most 600 characters. On a recorded request, only your questions, one per line.",
+        "Plain sentences, at most 600 characters. When asking questions on a recorded request, only the questions, one per line.",
     },
   },
   ["text"],
@@ -196,16 +198,11 @@ const CHOOSE_RULE_TOOL = tool(
   ["rule"],
 );
 
-/** The tools that can do anything for this message; the others are left out. */
-export function agentTools(context: AgentContext): OpenAIToolSchema[] {
-  if (context.kind === "message")
-    return context.canReply
-      ? [REPLY_TOOL, RECORD_TOOL, CHOOSE_RULE_TOOL]
-      : [RECORD_TOOL, CHOOSE_RULE_TOOL];
-  return context.request.ruleUndecided
-    ? [UPDATE_TOOL, CHOOSE_RULE_TOOL, REPLY_TOOL]
-    : [UPDATE_TOOL];
-}
+/**
+ * The tools, offered for every message. Each checks its call against the
+ * message and the request and says why when it doesn't apply.
+ */
+export const AGENT_TOOLS: OpenAIToolSchema[] = [REPLY_TOOL, RECORD_TOOL, UPDATE_TOOL, CHOOSE_RULE_TOOL];
 
 /** The end of a long text, which is where a thread's newest messages are. */
 function tail(value: string, max: number): string {
@@ -305,33 +302,6 @@ export function plainRecord(message: InboundMessage): NonNullable<AgentPlan["rec
   };
 }
 
-/**
- * A plan triage saved before the agent replaced it, as the agent's: a chat
- * answer, or a request with its rule or its questions.
- */
-export function planFromTriage(plan: TriagePlan): AgentPlan {
-  const chat = plan.reply !== null;
-  const asked = !chat && plan.questions.length > 0;
-  return {
-    agent: plan.triaged,
-    reply: plan.reply,
-    questions: asked ? plan.questions : [],
-    record: chat
-      ? null
-      : {
-          subject: plan.subject,
-          description: plan.description,
-          requester_name: plan.requester_name,
-          requester_email: plan.requester_email,
-          requested_by_date: plan.requested_by_date,
-          attachments: plan.attachments,
-        },
-    rule: chat || asked ? null : { assignee_id: plan.assignee_id, preprocess: plan.preprocess },
-    update: null,
-    candidates: plan.candidates,
-  };
-}
-
 const refused = (why: string) => `refused: ${why}`;
 
 /** One run's tools, checking each call and adding what it decides to the plan. */
@@ -348,6 +318,7 @@ class AgentRun {
       agent: false,
       reply: null,
       questions: [],
+      answer: null,
       record: null,
       rule: null,
       update: null,
@@ -357,8 +328,8 @@ class AgentRun {
 
   call(call: NormalizedToolCall): string {
     if (this.ended) return refused("you have replied, so the run is over");
-    const offered = agentTools(this.context).some((t) => t.function.name === call.name);
-    if (!offered) return refused(`${call.name} doesn't apply to this message`);
+    const offered = AGENT_TOOLS.some((t) => t.function.name === call.name);
+    if (!offered) return refused(`there is no tool named ${call.name}`);
     const result =
       call.name === "reply"
         ? this.reply(call.input)
@@ -375,32 +346,47 @@ class AgentRun {
     const text = typeof input.text === "string" ? input.text.trim() : "";
     if (!text) return refused("write the text");
     const { context } = this;
-    if (context.kind === "reply" || this.plan.record) {
-      // On a request, MikeGC only asks, and only to choose its rule.
+    const plain = () =>
+      text.length <= REPLY_MAX && !REPLY_FORBIDDEN.test(text) && !hasUnsafeContent(text);
+    const plainRule = `write at most ${REPLY_MAX} characters, with no links, email addresses, mentions or formatting`;
+    if (context.kind === "reply") {
+      // While the rule waits on the requester, a reply asks; otherwise it
+      // answers, and the request doesn't wait.
+      if (context.request.ruleUndecided && !this.plan.rule) {
+        if (!this.rules.length) return refused("there are no rules to choose between: call choose_rule with 0");
+        if (!context.request.canAsk) return refused("MikeGC can't ask again on this request: call choose_rule");
+        return this.ask(text);
+      }
+      if (!plain()) return refused(plainRule);
+      this.plan.answer = text;
+    } else if (this.plan.record) {
+      // Recorded from this message: MikeGC's acknowledgement tells the
+      // requester, so a reply only asks, to choose the rule.
+      if (!context.canReply) return refused("this message can't be answered in its thread: call choose_rule");
       if (!this.rules.length) return refused("there are no rules to choose between, so there is nothing to ask");
       if (this.plan.rule) return refused("the rule is chosen, and MikeGC's acknowledgement tells the requester");
-      if (context.kind === "reply") {
-        if (!context.request.ruleUndecided) return refused("the request is with Legal now");
-        if (!context.request.canAsk) return refused("MikeGC can't ask again on this request: call choose_rule");
-      }
-      const questions = sanitizeQuestions(text.split("\n"));
-      if (!questions.length)
-        return refused(
-          "write up to 3 questions, one per line, each under 300 characters, with no links, email addresses, mentions or formatting",
-        );
-      this.plan.questions = questions;
+      return this.ask(text);
     } else {
       if (!context.canReply) return refused("this message can't be answered in its thread: record it");
       if (context.message.candidates.length)
         return refused("the message has attachments: call record_request first, then reply");
       if (context.rounds >= MAX_CHAT_ROUNDS)
         return refused(`you have answered in this thread ${MAX_CHAT_ROUNDS} times: call record_request`);
-      if (text.length > REPLY_MAX || REPLY_FORBIDDEN.test(text) || hasUnsafeContent(text))
-        return refused(
-          `write at most ${REPLY_MAX} characters, with no links, email addresses, mentions or formatting`,
-        );
+      if (!plain()) return refused(plainRule);
       this.plan.reply = text;
     }
+    this.ended = true;
+    return "sent";
+  }
+
+  /** Questions to choose the request's rule, one per line. */
+  private ask(text: string): string {
+    const questions = sanitizeQuestions(text.split("\n"));
+    if (!questions.length)
+      return refused(
+        "write up to 3 questions, one per line, each under 300 characters, with no links, email addresses, mentions or formatting",
+      );
+    this.plan.questions = questions;
     this.ended = true;
     return "sent";
   }
@@ -564,7 +550,7 @@ export async function runIntakeAgent(args: {
         apiKeys: args.model.apiKeys,
         systemPrompt: prompt.system,
         messages: [{ role: "user", content: prompt.user }],
-        tools: agentTools(context),
+        tools: AGENT_TOOLS,
         maxIterations: AGENT_MAX_STEPS,
         // A model that can't call tools fails here and the message is
         // recorded as it arrived, rather than answered in plain text.

@@ -31,8 +31,8 @@ document, deadline or matter is a request, and when unsure it records one. The
 answer never gives legal advice. The next message in that thread reaches
 MikeGC without a mention and is read with MikeGC's earlier answers. After
 three answers in one thread, the next message there is recorded as a request.
-Mail recorded through Postmark, and mail in another request's email thread,
-have no thread MikeGC can answer in, so they are always recorded.
+Mail in another request's email thread has no thread MikeGC can answer in, so
+it is always recorded.
 
 Every other message becomes a **New** or **In progress** request in the
 organization's queue, created by **MikeGC**: MikeGC is not an account, so the
@@ -79,14 +79,20 @@ Outlook. There is no switch for it, and it runs for all four channels: it
 runs with the **Triage** model chosen under **Intake** in Model Preferences,
 and doesn't run without one. For each message it reads the whole
 conversation (the thread so far and MikeGC's own earlier answers there, or,
-in a request's thread, the request and every question and reply since) and
-acts through four tools:
+in a request's thread, the request and everything sent and replied since) and
+acts through four tools, offered for every message. Each tool checks whether
+it applies and tells the agent why when it doesn't:
 
 - **reply** answers in the thread the message came from. With no request
   yet, it is a short answer to small talk, or up to three questions when no
   rule can be chosen yet (see [Stage 1](#stage-1-choosing-the-rule)). On a
-  recorded request it is MikeGC's questions to choose its rule, posted with
-  MikeGC's own opening line. A reply ends the agent's turn.
+  recorded request whose rule waits on the requester, it is MikeGC's
+  questions to choose the rule, posted with MikeGC's own opening line.
+  Otherwise, when the requester writes in a request's thread, it is MikeGC's
+  answer: it acknowledges the message, says what it added to the request
+  ("I've added the $500k contract value to your request."), or answers a
+  question from the request and the thread. An answer doesn't make the
+  request wait. A reply ends the agent's turn.
 - **record_request** records the request: a subject and a summary, with the
   original message, its sender and time (in UTC, since members read it from
   anywhere) kept below the summary; the requester's name and email; a target
@@ -206,7 +212,7 @@ has gone; preprocessing that can't run says why in its note instead.
 ## The requester loop
 
 MikeGC holds a two-way conversation with the requester in the Outlook,
-Gmail, Teams or Slack thread a request came from. It does three things
+Gmail, Teams or Slack thread a request came from. It does four things
 there:
 
 1. **Asks for missing details on its own**: first what it needs to choose a
@@ -215,12 +221,13 @@ there:
 2. **Posts a lawyer's questions**, asked from the request page.
 3. **Replies on resolution**, when the lawyer chooses to, with a reply they
    write and the documents they choose.
+4. **Answers the requester's messages**: the intake agent acknowledges each
+   message the requester sends, saying what it added to the request.
 
 The requester's answers come back onto the request and move it forward.
 Everything else a lawyer does (notes, assignments, edits, other status
-changes, cancellations) stays inside MikeGC. Requests recorded through
-Postmark, and requests a member typed, have no thread, so none of this
-applies to them.
+changes, cancellations) stays inside MikeGC. Requests a member typed have
+no thread, so none of this applies to them.
 
 Questions to choose the rule come before the request is recorded (stage 1);
 questions for its preprocessing come after, so a lawyer can see the request
@@ -393,7 +400,6 @@ as a related-thread notice, stay comments.
 
 Company users email the intake address; MikeGC reads that mailbox and replies
 as it. One mailbox per organization, on Microsoft 365 or Google Workspace.
-Postmark is no longer used, for receiving or sending.
 
 ### What counts as a request
 
@@ -474,14 +480,6 @@ other channel secrets, never shown again, and used before the deployment's.
 Reconnecting with the field left empty keeps it.
 
 MikeGC marks recorded mail with the "MikeGC" label.
-
-### Moving from Postmark
-
-Organizations that recorded email through Postmark record no email until
-they connect their mailbox through Outlook or Gmail. Remove the rule that forwarded the intake address to
-Postmark: the mailbox you forwarded from becomes the connected mailbox. The
-old webhook URL answers `403`, which tells Postmark to stop retrying, and
-mail Postmark delivered before the upgrade is still processed.
 
 ## Setting up Slack
 
@@ -585,10 +583,11 @@ channels are supported.
   self-rescheduling job per mailbox), and so is Outlook every 15 minutes as a
   backstop, with its subscription renewed every three days.
 - **Routing.** Each channel's event is either a message in a thread linked to
-  a request (`intake_channel_links`), stored in `intake_inbound` as a reply
-  and handed to the `intake.reply` job, or a new request: a mention of MikeGC
-  in an unlinked thread, or a new email to the intake address, handed to
-  `intake.inbound`. Anything else (chatter in an unlinked thread, bots' own
+  a request (`intake_channel_links`), stored in `intake_inbound` as a reply,
+  or a new request: a mention of MikeGC in an unlinked thread, or a new email
+  to the intake address. Both are handed to the `intake.agent` job, which
+  takes the reply branch or the new-message branch by the stored row's kind.
+  Anything else (chatter in an unlinked thread, bots' own
   messages, edits and deletions) is acknowledged and dropped after one indexed
   link lookup, without storing its content. An email reply is matched by its
   Outlook `conversationId` or Gmail `threadId`, or else by a Message-ID in its
@@ -598,7 +597,7 @@ channels are supported.
   Slack channel and timestamp, its Teams activity ID or its email
   `Message-ID`, so a webhook delivered again records nothing new. Email
   attachments are stored temporarily until the message is handled. The
-  `intake.inbound` job then runs the intake agent (`intake.agent.ts`) and
+  `intake.agent` job then runs the intake agent (`intake.agent.ts`) and
   saves its plan on the message, then answers in the thread
   (`intake_conversations` counts MikeGC's answers and keeps their text) or
   records the request with
@@ -609,17 +608,18 @@ channels are supported.
   acknowledges twice. A message that still fails after its retries is
   recorded as failed, with a reason, in `intake_inbound`, and MikeGC says so
   in a Slack thread.
-- **Replies.** The `intake.reply` job reads the reply from its channel,
+- **Replies.** The `intake.agent` job's reply branch reads the reply from its channel,
   records it with `intake_reply_automated`, adds its files, and then queues
   the next round of `intake.preprocess` for an answer to the readiness check
   (deduplicated per request and round, `intake.preprocess:<request>:<round>`),
   or runs the agent on an open request: `intake_update_automated` changes the
   details it planned, skipping any in the request's `member_edited_fields`,
-  and `intake_ask_automated` asks once more or
+  `intake_ask_automated` asks once more or
   `intake_settle_clarify_automated` returns a request whose rule is chosen
-  to New or In progress.
-- **Outbox.** Every requester-facing message (an acknowledgement, a question
-  or a resolution reply) is an `intake_outbound` row written in the same
+  to New or In progress, and `intake_answer_automated` posts MikeGC's answer
+  without changing the request's state.
+- **Outbox.** Every requester-facing message (an acknowledgement, a question,
+  MikeGC's answer or a resolution reply) is an `intake_outbound` row written in the same
   transaction as the message it carries, and sent by the `intake.deliver`
   job through its channel's adapter. Before a retry (never on the first
   attempt) the adapter asks the channel whether an earlier attempt landed:
@@ -703,6 +703,17 @@ changes a request's details as MikeGC; and `intake_conversations.replies`,
 MikeGC's own answers in a thread with no request. Apply it before starting the
 new build; the old build keeps working once it has run.
 
+`20261111_03_intake_retire_postmark.sql` removes what was left of Postmark:
+requests recorded through it take the organization's connected mailbox
+(Outlook or Gmail) as their source, or Manual when none is connected; Postmark
+mail still waiting is deleted; the `'email'` source and
+`intake_automation.email_reconnect_notice` are dropped. The old webhook URL is
+gone and answers `404`. `20261111_04_intake_answer_automated.sql` adds
+`intake_answer_automated`, which MikeGC's answers in a request's thread use.
+Apply both before starting the new build. Jobs queued as `intake.inbound` or
+`intake.reply` by an older build aren't run by the new one, which queues
+`intake.agent`: let the queue drain before upgrading.
+
 `INTAKE_GMAIL_SERVICE_ACCOUNT_KEY` (a Google service account's JSON key) is
 optional: it serves Gmail mailboxes whose organization didn't paste its own
 key. Otherwise no new environment variables are
@@ -711,7 +722,7 @@ the request links in members' notes from `FRONTEND_URL`, and secrets are
 encrypted with `MCP_CONNECTORS_ENCRYPTION_SECRET` (or
 `USER_API_KEYS_ENCRYPTION_SECRET`). The backend gains the `jose` (Bot
 Framework token checks) and `nodemailer` (Gmail MIME building only, never
-SMTP) dependencies. New jobs `intake.reply`, `intake.deliver` and
+SMTP) dependencies. The jobs `intake.agent`, `intake.deliver` and
 `intake.mailbox.poll` run on the existing job runner; the maintenance sweep
 restarts a connected mailbox's poll job if it ever stops, and queues again a
 message to a requester left pending for 15 minutes without a job.

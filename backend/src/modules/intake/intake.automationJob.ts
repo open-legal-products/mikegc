@@ -1,7 +1,5 @@
-import { z } from "zod";
 import { enqueueDbJob } from "../../lib/dbq/enqueue";
 import { NonRetryableJobError, dbJobsEnabled } from "../../lib/dbq/runner";
-import type { DbJob } from "../../lib/dbq/types";
 import { safeError } from "../../lib/safeError";
 import { deleteFile } from "../../lib/storage";
 import type { Db } from "../../lib/supabase";
@@ -23,7 +21,8 @@ import {
   type ChannelSource,
   type ConversationSource,
 } from "./intake.channels";
-import { planFromTriage, runIntakeAgent } from "./intake.agent";
+import { runIntakeAgent } from "./intake.agent";
+import type { InboundRow } from "./intake.agentJob";
 import { stableId } from "./intake.clarify";
 import { requestLink } from "./intake.deliver";
 import {
@@ -33,7 +32,6 @@ import {
   clip,
   inboundPayload,
   stagedKeys,
-  type EmailInboundPayload,
   type InboundPayload,
   type MailInboundPayload,
   type AgentPlan,
@@ -44,7 +42,7 @@ import { mailThread, recordEmailMessageIds } from "./intake.mail";
 import { outlookAdapter } from "./intake.outlook";
 import { queueIntakePreprocess } from "./intake.preprocess";
 import { slackBotToken } from "./intake.secrets";
-import { dispatchIntakeJob, intakeRpc } from "./intake.shared";
+import { intakeRpc } from "./intake.shared";
 import {
   SLACK_TOKEN_ERRORS,
   SlackApiError,
@@ -77,9 +75,8 @@ import {
 } from "./intake.triage";
 
 /**
- * The intake.inbound job: a message in a Slack, Teams, Gmail or Outlook
- * thread no request is linked to, or an email received through Postmark.
- * The intake agent reads the conversation and plans what to do: answer in
+ * The intake.agent job's new-message branch: a message in a Slack, Teams,
+ * Gmail or Outlook thread no request is linked to. The intake agent reads the conversation and plans what to do: answer in
  * the thread, or record a request, with its rule or with questions to choose
  * one. The plan is saved on the message before any of it is done; then the
  * request is recorded, its documents added, its thread linked and answered:
@@ -88,9 +85,6 @@ import {
  * run again: each document's ids and each step done are saved on the
  * message as they happen, and recording the request is keyed by the message.
  */
-
-export const INTAKE_INBOUND_JOB = "intake.inbound";
-const JOB_ATTEMPTS = 4;
 
 const GENERIC_FAILURE = "MikeGC couldn't record this message. Try sending it again.";
 
@@ -112,32 +106,6 @@ function adminMessage(error: unknown): string {
   }
   if (error instanceof TeamsApiError) return error.sentence;
   return GENERIC_FAILURE;
-}
-
-type InboundRow = {
-  id: string;
-  org_id: string;
-  source: "email" | ChannelSource;
-  status: "pending" | "done" | "failed" | "ignored";
-  payload: unknown;
-  request_id: string | null;
-  error: string | null;
-};
-
-const jobPayload = z.object({ inboundId: z.uuid(), orgId: z.uuid() });
-
-async function loadInbound(
-  db: Db,
-  ids: { inboundId: string; orgId: string },
-): Promise<InboundRow | null> {
-  const { data, error } = await db
-    .from("intake_inbound")
-    .select("id, org_id, source, status, payload, request_id, error")
-    .eq("id", ids.inboundId)
-    .eq("org_id", ids.orgId)
-    .maybeSingle();
-  if (error) throw error;
-  return (data as InboundRow | null) ?? null;
 }
 
 /** Write progress, only while the message is still waiting. */
@@ -205,30 +173,6 @@ function requireSlackToken(settings: AutomationRow | null): string {
       "Slack isn't connected. Save the bot token in Intake settings.",
     );
   return token;
-}
-
-/** A Postmark email, recorded before MikeGC read the mailbox itself. */
-function emailMessage(payload: EmailInboundPayload): InboundMessage {
-  const email = payload.from.email;
-  return {
-    source: "email",
-    sender: {
-      name: payload.from.name ?? email?.split("@")[0] ?? "Unknown sender",
-      email,
-    },
-    sentAt: new Date(payload.date),
-    subject: payload.subject,
-    subjectHint: payload.subject,
-    text: payload.text,
-    candidates: payload.attachments.map((a) => ({
-      name: a.name,
-      file_type: a.file_type,
-      size: a.size,
-      key: a.key,
-      url: null,
-    })),
-    skipped: payload.skipped,
-  };
 }
 
 /** An email to the intake mailbox, read through Graph or the Gmail API. */
@@ -376,8 +320,6 @@ async function inboundMessage(
   payload: InboundPayload,
 ): Promise<InboundMessage> {
   switch (payload.kind) {
-    case "email":
-      return emailMessage(payload);
     case "mail":
       return mailMessage(payload);
     case "slack":
@@ -388,28 +330,12 @@ async function inboundMessage(
   }
 }
 
-/** The channel a message can be answered in; Postmark email has none. */
-function channelOf(payload: InboundPayload): ChannelSource | null {
-  switch (payload.kind) {
-    case "slack":
-      return "slack";
-    case "mail":
-      return payload.provider === "graph" ? "outlook" : "gmail";
-    case "teams":
-      return "teams";
-    case "email":
-      return null;
-  }
-}
-
 /** The thread to link a request to: its key and what posting there needs. */
 async function threadOf(
   settings: AutomationRow,
   payload: InboundPayload,
 ): Promise<{ source: ChannelSource; key: string; address: Record<string, unknown> } | null> {
   switch (payload.kind) {
-    case "email":
-      return null;
     case "slack": {
       const token = requireSlackToken(settings);
       const root = payload.thread_ts ?? payload.ts;
@@ -530,9 +456,8 @@ async function noteRelated(
 
 /**
  * The thread a Slack, Teams or email message belongs to, as links key it,
- * where MikeGC can answer instead of recording. Mail through Postmark has no
- * thread to answer in, and mail in another request's thread is that
- * request's to answer.
+ * where MikeGC can answer instead of recording. Mail in another request's
+ * thread is that request's to answer.
  */
 function conversationThread(
   settings: AutomationRow | null,
@@ -626,7 +551,7 @@ export async function sendChatReply(
 
 /**
  * The agent's plan for a message, made once and saved before any of it is
- * done. A plan triage saved before the agent replaced it is carried over.
+ * done.
  */
 async function planInbound(
   db: Db,
@@ -634,7 +559,6 @@ async function planInbound(
   settings: AutomationRow | null,
   payload: InboundPayload,
 ): Promise<AgentPlan> {
-  if (payload.plan) return planFromTriage(payload.plan);
   const message = await inboundMessage(settings, payload);
   const thread = conversationThread(settings, payload);
   // The agent runs with the model the organization chose for triage; with
@@ -669,16 +593,13 @@ async function processInbound(db: Db, row: InboundRow): Promise<Record<string, u
   const payload = parsed.data;
   const save = () => saveInboundPayload(db, row.id, payload);
   const settings = await loadAutomationRow(db, row.org_id);
-  const channel = channelOf(payload);
   // MikeGC asks only where it can be answered: in a thread of the request's
   // own. Mail in another request's thread is recorded apart, and the thread
   // stays that request's.
-  const canAsk =
-    !!channel && !(payload.kind === "mail" && payload.related_request_id);
+  const canAsk = !(payload.kind === "mail" && payload.related_request_id);
 
   if (!payload.agent) {
     payload.agent = await planInbound(db, row, settings, payload);
-    delete payload.plan;
     await save();
   }
   const plan = payload.agent;
@@ -720,7 +641,7 @@ async function processInbound(db: Db, row: InboundRow): Promise<Record<string, u
     payload.recorded = true;
     await save();
   }
-  if (channel && settings && !payload.linked) {
+  if (settings && !payload.linked) {
     await linkRequestThread(db, row.org_id, requestId, settings, payload);
     payload.linked = true;
     await save();
@@ -794,20 +715,14 @@ async function processInbound(db: Db, row: InboundRow): Promise<Record<string, u
 }
 
 /**
- * The job body. A message no longer waiting (handled, or purged with the
- * organization's intake data) is skipped. A failure records the reason an
- * admin will see, then is thrown: retried with backoff, or failed at once
- * when retrying cannot help.
+ * A new message, waiting. A failure records the reason an admin will see,
+ * then is thrown: retried with backoff, or failed at once when retrying
+ * cannot help.
  */
-export async function handleIntakeInbound(
+export async function runInbound(
   db: Db,
-  job: DbJob,
+  row: InboundRow,
 ): Promise<Record<string, unknown>> {
-  const ids = jobPayload.safeParse(job.payload);
-  if (!ids.success) throw new NonRetryableJobError("intake.inbound: invalid payload");
-  const row = await loadInbound(db, ids.data);
-  if (!row) return { skipped: "missing" };
-  if (row.status !== "pending") return { skipped: row.status };
   try {
     return await processInbound(db, row);
   } catch (error) {
@@ -834,11 +749,7 @@ const FAILED_REPLY =
  * was recorded keeps its link, and its thread is acknowledged rather than
  * told nothing was logged; a Slack thread with no request is told so.
  */
-export async function markIntakeInboundFailed(db: Db, job: DbJob): Promise<void> {
-  const ids = jobPayload.safeParse(job.payload);
-  if (!ids.success) return;
-  const row = await loadInbound(db, ids.data);
-  if (!row || row.status !== "pending") return;
+export async function markInboundFailed(db: Db, row: InboundRow): Promise<void> {
   const parsed = inboundPayload.safeParse(row.payload);
   const payload = parsed.success ? parsed.data : null;
   const reason = row.request_id ? RECORDED_INCOMPLETE : row.error ?? GENERIC_FAILURE;
@@ -847,7 +758,7 @@ export async function markIntakeInboundFailed(db: Db, job: DbJob): Promise<void>
       if (row.request_id) {
         // Failed before its thread was linked: link it, so the thread hears.
         const settings = payload.linked ? null : await loadAutomationRow(db, row.org_id);
-        if (settings && channelOf(payload))
+        if (settings)
           await linkRequestThread(db, row.org_id, row.request_id, settings, payload);
         await acknowledgeRequest(db, row.org_id, row.request_id);
       } else if (payload.kind === "slack") {
@@ -865,20 +776,4 @@ export async function markIntakeInboundFailed(db: Db, job: DbJob): Promise<void>
     }
   }
   await settleInbound(db, row.id, "failed", reason, row.payload);
-}
-
-/** Queue a stored message's job. */
-export async function dispatchIntakeInbound(
-  db: Db,
-  orgId: string,
-  inboundId: string,
-): Promise<void> {
-  await dispatchIntakeJob(db, {
-    kind: INTAKE_INBOUND_JOB,
-    payload: { inboundId, orgId },
-    dedupeKey: `${INTAKE_INBOUND_JOB}:${inboundId}`,
-    maxAttempts: JOB_ATTEMPTS,
-    handler: handleIntakeInbound,
-    onFailure: markIntakeInboundFailed,
-  });
 }

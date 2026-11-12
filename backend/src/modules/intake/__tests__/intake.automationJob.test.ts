@@ -58,10 +58,10 @@ import { recordCall, replyCall, ruleCall, scripted, type ScriptedCall } from "./
 import type { DbJob } from "../../../lib/dbq/types";
 import { encryptString } from "../../../lib/mcp/client";
 import {
-  dispatchIntakeInbound,
-  handleIntakeInbound,
-  markIntakeInboundFailed,
-} from "../intake.automationJob";
+  dispatchIntakeAgent,
+  handleIntakeAgent,
+  markIntakeAgentFailed,
+} from "../intake.agentJob";
 import { handleIntakeDeliver } from "../intake.deliver";
 import { purgeIntake } from "../intake.lifecycle";
 
@@ -84,7 +84,7 @@ function modelCalls(...steps: ScriptedCall[][]) {
 
 const job = (): DbJob => ({
   id: "job-1",
-  kind: "intake.inbound",
+  kind: "intake.agent",
   payload: { inboundId, orgId: org },
   status: "running",
   attempts: 1,
@@ -93,7 +93,7 @@ const job = (): DbJob => ({
   claimed_at: "",
   finished_at: null,
   last_error: null,
-  dedupe_key: `intake.inbound:${inboundId}`,
+  dedupe_key: `intake.agent:${inboundId}`,
   result: null,
   created_at: "",
 });
@@ -115,9 +115,17 @@ const gmailPayload = () => ({
   attachments: [],
   skipped: [],
 });
+/** A new email to a Gmail intake mailbox, with attachments. */
 const emailPayload = () => ({
-  kind: "email",
+  kind: "mail",
+  provider: "gmail",
+  mailbox: "intake@firm.test",
+  provider_id: "gm-1",
+  message_id: "<nda@acme.test>",
+  thread: "t-1",
   from: { name: "Jane Business", email: "jane@acme.test" },
+  to: ["intake@firm.test"],
+  cc: [],
   subject: "NDA with Supplier Co",
   date: "2026-11-02T09:14:00.000Z",
   text: "Please review the attached NDA by Friday.",
@@ -140,7 +148,7 @@ const slackPayload = (overrides: Record<string, unknown> = {}) => ({
 
 function setup(options: {
   payload: Record<string, unknown>;
-  source?: "email" | "slack" | "gmail";
+  source?: "slack" | "gmail";
   /** False when no model key is available, so triage can't run. */
   model?: boolean;
   kind?: "team" | "personal";
@@ -180,7 +188,7 @@ function setup(options: {
         {
           id: inboundId,
           org_id: org,
-          source: options.source ?? "email",
+          source: options.source ?? "gmail",
           external_id: "message-1",
           payload: options.payload,
         },
@@ -285,7 +293,7 @@ async function deliverQueued(attempts = 1) {
 describe("recording an email", () => {
   it("records MikeGC's triaged request with the relevant documents, then forgets the message", async () => {
     setup({ payload: emailPayload() });
-    await expect(handleIntakeInbound(memory.db, job())).resolves.toEqual({
+    await expect(handleIntakeAgent(memory.db, job())).resolves.toEqual({
       request_id: inboundId,
       triaged: true,
       asked: false,
@@ -301,7 +309,7 @@ describe("recording an email", () => {
       p_assignee: sam,
     });
     const [request] = memory.rows("intake_requests");
-    expect(request).toMatchObject({ created_by: null, source: "email", assignee_id: sam });
+    expect(request).toMatchObject({ created_by: null, source: "gmail", assignee_id: sam });
     expect(request!.description).toMatch(/^Jane needs the Supplier Co NDA reviewed by Friday\.\n\n--- Original message ---/);
     // Triage kept the NDA and left out the logo.
     const documents = memory.rows("documents");
@@ -344,13 +352,17 @@ describe("recording an email", () => {
         prefixes: [],
       },
     }));
-    // The model saw the organization's rules, never another organization's,
-    // and could only record: Postmark mail has no thread to answer in.
+    // The model saw the organization's rules, never another organization's.
     const asked = model.requests[0]!;
     expect(asked.messages[0]!.content).toContain(
       'RULES: [{"number":1,"condition":"The request is about an NDA"}]',
     );
-    expect(asked.tools!.map((t) => t.function.name)).toEqual(["record_request", "choose_rule"]);
+    expect(asked.tools!.map((t) => t.function.name)).toEqual([
+      "reply",
+      "record_request",
+      "update_request",
+      "choose_rule",
+    ]);
     expect(asked).toMatchObject({ model: "claude-haiku-4-5", maxIterations: 4, requireTools: true });
     expect(model.results).toEqual([["recorded", "assigned by rule 1"]]);
   });
@@ -361,7 +373,7 @@ describe("recording an email", () => {
       preprocess_kind: "playbook",
       preprocess_ref: "pb-1",
     });
-    await handleIntakeInbound(memory.db, job());
+    await handleIntakeAgent(memory.db, job());
     const queued = mocks.enqueueDbJob.mock.calls.filter(
       ([, input]) => input.kind === "intake.preprocess",
     );
@@ -375,8 +387,8 @@ describe("recording an email", () => {
             with: { kind: "playbook", id: "pb-1" },
             condition: "The request is about an NDA",
             round: 0,
-            // Postmark mail has no thread to acknowledge in.
-            acknowledge: false,
+            // Its readiness check may ask too, so it sends the acknowledgement.
+            acknowledge: true,
           }),
           dedupeKey: `intake.preprocess:${inboundId}:0`,
         }),
@@ -387,14 +399,14 @@ describe("recording an email", () => {
   });
   it("doesn't queue preprocessing for a rule that doesn't ask for it", async () => {
     setup({ payload: emailPayload() });
-    await handleIntakeInbound(memory.db, job());
+    await handleIntakeAgent(memory.db, job());
     expect(
       mocks.enqueueDbJob.mock.calls.some(([, input]) => input.kind === "intake.preprocess"),
     ).toBe(false);
   });
   it("records the message as it is with no model to triage with, keeping every attachment", async () => {
     setup({ payload: emailPayload(), model: false });
-    await expect(handleIntakeInbound(memory.db, job())).resolves.toMatchObject({ triaged: false });
+    await expect(handleIntakeAgent(memory.db, job())).resolves.toMatchObject({ triaged: false });
     expect(mocks.stream).not.toHaveBeenCalled();
     expect(memory.rows("intake_requests")[0]).toMatchObject({
       subject: "NDA with Supplier Co",
@@ -410,13 +422,13 @@ describe("recording an email", () => {
   it("leaves the request unassigned when no rule matches", async () => {
     setup({ payload: emailPayload() });
     modelCalls([recordCall({ assignee_id: outsider }), ruleCall(0)]);
-    await handleIntakeInbound(memory.db, job());
+    await handleIntakeAgent(memory.db, job());
     expect(memory.rows("intake_requests")[0]).toMatchObject({ assignee_id: null, state: "submitted" });
   });
   it("resumes after a failure without asking the model again or duplicating documents", async () => {
     setup({ payload: emailPayload(), model: false });
     mocks.createDocumentVersion.mockRejectedValueOnce(new Error("storage hiccup"));
-    await expect(handleIntakeInbound(memory.db, job())).rejects.toThrow("storage hiccup");
+    await expect(handleIntakeAgent(memory.db, job())).rejects.toThrow("storage hiccup");
     expect(row()).toMatchObject({
       status: "pending",
       request_id: inboundId,
@@ -428,7 +440,7 @@ describe("recording an email", () => {
     expect(memory.rows("documents")).toEqual([]);
     expect(mocks.deleteFileBestEffort).toHaveBeenCalled();
 
-    await handleIntakeInbound(memory.db, job());
+    await handleIntakeAgent(memory.db, job());
     expect(memory.rows("intake_requests")).toHaveLength(1);
     // The retried document kept the id it was given before it failed.
     expect(memory.rows("documents").map((d) => d.id)).toContain(planned["0"]!.document_id);
@@ -436,32 +448,7 @@ describe("recording an email", () => {
     expect(memory.rows("intake_request_documents")).toHaveLength(2);
     expect(row()).toMatchObject({ status: "done", error: null });
     // A third run finds nothing to do.
-    await expect(handleIntakeInbound(memory.db, job())).resolves.toEqual({ skipped: "done" });
-  });
-  it("finishes a message whose plan triage saved before the agent, without asking the model", async () => {
-    setup({
-      payload: {
-        ...emailPayload(),
-        plan: {
-          subject: "Triaged before",
-          description: "Saved by triage.",
-          requester_name: "Jane Business",
-          requester_email: "jane@acme.test",
-          requested_by_date: null,
-          assignee_id: sam,
-          preprocess: null,
-          questions: [],
-          attachments: [0],
-          candidates: emailPayload().attachments.map((a) => ({ ...a, url: null })),
-          triaged: true,
-          reply: null,
-        },
-      },
-    });
-    await handleIntakeInbound(memory.db, job());
-    expect(mocks.stream).not.toHaveBeenCalled();
-    expect(memory.rows("intake_requests")[0]).toMatchObject({ subject: "Triaged before", assignee_id: sam });
-    expect(memory.rows("documents")).toHaveLength(1);
+    await expect(handleIntakeAgent(memory.db, job())).resolves.toEqual({ skipped: "done" });
   });
   it("keeps a document an earlier attempt finished when a retry runs again", async () => {
     setup({ payload: emailPayload(), model: false });
@@ -469,7 +456,7 @@ describe("recording an email", () => {
     mocks.createDocumentVersion
       .mockImplementationOnce(made)
       .mockRejectedValueOnce(new Error("storage hiccup"));
-    await expect(handleIntakeInbound(memory.db, job())).rejects.toThrow("storage hiccup");
+    await expect(handleIntakeAgent(memory.db, job())).rejects.toThrow("storage hiccup");
     const planned = (row().payload as { documents: Record<string, { document_id: string; done: boolean }> }).documents;
     const first = planned["0"]!.document_id;
     expect(memory.rows("documents").find((d) => d.id === first)).toMatchObject({ status: "ready" });
@@ -478,7 +465,7 @@ describe("recording an email", () => {
     planned["0"]!.done = false;
     const uploads = mocks.uploadFile.mock.calls.length;
     mocks.deleteFileBestEffort.mockClear();
-    await handleIntakeInbound(memory.db, job());
+    await handleIntakeAgent(memory.db, job());
     expect(memory.rows("documents").find((d) => d.id === first)).toMatchObject({ status: "ready" });
     expect(mocks.uploadFile.mock.calls.length).toBe(uploads + 1);
     expect(mocks.deleteFileBestEffort).not.toHaveBeenCalled();
@@ -488,12 +475,12 @@ describe("recording an email", () => {
   it("keeps a request deleted after it was recorded deleted when the job retries", async () => {
     setup({ payload: emailPayload(), model: false });
     mocks.createDocumentVersion.mockRejectedValueOnce(new Error("storage hiccup"));
-    await expect(handleIntakeInbound(memory.db, job())).rejects.toThrow("storage hiccup");
+    await expect(handleIntakeAgent(memory.db, job())).rejects.toThrow("storage hiccup");
     expect(row().payload).toMatchObject({ recorded: true });
     // A reviewer deletes it before the retry, which clears the message's link.
     memory.tables.intake_requests = [];
     row().request_id = null;
-    await expect(handleIntakeInbound(memory.db, job())).resolves.toEqual({
+    await expect(handleIntakeAgent(memory.db, job())).resolves.toEqual({
       request_id: null,
       deleted: true,
     });
@@ -510,9 +497,9 @@ describe("recording an email", () => {
   it("skips a message that is gone or already handled", async () => {
     setup({ payload: emailPayload() });
     memory.tables.intake_inbound = [];
-    await expect(handleIntakeInbound(memory.db, job())).resolves.toEqual({ skipped: "missing" });
+    await expect(handleIntakeAgent(memory.db, job())).resolves.toEqual({ skipped: "missing" });
     await expect(
-      handleIntakeInbound(memory.db, { ...job(), payload: { inboundId: "x" } }),
+      handleIntakeAgent(memory.db, { ...job(), payload: { inboundId: "x" } }),
     ).rejects.toBeInstanceOf(NonRetryableJobError);
   });
 });
@@ -526,14 +513,14 @@ describe("recording a Slack thread", () => {
         messages: [{ ts: "1793610840.000100", user: "U1", text: "Need the Supplier Co NDA signed off" }],
       }),
     });
-    await handleIntakeInbound(memory.db, job());
+    await handleIntakeAgent(memory.db, job());
     const [request] = memory.rows("intake_requests");
     expect(request).toMatchObject({ requester_name: "Jane Business" });
     expect(request!.description).toContain("Ravi Sales, 2 Nov 2026, 09:15 UTC:\ncan Legal look at this?");
   });
   it("records the thread up to the mention, with its first author as requester, and replies once", async () => {
     setup({ payload: slackPayload(), source: "slack", model: false });
-    await handleIntakeInbound(memory.db, job());
+    await handleIntakeAgent(memory.db, job());
     expect(slackCalls.find((c) => c.method === "conversations.replies")?.params).toMatchObject({
       channel: "C42",
       ts: "1793610840.000100",
@@ -596,7 +583,7 @@ describe("recording a Slack thread", () => {
   });
   it("names the reviewer who will pick the request up", async () => {
     setup({ payload: slackPayload({ thread_ts: null, ts: "1793610840.000100", user: "U1", text: "<@UBOT> NDA please" }), source: "slack", kind: "personal" });
-    await handleIntakeInbound(memory.db, job());
+    await handleIntakeAgent(memory.db, job());
     expect(slackCalls.some((c) => c.method === "conversations.replies")).toBe(false);
     await deliverQueued();
     expect(slackReplies.thread_ts).toBe("1793610840.000100");
@@ -607,7 +594,7 @@ describe("recording a Slack thread", () => {
   it("answers a greeting in the chat without recording a request", async () => {
     setup({ payload: slackPayload({ thread_ts: null, ts: "1793610840.000100", user: "U1", text: "<@UBOT> hi there" }), source: "slack" });
     modelCalls([replyCall("Hi! Tell me what you need from Legal & I'll pass it on."), recordCall()]);
-    await expect(handleIntakeInbound(memory.db, job())).resolves.toMatchObject({ request_id: null, replied: true });
+    await expect(handleIntakeAgent(memory.db, job())).resolves.toMatchObject({ request_id: null, replied: true });
     // A reply ends the run: nothing after it is done.
     expect(model.results).toEqual([["(the run ended)"]]);
     expect(memory.rows("intake_requests")).toEqual([]);
@@ -639,7 +626,7 @@ describe("recording a Slack thread", () => {
       rounds: 1,
       replies: [{ at: "2 Nov 2026, 09:14 UTC", text: "Is Acme a customer or a supplier?" }],
     });
-    await expect(handleIntakeInbound(memory.db, job())).resolves.toMatchObject({ request_id: inboundId });
+    await expect(handleIntakeAgent(memory.db, job())).resolves.toMatchObject({ request_id: inboundId });
     const prompt = model.requests[0]!.messages[0]!.content;
     expect(prompt).toContain("--- MikeGC's earlier replies in this thread ---\nMikeGC, 2 Nov 2026, 09:14 UTC:\nIs Acme a customer or a supplier?");
     expect(memory.rows("intake_requests")[0]).toMatchObject({ assignee_id: sam });
@@ -648,24 +635,14 @@ describe("recording a Slack thread", () => {
     setup({ payload: slackPayload({ thread_ts: null, ts: "1793610840.000100", user: "U1", text: "<@UBOT> wassup" }), source: "slack" });
     memory.rows("intake_conversations").push({ org_id: org, source: "slack", thread_key: ":C42:1793610840.000100", rounds: 3 });
     modelCalls([replyCall("Hi again!")], [recordCall({ subject: "Wassup", attachments: [] }), ruleCall(0)]);
-    await expect(handleIntakeInbound(memory.db, job())).resolves.toMatchObject({ request_id: inboundId });
+    await expect(handleIntakeAgent(memory.db, job())).resolves.toMatchObject({ request_id: inboundId });
     expect(model.results[0]).toEqual(["refused: you have answered in this thread 3 times: call record_request"]);
     expect(memory.rows("intake_requests")).toHaveLength(1);
-  });
-  it("records mail through Postmark even when the model would only have replied: it has no thread", async () => {
-    setup({ payload: emailPayload() });
-    modelCalls([replyCall("Hi!")]);
-    await handleIntakeInbound(memory.db, job());
-    expect(model.results).toEqual([["refused: reply doesn't apply to this message"]]);
-    // A run that does nothing records the message as it arrived, unassigned.
-    expect(memory.rows("intake_requests")).toEqual([
-      expect.objectContaining({ subject: "NDA with Supplier Co", assignee_id: null }),
-    ]);
   });
   it("records a message with attachments rather than answering it without a request", async () => {
     setup({ payload: slackPayload(), source: "slack" });
     modelCalls([replyCall("Is Acme a customer or a supplier?")], [recordCall(), ruleCall(1)]);
-    await handleIntakeInbound(memory.db, job());
+    await handleIntakeAgent(memory.db, job());
     expect(model.results[0]).toEqual(["refused: the message has attachments: call record_request first, then reply"]);
     expect(memory.rows("intake_requests")[0]).toMatchObject({ assignee_id: sam });
   });
@@ -673,7 +650,7 @@ describe("recording a Slack thread", () => {
     setup({ payload: gmailPayload(), source: "gmail" });
     mocks.gmailDeliver.mockResolvedValue({ externalId: "sent-1@mail.gmail.com", documents: [] });
     modelCalls([replyCall("Hi! Tell me what you need from Legal and I'll pass it on.")]);
-    await expect(handleIntakeInbound(memory.db, job())).resolves.toMatchObject({ request_id: null, replied: true });
+    await expect(handleIntakeAgent(memory.db, job())).resolves.toMatchObject({ request_id: null, replied: true });
     expect(memory.rows("intake_requests")).toEqual([]);
     expect(memory.rows("intake_outbound")).toEqual([]);
     expect(memory.rows("intake_channel_links")).toEqual([]);
@@ -709,9 +686,9 @@ describe("recording a Slack thread", () => {
     let outage = true;
     memory.intercept = ({ table }) =>
       table === "intake_conversations" && outage ? { message: "connection reset" } : null;
-    await expect(handleIntakeInbound(memory.db, job())).rejects.toBeTruthy();
+    await expect(handleIntakeAgent(memory.db, job())).rejects.toBeTruthy();
     outage = false;
-    await expect(handleIntakeInbound(memory.db, job())).resolves.toMatchObject({ request_id: null, replied: true });
+    await expect(handleIntakeAgent(memory.db, job())).resolves.toMatchObject({ request_id: null, replied: true });
     expect(mocks.gmailDeliver).toHaveBeenCalledTimes(1);
     expect(memory.rows("intake_conversations")).toEqual([
       expect.objectContaining({ source: "gmail", thread_key: "gmail:t-9", rounds: 1 }),
@@ -739,7 +716,7 @@ describe("recording a Slack thread", () => {
     setup({ payload: teams("1700000000001", "Hi MikeGC"), source: "slack" });
     mocks.teamsDeliver.mockResolvedValue({ externalId: "1700000000009", documents: [] });
     modelCalls([replyCall("Hi! What do you need from Legal?")]);
-    await expect(handleIntakeInbound(memory.db, job())).resolves.toMatchObject({ replied: true });
+    await expect(handleIntakeAgent(memory.db, job())).resolves.toMatchObject({ replied: true });
     expect(mocks.teamsDeliver.mock.calls[0]![2]).toMatchObject({ kind: "answer", text: "Hi! What do you need from Legal?" });
     const key = "tenant-1:19:abc@thread.tacv2;messageid=1700000000001";
     expect(memory.rows("intake_conversations")).toEqual([
@@ -755,7 +732,7 @@ describe("recording a Slack thread", () => {
       replies: [{ at: "2 Nov 2026, 09:14 UTC", text: "Hi! What do you need from Legal?" }],
     });
     modelCalls([recordCall({ attachments: [] }), ruleCall(1)]);
-    await expect(handleIntakeInbound(memory.db, job())).resolves.toMatchObject({ request_id: inboundId });
+    await expect(handleIntakeAgent(memory.db, job())).resolves.toMatchObject({ request_id: inboundId });
     expect(model.requests[0]!.messages[0]!.content).toContain("CHANNEL: Teams");
     expect(model.requests[0]!.messages[0]!.content).toContain("MikeGC, 2 Nov 2026, 09:14 UTC:\nHi! What do you need from Legal?");
     expect(memory.rows("intake_requests")[0]).toMatchObject({ assignee_id: sam });
@@ -766,7 +743,7 @@ describe("recording a Slack thread", () => {
     setup({ payload: { ...gmailPayload(), provider: "graph", provider_id: "AAMk-9", thread: "conv-9" }, source: "gmail" });
     mocks.outlookDeliver.mockResolvedValue({ externalId: "sent-1", documents: [] });
     modelCalls([replyCall("Hi! What do you need from Legal?")]);
-    await expect(handleIntakeInbound(memory.db, job())).resolves.toMatchObject({ replied: true });
+    await expect(handleIntakeAgent(memory.db, job())).resolves.toMatchObject({ replied: true });
     expect(model.requests[0]!.messages[0]!.content).toContain("CHANNEL: Outlook");
     expect(mocks.outlookDeliver.mock.calls[0]![1]).toMatchObject({ source: "outlook", address: expect.objectContaining({ reply_to_message_id: "AAMk-9" }) });
     expect(memory.rows("intake_conversations")).toEqual([expect.objectContaining({ source: "outlook", rounds: 1 })]);
@@ -775,7 +752,7 @@ describe("recording a Slack thread", () => {
     setup({ payload: gmailPayload(), source: "gmail" });
     memory.rows("intake_conversations").push({ org_id: org, source: "gmail", thread_key: "gmail:t-9", rounds: 3 });
     modelCalls([replyCall("Hi again!")]);
-    await expect(handleIntakeInbound(memory.db, job())).resolves.toMatchObject({ request_id: inboundId });
+    await expect(handleIntakeAgent(memory.db, job())).resolves.toMatchObject({ request_id: inboundId });
     expect(memory.rows("intake_requests")).toHaveLength(1);
     expect(mocks.gmailDeliver).not.toHaveBeenCalled();
   });
@@ -789,15 +766,15 @@ describe("recording a Slack thread", () => {
       }
       return undefined;
     };
-    await expect(handleIntakeInbound(memory.db, job())).rejects.toMatchObject({ code: "08006" });
-    await handleIntakeInbound(memory.db, job());
+    await expect(handleIntakeAgent(memory.db, job())).rejects.toMatchObject({ code: "08006" });
+    await handleIntakeAgent(memory.db, job());
     expect(memory.rows("intake_outbound")).toHaveLength(1);
     expect(memory.rows("documents")).toHaveLength(1);
     expect(row()).toMatchObject({ status: "done" });
   });
   it("never posts twice when a delivery is retried after Slack took it", async () => {
     setup({ payload: slackPayload(), source: "slack", model: false });
-    await handleIntakeInbound(memory.db, job());
+    await handleIntakeAgent(memory.db, job());
     const outbound = memory.rows("intake_outbound")[0]!;
     // Slack posts the message, but the answer is lost on the way back.
     let posted: Record<string, string> | null = null;
@@ -838,7 +815,7 @@ describe("recording a Slack thread", () => {
       recordCall({ subject: "Review Acme NDA", summary: "An NDA with Acme.", due_date: "" }),
       replyCall("Is Acme a customer or a supplier?\nSee https://evil.test for details"),
     ]);
-    await expect(handleIntakeInbound(memory.db, job())).resolves.toMatchObject({ asked: true });
+    await expect(handleIntakeAgent(memory.db, job())).resolves.toMatchObject({ asked: true });
     // The reply ended the run in its step.
     expect(model.results).toEqual([["(the run ended)"]]);
     expect(memory.rows("intake_requests")[0]).toMatchObject({
@@ -865,14 +842,6 @@ describe("recording a Slack thread", () => {
       "Thanks, I've passed this to Legal. One quick question so it gets to the right person:\n" +
         "Is Acme a customer or a supplier?",
     );
-  });
-  it("doesn't ask by email through Postmark, where no thread can be answered", async () => {
-    setup({ payload: emailPayload() });
-    modelCalls([recordCall(), replyCall("Is the contract over $250k?")], [ruleCall(1)]);
-    await handleIntakeInbound(memory.db, job());
-    expect(model.results[0]).toEqual(["recorded", "refused: reply doesn't apply to this message"]);
-    expect(memory.rows("intake_requests")[0]).toMatchObject({ assignee_id: sam });
-    expect(memory.rows("intake_messages")).toEqual([]);
   });
   it("keeps the rule's reviewer for mail from another request's thread, where it can't ask", async () => {
     // The thread stays the other request's, so this one is never linked to
@@ -905,8 +874,8 @@ describe("recording a Slack thread", () => {
       address: {},
     });
     modelCalls([recordCall({ attachments: [] }), replyCall("Is the contract over $250k?")], [ruleCall(1)]);
-    await expect(handleIntakeInbound(memory.db, job())).resolves.toMatchObject({ asked: false });
-    expect(model.requests[0]!.tools!.map((t) => t.function.name)).not.toContain("reply");
+    await expect(handleIntakeAgent(memory.db, job())).resolves.toMatchObject({ asked: false });
+    expect(model.results[0]![1]).toBe("refused: this message can't be answered in its thread: call choose_rule");
     expect(memory.rows("intake_requests")[0]).toMatchObject({ assignee_id: sam });
     expect(memory.rows("intake_messages").filter((m) => m.kind === "question")).toEqual([]);
   });
@@ -931,8 +900,8 @@ describe("recording a Slack thread", () => {
       address: {},
     });
     modelCalls([replyCall("Hi!")]);
-    await expect(handleIntakeInbound(memory.db, job())).resolves.toMatchObject({ request_id: inboundId });
-    expect(model.results).toEqual([["refused: reply doesn't apply to this message"]]);
+    await expect(handleIntakeAgent(memory.db, job())).resolves.toMatchObject({ request_id: inboundId });
+    expect(model.results).toEqual([["refused: this message can't be answered in its thread: record it"]]);
     expect(memory.rows("intake_requests")).toHaveLength(1);
     expect(mocks.gmailDeliver).not.toHaveBeenCalled();
     expect(memory.rows("intake_conversations")).toEqual([]);
@@ -940,7 +909,7 @@ describe("recording a Slack thread", () => {
   it("leaves the acknowledgement to preprocessing's readiness check, which may ask too", async () => {
     setup({ payload: slackPayload(), source: "slack" });
     Object.assign(memory.rows("intake_assignment_rules")[0]!, { preprocess: true });
-    await handleIntakeInbound(memory.db, job());
+    await handleIntakeAgent(memory.db, job());
     expect(memory.rows("intake_outbound")).toEqual([]);
     expect(
       mocks.enqueueDbJob.mock.calls.find(([, input]) => input.kind === "intake.preprocess")?.[1].payload,
@@ -949,7 +918,7 @@ describe("recording a Slack thread", () => {
   it("fails at once, with a reason an admin can act on, when MikeGC can't read the channel", async () => {
     setup({ payload: slackPayload(), source: "slack" });
     stubSlack({ "conversations.replies": () => ({ ok: false, error: "not_in_channel" }) });
-    await expect(handleIntakeInbound(memory.db, job())).rejects.toBeInstanceOf(NonRetryableJobError);
+    await expect(handleIntakeAgent(memory.db, job())).rejects.toBeInstanceOf(NonRetryableJobError);
     expect(row()).toMatchObject({
       status: "pending",
       error: "MikeGC can't read that Slack channel. Invite @MikeGC to it.",
@@ -961,7 +930,7 @@ describe("when a message fails for good", () => {
   it("marks it failed with its reason, drops its content and says so in Slack", async () => {
     setup({ payload: slackPayload(), source: "slack" });
     memory.rows("intake_inbound")[0]!.error = "MikeGC can't read that Slack channel. Invite @MikeGC to it.";
-    await markIntakeInboundFailed(memory.db, job());
+    await markIntakeAgentFailed(memory.db, job());
     expect(row()).toMatchObject({
       status: "failed",
       payload: null,
@@ -972,7 +941,7 @@ describe("when a message fails for good", () => {
       text: "Sorry, I couldn't log this for Legal. Please try again, or contact the Legal team directly.",
     });
     // Already settled: a second call changes nothing.
-    await markIntakeInboundFailed(memory.db, job());
+    await markIntakeAgentFailed(memory.db, job());
     expect(slackCalls.filter((c) => c.method === "chat.postMessage")).toHaveLength(1);
   });
   it("points the thread at a request that was recorded", async () => {
@@ -985,9 +954,9 @@ describe("when a message fails for good", () => {
         ? new Response("busy", { status: 503 })
         : inner(url, init),
     );
-    await expect(handleIntakeInbound(memory.db, job())).rejects.toBeTruthy();
+    await expect(handleIntakeAgent(memory.db, job())).rejects.toBeTruthy();
     stubSlack();
-    await markIntakeInboundFailed(memory.db, job());
+    await markIntakeAgentFailed(memory.db, job());
     expect(row()).toMatchObject({
       status: "failed",
       request_id: inboundId,
@@ -1000,11 +969,11 @@ describe("when a message fails for good", () => {
     setup({ payload: slackPayload(), source: "slack", model: false });
     // Recorded, then Slack refuses the call that links its thread.
     stubSlack({ "chat.getPermalink": () => ({ ok: false, error: "invalid_auth" }) });
-    await expect(handleIntakeInbound(memory.db, job())).rejects.toBeTruthy();
+    await expect(handleIntakeAgent(memory.db, job())).rejects.toBeTruthy();
     expect(row()).toMatchObject({ request_id: inboundId });
     expect(memory.rows("intake_channel_links")).toEqual([]);
     stubSlack();
-    await markIntakeInboundFailed(memory.db, job());
+    await markIntakeAgentFailed(memory.db, job());
     expect(memory.rows("intake_channel_links")).toHaveLength(1);
     await deliverQueued();
     expect(String(slackReplies.text)).toMatch(/^Thanks, I.ve passed this to Legal\./);
@@ -1014,7 +983,7 @@ describe("when a message fails for good", () => {
     mocks.enqueueDbJob.mockImplementationOnce(async () => {
       expect(row().status).toBe("pending");
     });
-    await markIntakeInboundFailed(memory.db, job());
+    await markIntakeAgentFailed(memory.db, job());
     expect(row()).toMatchObject({
       status: "failed",
       error: "MikeGC couldn't record this message. Try sending it again.",
@@ -1032,14 +1001,14 @@ describe("when a message fails for good", () => {
     mocks.enqueueDbJob.mockImplementation(async (_db, input: { kind: string }) => {
       if (input.kind === "storage.cleanup") throw new Error("database unavailable");
     });
-    await expect(handleIntakeInbound(memory.db, job())).rejects.toThrow("database unavailable");
+    await expect(handleIntakeAgent(memory.db, job())).rejects.toThrow("database unavailable");
     expect(row()).toMatchObject({ status: "pending" });
-    expect(row().payload).toMatchObject({ kind: "email", attachments: [{}, {}] });
+    expect(row().payload).toMatchObject({ kind: "mail", attachments: [{}, {}] });
   });
   it("deletes them at once when the job runner is off", async () => {
     process.env.DB_JOBS_ENABLED = "false";
     setup({ payload: emailPayload() });
-    await markIntakeInboundFailed(memory.db, job());
+    await markIntakeAgentFailed(memory.db, job());
     expect(mocks.deleteFile.mock.calls.map(([key]) => key)).toEqual([
       `intake-inbound/${org}/${inboundId}/0`,
       `intake-inbound/${org}/${inboundId}/1`,
@@ -1052,18 +1021,18 @@ describe("when a message fails for good", () => {
 describe("queueing", () => {
   it("queues one live job per message", async () => {
     setup({ payload: emailPayload() });
-    await dispatchIntakeInbound(memory.db, org, inboundId);
+    await dispatchIntakeAgent(memory.db, org, inboundId);
     expect(mocks.enqueueDbJob).toHaveBeenCalledWith(memory.db, {
-      kind: "intake.inbound",
+      kind: "intake.agent",
       payload: { inboundId, orgId: org },
-      dedupeKey: `intake.inbound:${inboundId}`,
+      dedupeKey: `intake.agent:${inboundId}`,
       maxAttempts: 4,
     });
   });
   it("runs it in-process when the job runner is off", async () => {
     process.env.DB_JOBS_ENABLED = "false";
     setup({ payload: emailPayload(), model: false });
-    await dispatchIntakeInbound(memory.db, org, inboundId);
+    await dispatchIntakeAgent(memory.db, org, inboundId);
     expect(mocks.enqueueDbJob).not.toHaveBeenCalled();
     await vi.waitFor(() => expect(row().status).toBe("done"));
   });

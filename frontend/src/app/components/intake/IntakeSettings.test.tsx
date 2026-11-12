@@ -99,7 +99,6 @@ const connectedEmail = (): IntakeAutomationSettings["email"] => ({
     last_read_at: "2026-11-03T09:30:00Z",
     error: null,
   },
-  needs_reconnect: false,
 });
 /** The email block before any mailbox is connected. */
 const unconnectedEmail = (

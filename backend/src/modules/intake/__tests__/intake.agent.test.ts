@@ -2,7 +2,6 @@ import { describe, expect, it, vi } from "vitest";
 import {
   AGENT_MAX_STEPS,
   buildAgentPrompt,
-  planFromTriage,
   runIntakeAgent,
   withSummary,
   type AgentContext,
@@ -198,9 +197,9 @@ describe("answering in the thread", () => {
     expect(plan.record).toMatchObject({ subject: "NDA with Supplier Co", attachments: [] });
   });
   it("can't answer where the thread can't be answered", async () => {
-    const { requests, results } = await run(inThread({ canReply: false, message: message({ candidates: [] }) }), [replyCall("Hi!")]);
-    expect(requests[0]!.tools!.map((t) => t.function.name)).toEqual(["record_request", "choose_rule"]);
-    expect(results[0]).toEqual(["refused: reply doesn't apply to this message"]);
+    const { plan, results } = await run(inThread({ canReply: false, message: message({ candidates: [] }) }), [replyCall("Hi!")]);
+    expect(results[0]).toEqual(["refused: this message can't be answered in its thread: record it"]);
+    expect(plan.reply).toBeNull();
   });
 });
 
@@ -251,14 +250,45 @@ describe("updating a request from a reply", () => {
     const closed = await run(onRequest({ state: "resolved" }), [updateCall({ due_date: "2026-11-14" })]);
     expect(closed.results[0]).toEqual(["refused: the request is closed"]);
   });
-  it("offers nothing but updates on a request whose rule is decided", async () => {
-    const { requests, results } = await run(onRequest(), [recordCall(), ruleCall(1), replyCall("Thanks!")]);
-    expect(requests[0]!.tools!.map((t) => t.function.name)).toEqual(["update_request"]);
-    expect(results[0]).toEqual([
-      "refused: record_request doesn't apply to this message",
-      "refused: choose_rule doesn't apply to this message",
-      "refused: reply doesn't apply to this message",
+  it("offers every tool, and records or reassigns nothing on a request whose rule is decided", async () => {
+    const { requests, results, plan } = await run(onRequest(), [recordCall(), ruleCall(1)]);
+    expect(requests[0]!.tools!.map((t) => t.function.name)).toEqual([
+      "reply",
+      "record_request",
+      "update_request",
+      "choose_rule",
     ]);
+    expect(results[0]).toEqual([
+      "refused: the request is already recorded",
+      "refused: the request already has its reviewer",
+    ]);
+    expect(plan).toMatchObject({ record: null, rule: null });
+  });
+  it("answers the requester on a request whose rule is decided, saying what it added", async () => {
+    const { plan } = await run(onRequest(), [
+      updateCall({ summary: "Jane needs the NDA reviewed. The contract value is $500k." }),
+      replyCall("Thanks, I've added the $500k contract value to your request."),
+    ]);
+    expect(plan.update).toMatchObject({ lines: { description: "the summary" } });
+    expect(plan).toMatchObject({
+      answer: "Thanks, I've added the $500k contract value to your request.",
+      questions: [],
+      reply: null,
+    });
+  });
+  it("keeps an answer to plain words", async () => {
+    const { plan, results } = await run(onRequest(), [replyCall("See https://evil.test"), replyCall("x".repeat(601))]);
+    expect(results[0]).toEqual([
+      "refused: write at most 600 characters, with no links, email addresses, mentions or formatting",
+      "refused: write at most 600 characters, with no links, email addresses, mentions or formatting",
+    ]);
+    expect(plan.answer).toBeNull();
+  });
+  it("asks rather than answers while the rule waits on the requester, and answers once it's chosen", async () => {
+    const asking = await run(onRequest({ ruleUndecided: true }), [replyCall("Is Supplier Co a customer?")]);
+    expect(asking.plan).toMatchObject({ questions: ["Is Supplier Co a customer?"], answer: null });
+    const chosen = await run(onRequest({ ruleUndecided: true }), [ruleCall(1), replyCall("Thanks, that's with Legal now.")]);
+    expect(chosen.plan).toMatchObject({ questions: [], answer: "Thanks, that's with Legal now.", rule: { assignee_id: sam } });
   });
   it("chooses the rule on a request that waits on it", async () => {
     const { plan } = await run(onRequest({ ruleUndecided: true }), [updateCall({ due_date: "2026-11-14" }), ruleCall(1)]);
@@ -361,35 +391,5 @@ describe("the prompt", () => {
     expect(prompt).toContain("Subject: Review Supplier Co NDA\nDue: none");
     expect(prompt).toContain("[Earlier messages left out.]");
     expect(prompt).toContain("the newest words");
-  });
-});
-
-describe("a plan triage saved before the agent", () => {
-  const triaged = {
-    subject: "Review NDA",
-    description: "An NDA.",
-    requester_name: "Jane",
-    requester_email: null,
-    requested_by_date: null,
-    assignee_id: sam,
-    preprocess: null,
-    questions: [],
-    attachments: [0],
-    candidates: [],
-    triaged: true,
-    reply: null,
-  };
-  it("carries over as the same request, rule, questions or chat answer", () => {
-    expect(planFromTriage(triaged)).toMatchObject({
-      record: { subject: "Review NDA", attachments: [0] },
-      rule: { assignee_id: sam },
-      questions: [],
-      reply: null,
-    });
-    expect(planFromTriage({ ...triaged, assignee_id: null, questions: ["Customer?"] })).toMatchObject({
-      rule: null,
-      questions: ["Customer?"],
-    });
-    expect(planFromTriage({ ...triaged, reply: "Hi!" })).toMatchObject({ record: null, reply: "Hi!", rule: null });
   });
 });

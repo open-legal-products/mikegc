@@ -28,7 +28,6 @@ const saved = (): IntakeAutomationSettings => ({
     notification_url: "https://api.example.test/webhooks/intake/graph/1",
     gmail: { client_id: "1122", key_set: true, deployment_key: false },
     status: { subscription_expires_at: null, last_read_at: null, error: null },
-    needs_reconnect: false,
   },
   slack: {
     enabled: false,

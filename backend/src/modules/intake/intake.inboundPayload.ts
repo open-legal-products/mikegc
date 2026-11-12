@@ -62,6 +62,11 @@ export const agentPlan = z.object({
   reply: z.string().nullable().default(null),
   /** MikeGC's questions on the request, so its rule can be chosen. */
   questions: z.array(z.string()).default([]),
+  /**
+   * MikeGC's answer to the requester in a recorded request's thread: what it
+   * took from their message, or a reply to it. The request doesn't wait.
+   */
+  answer: z.string().nullable().default(null),
   /** The request to record, for a message that has none yet. */
   record: z
     .object({
@@ -103,32 +108,6 @@ export const agentPlan = z.object({
 });
 export type AgentPlan = z.infer<typeof agentPlan>;
 
-/**
- * The plan triage saved before the intake agent replaced it, read only so a
- * message in flight across the change finishes as it began.
- */
-export const triagePlan = z.object({
-  subject: z.string(),
-  description: z.string(),
-  requester_name: z.string(),
-  requester_email: z.string().nullable(),
-  requested_by_date: z.string().nullable(),
-  assignee_id: z.string().nullable(),
-  /**
-   * AI preprocessing, when the rule that assigned the request asks for it,
-   * with the workflow or playbook to follow, if any.
-   */
-  preprocess: preprocessPlan.nullable().default(null),
-  /** Questions to choose a rule; with them, the request waits unassigned. */
-  questions: z.array(z.string()).default([]),
-  attachments: z.array(z.number().int().nonnegative()),
-  candidates: z.array(candidate),
-  triaged: z.boolean(),
-  /** An answer in a chat instead of a request. */
-  reply: z.string().nullable().default(null),
-});
-export type TriagePlan = z.infer<typeof triagePlan>;
-
 /** Each attachment's document, named before it is made so it is made once. */
 const documentEntry = z.object({
   document_id: z.string(),
@@ -139,8 +118,6 @@ export type DocumentEntry = z.infer<typeof documentEntry>;
 
 const progress = {
   agent: agentPlan.optional(),
-  /** A triage plan saved before the agent; see `triagePlan`. */
-  plan: triagePlan.optional(),
   documents: z.record(z.string(), documentEntry).optional(),
   /**
    * Set once the request is recorded. The message's link to it is cleared if
@@ -177,26 +154,6 @@ export const slackInboundPayload = z.object({
   ...progress,
 });
 export type SlackInboundPayload = z.infer<typeof slackInboundPayload>;
-
-export const emailInboundPayload = z.object({
-  kind: z.literal("email"),
-  from: z.object({ name: z.string().nullable(), email: z.string().nullable() }),
-  subject: z.string().nullable(),
-  /** When it was sent, ISO 8601. */
-  date: z.string(),
-  text: z.string(),
-  attachments: z.array(
-    z.object({
-      name: z.string(),
-      file_type: z.string(),
-      size: z.number(),
-      key: z.string(),
-    }),
-  ),
-  skipped: z.array(skipped),
-  ...progress,
-});
-export type EmailInboundPayload = z.infer<typeof emailInboundPayload>;
 
 const stagedAttachment = z.object({
   name: z.string(),
@@ -286,7 +243,6 @@ export type TeamsInboundPayload = z.infer<typeof teamsInboundPayload>;
 
 export const inboundPayload = z.discriminatedUnion("kind", [
   slackInboundPayload,
-  emailInboundPayload,
   mailInboundPayload,
   teamsInboundPayload,
 ]);
@@ -310,6 +266,8 @@ const replyProgress = {
   ruleSettled: z.boolean().optional(),
   /** Set once the chosen rule's preprocessing is queued. */
   preprocessQueued: z.boolean().optional(),
+  /** Set once MikeGC's answer is in the request's thread. */
+  answered: z.boolean().optional(),
 };
 
 /** A requester's message in a linked Slack thread: read from Slack when handled. */

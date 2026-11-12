@@ -38,7 +38,6 @@ import { intakeWebhooksRouter } from "../intake.webhooks.routes";
 const org = "00000000-0000-4000-8000-000000000001";
 const webhookId = "00000000-0000-4000-8000-0000000000aa";
 const secret = "slack-signing-secret";
-const token = "A".repeat(40) + "xyz";
 const env = { ...process.env };
 let memory: MemoryDb;
 const app = express();
@@ -165,9 +164,9 @@ describe("Slack events", () => {
     ]);
     const id = inbound()[0]!.id as string;
     expect(mocks.enqueueDbJob).toHaveBeenCalledWith(memory.db, {
-      kind: "intake.inbound",
+      kind: "intake.agent",
       payload: { inboundId: id, orgId: org },
-      dedupeKey: `intake.inbound:${id}`,
+      dedupeKey: `intake.agent:${id}`,
       maxAttempts: 4,
     });
     // Slack retries: nothing new is stored; a waiting message is queued again
@@ -229,9 +228,9 @@ describe("Slack events", () => {
     ]);
     const id = inbound()[0]!.id as string;
     expect(mocks.enqueueDbJob).toHaveBeenCalledWith(memory.db, {
-      kind: "intake.reply",
+      kind: "intake.agent",
       payload: { inboundId: id, orgId: org },
-      dedupeKey: `intake.reply:${id}`,
+      dedupeKey: `intake.agent:${id}`,
       maxAttempts: 4,
     });
     // Settings learn that message events arrive.
@@ -304,20 +303,6 @@ describe("Slack events", () => {
     expect((await slack(mention())).status).toBe(200);
     expect(inbound()).toHaveLength(1);
     expect(mocks.enqueueDbJob).toHaveBeenCalledTimes(2);
-  });
-});
-
-const postEmail = (body: unknown, path = token) =>
-  request(app).post(`/webhooks/intake/email/${path}`).send(body as object);
-
-describe("the retired Postmark webhook", () => {
-  it("answers 403, which ends Postmark's retries, and records nothing", async () => {
-    const logged = vi.spyOn(console, "error").mockImplementation(() => undefined);
-    for (const path of [token, "B".repeat(43), "short"])
-      expect((await postEmail({ Subject: "NDA", MessageID: "postmark-1" }, path)).status).toBe(403);
-    expect(inbound()).toEqual([]);
-    expect(mocks.enqueueDbJob).not.toHaveBeenCalled();
-    expect(JSON.stringify(logged.mock.calls)).not.toContain(token);
   });
 });
 

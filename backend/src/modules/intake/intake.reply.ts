@@ -1,7 +1,5 @@
-import { z } from "zod";
 import type { IntakeExternalAuthor } from "@mike/contracts";
 import { NonRetryableJobError } from "../../lib/dbq/runner";
-import type { DbJob } from "../../lib/dbq/types";
 import { safeError } from "../../lib/safeError";
 import type { Db } from "../../lib/supabase";
 import {
@@ -20,6 +18,7 @@ import {
   type ChannelLink,
 } from "./intake.channels";
 import { runIntakeAgent, type AgentField, type AgentRequest } from "./intake.agent";
+import type { InboundRow } from "./intake.agentJob";
 import { MAX_CLARIFY_ROUNDS, stableId } from "./intake.clarify";
 import {
   MAX_ATTACHMENT_BYTES,
@@ -33,6 +32,7 @@ import {
 } from "./intake.inboundPayload";
 import { recordEmailMessageIds } from "./intake.mail";
 import {
+  answerRequester,
   askRequester,
   loadThreadEntries,
   settleClarify,
@@ -43,7 +43,7 @@ import {
 } from "./intake.preprocess";
 import { slackBotToken } from "./intake.secrets";
 import { loadAutomationRow, type AutomationRow } from "./intake.settingsRow";
-import { dispatchIntakeJob, intakeRpc } from "./intake.shared";
+import { intakeRpc } from "./intake.shared";
 import {
   SlackApiError,
   downloadSlackFile,
@@ -66,43 +66,16 @@ import {
 } from "./intake.triage";
 
 /**
- * The intake.reply job: a requester's message in a request's thread. It is
- * recorded on the request as a reply, with its files as the request's
- * documents. An answer to the readiness check's questions runs its next
- * round. On any other open request the intake agent reads the reply: it
- * updates the request's details from it and, while the rule is waiting on
- * the requester, chooses the rule or asks once more.
+ * The intake.agent job's reply branch: a requester's message in a request's
+ * thread. It is recorded on the request as a reply, with its files as the
+ * request's documents. An answer to the readiness check's questions runs its
+ * next round. On any other open request the intake agent reads the reply: it
+ * updates the request's details from it, chooses the rule or asks once more
+ * while the rule waits on the requester, and answers in the thread.
  */
 
-export const INTAKE_REPLY_JOB = "intake.reply";
-const JOB_ATTEMPTS = 4;
 const BODY_MAX = 20_000;
 const CLOSED_STATES = new Set(["resolved", "cancelled"]);
-
-const jobPayload = z.object({ inboundId: z.uuid(), orgId: z.uuid() });
-
-type ReplyRow = {
-  id: string;
-  org_id: string;
-  kind: "request" | "reply";
-  status: "pending" | "done" | "failed" | "ignored";
-  payload: unknown;
-  request_id: string | null;
-};
-
-async function loadReply(
-  db: Db,
-  ids: { inboundId: string; orgId: string },
-): Promise<ReplyRow | null> {
-  const { data, error } = await db
-    .from("intake_inbound")
-    .select("id, org_id, kind, status, payload, request_id")
-    .eq("id", ids.inboundId)
-    .eq("org_id", ids.orgId)
-    .maybeSingle();
-  if (error) throw error;
-  return (data as ReplyRow | null) ?? null;
-}
 
 type ReplyContent = {
   text: string;
@@ -292,13 +265,13 @@ async function updateRequest(
 
 /**
  * The agent's turn on a reply: plan once, saving the plan with the stage it
- * was made at, then update the request, and at the rule stage ask once more
- * or settle on the chosen rule (or none) and start its preprocessing.
+ * was made at, then update the request, at the rule stage ask once more or
+ * settle the rule, and answer the requester in the thread.
  */
 async function runAgentOnReply(
   db: Db,
   args: {
-    row: ReplyRow;
+    row: InboundRow;
     settings: AutomationRow;
     link: ChannelLink;
     reply: ReplyResult;
@@ -337,7 +310,38 @@ async function runAgentOnReply(
     payload.updated = true;
     await save();
   }
-  if (payload.agentStage !== "rule") return;
+  if (payload.agentStage === "rule") {
+    const asked = await settleRule(db, { orgId, requestId, plan, payload, save });
+    if (asked) return;
+  }
+  // The agent's answer, once the rule is settled so it can say so.
+  if (plan.answer && !payload.answered) {
+    await answerRequester(db, {
+      orgId,
+      requestId,
+      seed: row.id,
+      text: plan.answer,
+    });
+    payload.answered = true;
+    await save();
+  }
+}
+
+/**
+ * At the rule stage: ask once more, or settle on the chosen rule (or none)
+ * and start its preprocessing. True when MikeGC asked.
+ */
+async function settleRule(
+  db: Db,
+  args: {
+    orgId: string;
+    requestId: string;
+    plan: AgentPlan;
+    payload: ReplyPayload;
+    save: () => Promise<void>;
+  },
+): Promise<boolean> {
+  const { orgId, requestId, plan, payload, save } = args;
   const round = payload.agentRound ?? 0;
   if (
     plan.questions.length &&
@@ -351,7 +355,7 @@ async function runAgentOnReply(
       acknowledge: false,
     }))
   )
-    return;
+    return true;
   // Decided, or it can't ask again: a request that matches no rule stays unassigned.
   if (payload.ruleSettled === undefined) {
     payload.ruleSettled = await settleClarify(db, {
@@ -375,9 +379,10 @@ async function runAgentOnReply(
     payload.preprocessQueued = true;
     await save();
   }
+  return false;
 }
 
-async function processReply(db: Db, row: ReplyRow): Promise<Record<string, unknown>> {
+async function processReply(db: Db, row: InboundRow): Promise<Record<string, unknown>> {
   const parsed = replyPayload.safeParse(row.payload);
   if (!parsed.success)
     throw new NonRetryableJobError("The received reply couldn't be read.");
@@ -452,16 +457,11 @@ async function processReply(db: Db, row: ReplyRow): Promise<Record<string, unkno
   });
 }
 
-/** The job body. A reply no longer waiting is skipped. */
-export async function handleIntakeReply(
+/** A reply, waiting. Slack or Teams refusing to give it up fails it at once. */
+export async function runReply(
   db: Db,
-  job: DbJob,
+  row: InboundRow,
 ): Promise<Record<string, unknown>> {
-  const ids = jobPayload.safeParse(job.payload);
-  if (!ids.success) throw new NonRetryableJobError("intake.reply: invalid payload");
-  const row = await loadReply(db, ids.data);
-  if (!row) return { skipped: "missing" };
-  if (row.status !== "pending" || row.kind !== "reply") return { skipped: row.status };
   try {
     return await processReply(db, row);
   } catch (error) {
@@ -476,11 +476,7 @@ export async function handleIntakeReply(
 }
 
 /** When a reply's job has failed for good: settle it without its content. */
-export async function markIntakeReplyFailed(db: Db, job: DbJob): Promise<void> {
-  const ids = jobPayload.safeParse(job.payload);
-  if (!ids.success) return;
-  const row = await loadReply(db, ids.data);
-  if (!row || row.status !== "pending") return;
+export async function markReplyFailed(db: Db, row: InboundRow): Promise<void> {
   await settleInbound(
     db,
     row.id,
@@ -495,20 +491,4 @@ function channelName(payload: unknown): string {
   if (kind === "slack_reply") return CHANNEL_NAMES.slack;
   if (kind === "teams_reply") return CHANNEL_NAMES.teams;
   return "email";
-}
-
-/** Queue a stored reply's job. */
-export async function dispatchIntakeReply(
-  db: Db,
-  orgId: string,
-  inboundId: string,
-): Promise<void> {
-  await dispatchIntakeJob(db, {
-    kind: INTAKE_REPLY_JOB,
-    payload: { inboundId, orgId },
-    dedupeKey: `${INTAKE_REPLY_JOB}:${inboundId}`,
-    maxAttempts: JOB_ATTEMPTS,
-    handler: handleIntakeReply,
-    onFailure: markIntakeReplyFailed,
-  });
 }

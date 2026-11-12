@@ -24,7 +24,8 @@ import { formatIntakeDateTime } from "./intakeLabels";
 
 /**
  * The messages exchanged with the requester, as opposed to work in the app:
- * questions, their replies, and a resolution's reply ("answer").
+ * questions, their replies, and answers: a resolution's reply, or MikeGC's
+ * answer to a reply.
  */
 const REQUESTER_KINDS = new Set<IntakeMessage["kind"]>([
   "question",
@@ -146,13 +147,17 @@ export function IntakeMessages({
       channel:
         message.external_author &&
         INTAKE_CHANNEL_LABELS[message.external_author.source],
-      ...(message.kind === "answer" ? { label: "Resolution" } : {}),
+      ...(message.kind === "answer" && !message.automated ? { label: "Resolution" } : {}),
       body: message.body,
       photo: photo(message.author_id),
       messageId: message.id,
       delivery: message.delivery,
       deliveryName: intakeOutgoingName(
-        message.kind === "answer" ? "resolution" : "question",
+        message.kind !== "answer"
+          ? "question"
+          : message.automated
+            ? "answer"
+            : "resolution",
       ),
     })),
     ...resolutions.map(({ event, delivery }) => ({

@@ -43,7 +43,6 @@ Out of scope for the first version:
 - Preprocessing and its readiness check. These depend on the workflow or
   playbook of the chosen rule and stay as they are; the agent only queues
   them, as `processInbound` does today.
-- Postmark email, which has no thread to answer in. It is always recorded.
 - Lawyers' messages and MikeGC's own messages, which never run the agent.
 
 ## The loop
@@ -235,23 +234,28 @@ Where the build differs from the proposal:
   before doing any of it, then records, links, asks, assigns and updates
   with the same idempotent steps as before. A retry replays the plan, not
   the model, so the model's answer can't change between attempts.
-- **Job names stay.** The loop runs inside the `intake.inbound` and
-  `intake.reply` jobs, so jobs queued before a deploy still run. A plan
-  triage saved before the agent replaced it is carried over unchanged.
-- **The tools offered follow the message.** A message with no thread to
-  answer in (Postmark mail, or mail in another request's email thread) gets
-  only `record_request` and `choose_rule`. A reply on a request whose rule is
-  decided gets only `update_request`. Every tool still checks its own limits.
-- **`reply` on a request is questions.** Once a request is recorded, the
-  reply's lines are checked as questions always were (at most 3, one line
-  each, no links, addresses, mentions or markup) and posted with MikeGC's own
-  opening line, in the acknowledgement or as a question.
+- **One job, `intake.agent`,** takes every stored message and runs its new-
+  message or reply branch by the row's kind. The old `intake.inbound` and
+  `intake.reply` names, and plans triage saved before the agent, are gone.
+- **Every tool is offered for every message.** Each checks whether it applies
+  and says why when it doesn't, such as "refused: the request is already
+  recorded". `reply` refuses where no thread can be answered: mail in another
+  request's email thread.
+- **What `reply` does on a request follows the request.** While its rule waits
+  on the requester and isn't chosen in the run, the reply's lines are
+  questions, checked as questions always were (at most 3, one line each, no
+  links, addresses, mentions or markup) and posted with MikeGC's own opening
+  line. Otherwise it is MikeGC's answer to the requester
+  (`intake_answer_automated`): it acknowledges their message and says what
+  the agent added, and the request doesn't wait. A request recorded from the
+  message itself is told by MikeGC's acknowledgement, so `reply` there only
+  asks.
 - **A message with attachments is recorded before it is answered.** Email
   attachments aren't kept with a thread that has no request, so `reply` with
   no request refuses a message that has attachments.
 - **Replies run the agent on any open request**, not only one waiting on rule
   answers, so a requester's later "we need it by the 14th" updates the due
-  date. Once the rule is decided, the agent can only update.
+  date. Once the rule is decided, the agent updates and answers.
 - **MikeGC's earlier answers are stored.** For a thread with no request,
   `intake_conversations.replies` keeps MikeGC's own answers (never the
   requester's words), so every channel, email included, shows the agent what
