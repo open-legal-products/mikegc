@@ -89,4 +89,10 @@ describe("ZIP export limits", () => {
       "second",
     );
   });
+  it("keeps names that differ only by case apart", () => {
+    const used = new Set<string>();
+    expect(uniqueArchiveFilename("Contract.pdf", used)).toBe("Contract.pdf");
+    expect(uniqueArchiveFilename("contract.pdf", used)).toBe("contract (2).pdf");
+    expect(uniqueArchiveFilename("CONTRACT (2).PDF", used)).toBe("CONTRACT (2) (2).PDF");
+  });
 });

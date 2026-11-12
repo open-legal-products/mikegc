@@ -14,12 +14,18 @@ export function zipExportLimitDetail(
   return null;
 }
 
+/**
+ * A name no earlier entry of the archive has. Names are compared without
+ * regard to case: macOS and Windows unpack "Contract.pdf" and "contract.pdf"
+ * to one file, so the second would replace the first there.
+ */
 export function uniqueArchiveFilename(
   requestedName: string,
   usedNames: Set<string>,
 ): string {
-  if (!usedNames.has(requestedName)) {
-    usedNames.add(requestedName);
+  const taken = (name: string) => usedNames.has(name.toLowerCase());
+  if (!taken(requestedName)) {
+    usedNames.add(requestedName.toLowerCase());
     return requestedName;
   }
 
@@ -28,10 +34,10 @@ export function uniqueArchiveFilename(
   const extension = dot > 0 ? requestedName.slice(dot) : "";
   let copyNumber = 2;
   let candidate = `${stem} (${copyNumber})${extension}`;
-  while (usedNames.has(candidate)) {
+  while (taken(candidate)) {
     copyNumber += 1;
     candidate = `${stem} (${copyNumber})${extension}`;
   }
-  usedNames.add(candidate);
+  usedNames.add(candidate.toLowerCase());
   return candidate;
 }
