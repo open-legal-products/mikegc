@@ -2164,9 +2164,9 @@ it("bounds standalone private-document verdict concurrency and preserves per-doc
     expect(peak).toBeLessThanOrEqual(5);
     // One verdict per document; a readable one is then asked once whether
     // its intake request makes it editable.
-    const calls = vi.mocked(db.rpc).mock.calls.map(([name]) => name);
-    expect(calls.filter(name => name === "org_private_document_access")).toHaveLength(30);
-    expect(calls.filter(name => name === "intake_document_editable")).toHaveLength(15);
+    const calls: string[] = db.rpc.mock.calls.map((call: unknown[]) => String(call[0]));
+    expect(calls.filter((name) => name === "org_private_document_access")).toHaveLength(30);
+    expect(calls.filter((name) => name === "intake_document_editable")).toHaveLength(15);
 });
 
 it("shares only an uploader's organisation-membership verdict within one document lookup", async () => {
