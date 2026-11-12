@@ -7,6 +7,7 @@ import type { Db } from "../../lib/supabase";
 import {
   addDocuments,
   channelAttachments,
+  noteNotAttached,
   type CandidateDownloader,
 } from "./intake.attachments";
 import {
@@ -474,6 +475,13 @@ async function processReply(db: Db, row: InboundRow): Promise<Record<string, unk
     messageId,
   });
   if (!attached) return done({ skipped: "request_gone" });
+  // A reply's files that couldn't be fetched are named on the request, once.
+  await noteNotAttached(db, {
+    orgId: row.org_id,
+    requestId: reply.request_id,
+    noteId: stableId(`intake.not-attached:${row.id}`),
+    dropped: attached,
+  });
   if (payload.kind === "mail_reply") {
     // Later replies thread on this one, the newest in the thread.
     await recordEmailMessageIds(db, row.org_id, link.id, [payload.message_id]);
