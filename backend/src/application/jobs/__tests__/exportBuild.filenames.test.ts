@@ -20,6 +20,7 @@ it("keeps every document when two share a filename instead of overwriting the ZI
   const upload = vi.fn(async () => {});
   setStorageAdapter({
     enabled: true, configurationHint: "test",
+    headFile: async () => ({ size: 1, etag: null, contentType: null }),
     openReadStream: async (key: string) => [new TextEncoder().encode(key)],
     uploadFileFromPath: async (key: string, path: string, type: string) => (upload as (...args: unknown[]) => Promise<void>)(key, await readFile(path), type),
   } as never);

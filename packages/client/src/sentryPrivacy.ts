@@ -30,7 +30,7 @@ export function isDiagnosticLabel(value: unknown): value is string {
     && /^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$/.test(value);
 }
 
-const APPLICATION_TAGS = new Set(['operation', 'error_kind', 'component', 'stage', 'job_kind', 'queue']);
+const APPLICATION_TAGS = new Set(['operation', 'failed_operation', 'error_kind', 'component', 'stage', 'job_kind', 'queue']);
 // Only our error constructor may supply a free-form kind. A dependency's
 // arbitrary `kind` property must not become telemetry just because it fits.
 const APPLICATION_KIND = Symbol.for('mike.diagnostic.errorKind');
@@ -227,7 +227,8 @@ export function diagnosticErrorTags(error: unknown): Record<string, string | num
       const applicationKind = (candidate as Record<symbol, unknown>)[APPLICATION_KIND];
       if (isDiagnosticLabel(applicationKind)) tags.error_kind = applicationKind;
       const applicationOperation = (candidate as Record<symbol, unknown>)[APPLICATION_OPERATION];
-      if (isDiagnosticLabel(applicationOperation)) tags.operation = applicationOperation;
+      // Its own tag: `operation` stays the flow named at the route or job entry.
+      if (isDiagnosticLabel(applicationOperation)) tags.failed_operation = applicationOperation;
       for (const code of [item.code, item.name]) {
         if (typeof code === 'string' && ENUMS.failure_code!.has(code) && tags.failure_code === undefined) tags.failure_code = code;
       }

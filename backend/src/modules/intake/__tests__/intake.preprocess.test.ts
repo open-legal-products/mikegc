@@ -524,3 +524,15 @@ it("closing while the model runs prevents automated document edits",async()=>{
  await handleIntakePreprocess(memory.db,job({kind:"workflow",id:"wf-1"}));
  expect(mocks.applyIntakeTrackedEdits).not.toHaveBeenCalled();
 });
+
+it("still posts its note when a member changes the open request while the model runs", async () => {
+  mocks.completeText.mockImplementation(async () => {
+    // Assigning or editing the request bumps its version without closing it.
+    memory.rows("intake_requests")[0]!.version = 2;
+    return JSON.stringify({ answer: "Change the term", edits: [{ document: 1, find: "five years", replace: "two years" }] });
+  });
+  await handleIntakePreprocess(memory.db, job(null));
+  expect(note()!.body).toContain("Change the term");
+  // Saving the edit carries the version that was read, so the database decides.
+  expect(mocks.applyIntakeTrackedEdits.mock.calls[0]![0]).toMatchObject({ requestVersion: 1 });
+});

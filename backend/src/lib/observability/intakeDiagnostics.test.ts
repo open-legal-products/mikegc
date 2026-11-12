@@ -28,9 +28,16 @@ it("retains the failing RPC identifier and cause through the final SDK envelope"
   const failure = await intakeRpc(db as never, "intake_update_automated", {});
   if (failure.ok || failure.kind !== "error") throw Error("expected failure");
   expect((failure.error as Error).cause).toBe(cause);
-  Sentry.captureException(failure.error);
+  Sentry.withScope(scope => {
+    scope.setTag("operation", "intake.reply");
+    Sentry.captureException(failure.error);
+  });
   await Sentry.flush(2000);
   expect(events).toHaveLength(1);
+  // The RPC is named beside the flow it failed in, not in place of it.
+  expect((events[0] as { tags: unknown }).tags).toMatchObject({
+    operation: "intake.reply", failed_operation: "intake_update_automated",
+  });
   expect(JSON.stringify(events)).not.toContain("SYNTHETIC_PRIVATE_DOCUMENT");
   expect(JSON.stringify(events)).toContain("intake_update_automated");
   expect(JSON.stringify(events)).toContain("42703");

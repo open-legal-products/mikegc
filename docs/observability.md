@@ -933,5 +933,7 @@ to correct their settings.
 An `AppError` may also carry a static `operation` in its constructor options when
 a shared boundary knows the failing operation (for example an intake RPC name).
 Like its kind, this is source-authored diagnostic identity, never user or provider
-text. It survives the final envelope allowlist without retaining the exception's
+text. It is sent as the `failed_operation` tag, so the `operation` tag keeps naming
+the route or job the failure happened in and issues stay grouped by that flow. It
+survives the final envelope allowlist without retaining the exception's
 message. This does not change the runtime event ceiling or volume policy.

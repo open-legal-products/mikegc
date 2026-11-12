@@ -19,6 +19,7 @@ import { handleExportBuild } from "../exportBuild";
 
 const download = vi.fn<(key: string) => Promise<ArrayBuffer | null>>();
 const upload = vi.fn<(key: string, bytes: ArrayBuffer, contentType: string) => Promise<void>>();
+const head = vi.fn<(key: string) => Promise<{ size: number; etag: null; contentType: null } | null>>();
 const job: DbJob = {
   id: "export-1", kind: "export.build",
   payload: { userId: "u1", type: "documents-zip", document_ids: ["d1", "d2"] },
@@ -32,7 +33,8 @@ const db = {
 beforeEach(() => {
   download.mockReset().mockResolvedValue(new Uint8Array([1, 2, 3]).buffer);
   upload.mockReset().mockResolvedValue(undefined);
-  setStorageAdapter({ enabled: true, configurationHint: "test", openReadStream: async (key: string) => { const data = await download(key); return data ? [new Uint8Array(data)] : null; }, uploadFileFromPath: async (key: string, path: string, type: string) => upload(key, (await readFile(path)) as never, type) } as never);
+  head.mockReset().mockResolvedValue({ size: 3, etag: null, contentType: null });
+  setStorageAdapter({ enabled: true, configurationHint: "test", headFile: head, openReadStream: async (key: string) => { const data = await download(key); return data ? [new Uint8Array(data)] : null; }, uploadFileFromPath: async (key: string, path: string, type: string) => upload(key, (await readFile(path)) as never, type) } as never);
 });
 
 describe("required document export reads", () => {
@@ -47,5 +49,13 @@ describe("required document export reads", () => {
     expect(upload).toHaveBeenCalledOnce();
     const zip = await JSZip.loadAsync(upload.mock.calls[0]![1]);
     expect(Object.keys(zip.files)).toEqual(["d1.docx", "d2.docx"]);
+  });
+
+  it("leaves out a document whose stored object is gone instead of failing the export", async () => {
+    head.mockResolvedValueOnce(null);
+    await expect(handleExportBuild(db as never, job)).resolves.toMatchObject({ filename: "documents.zip" });
+    const zip = await JSZip.loadAsync(upload.mock.calls[0]![1]);
+    expect(Object.keys(zip.files)).toEqual(["d2.docx"]);
+    expect(download).toHaveBeenCalledOnce();
   });
 });

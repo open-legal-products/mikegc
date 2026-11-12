@@ -701,10 +701,12 @@ async function preprocess(
     instructions: rule?.instructions ?? null,
   });
   const { data: latest, error: latestError } = await db.from("intake_requests")
-    .select("version, state").eq("org_id", job.orgId).eq("id", job.requestId).maybeSingle();
+    .select("state").eq("org_id", job.orgId).eq("id", job.requestId).maybeSingle();
   if (latestError) throw latestError;
-  if (!latest || ["resolved", "cancelled"].includes(latest.state) || latest.version !== requestVersion)
-    return { skipped: "superseded" };
+  // Only closure stops here. A request a member assigned or edited meanwhile
+  // still gets its note; saving each edit rechecks the version read above, so
+  // an outdated one is refused and named in the note rather than lost quietly.
+  if (!latest || ["resolved", "cancelled"].includes(latest.state)) return { skipped: "closed" };
   const marked: MarkUp[] = [];
   for (const [index, list] of edits) {
     const result = await markUp(db, { orgId: job.orgId, requestId: job.requestId, requestVersion }, read[index]!, list);

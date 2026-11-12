@@ -11,7 +11,7 @@ import { createDocumentAccessChecker } from "../../lib/access";
 import { selectInBatches } from "../../lib/batchedQuery";
 import { mapWithConcurrency } from "../../lib/concurrency";
 import { attachActiveVersionPaths, downloadFilenameForVersion } from "../../lib/documentVersions";
-import { uploadFile, uploadFileFromPath } from "../../lib/storage";
+import { headFile, uploadFile, uploadFileFromPath } from "../../lib/storage";
 import { buildZipExportFile } from "../../lib/zipExportFile";
 import type { Db } from "../../lib/supabase";
 import type { ExportBuildRequest } from "./exportContracts";
@@ -119,12 +119,18 @@ async function buildDocumentsZipExport(db: Db, job: ExportBuildRequest, userId: 
     ).filter((doc): doc is ExportDocument => doc !== null);
     await attachActiveVersionPaths(db, readable);
 
-    const entries = readable.flatMap(doc => doc.storage_path ? [{
-        storagePath: doc.storage_path,
-        filename: downloadFilenameForVersion(doc.filename ?? "Untitled document",
-            doc.active_version_number ?? null, doc.source === "assistant_edit"),
-    }] : []);
-    if (!entries.length) throw new Error("No accessible documents for export");
+    // A document whose stored object is gone is left out, as it was when the
+    // archive was built from whole downloads. Asked up front: once the archive
+    // is streaming, a missing object could only fail the entire export.
+    const entries = (await mapWithConcurrency(readable, 8, async doc => {
+        if (!doc.storage_path || !(await headFile(doc.storage_path))) return null;
+        return {
+            storagePath: doc.storage_path,
+            filename: downloadFilenameForVersion(doc.filename ?? "Untitled document",
+                doc.active_version_number ?? null, doc.source === "assistant_edit"),
+        };
+    })).filter(entry => entry !== null);
+    if (!entries.length) throw new Error(`[export.build] no accessible documents for job ${job.id}`);
     return { ...await buildZipExportFile(entries), filename: "documents.zip", contentType: "application/zip" };
 }
 async function buildMemoryZipExport(

@@ -122,7 +122,7 @@ describe("version text extraction", () => {
     const fake = scriptedDb([
       { table: "document_versions", data: { ...version, file_type: "doc" } },
       { table: "document_version_texts", op: "update", data: { version_id: "v1" } },
-      { table: "db_jobs", op: "update" },
+      { table: "db_jobs", op: "update", data: [{ id: "job" }] },
     ]);
     await processClaimedJob(
       fake.db,
@@ -144,7 +144,7 @@ describe("version text extraction", () => {
     const fake = scriptedDb([
       { table: "document_versions", data: version },
       { table: "document_version_texts", op: "update", data: { version_id: "v1" } },
-      { table: "db_jobs", op: "update" },
+      { table: "db_jobs", op: "update", data: [{ id: "job" }] },
       { table: "document_version_texts", op: "update" },
     ]);
     await processClaimedJob(

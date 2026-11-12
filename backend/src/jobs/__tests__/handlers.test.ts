@@ -1,4 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { readFile } from "node:fs/promises";
+import { Readable } from "node:stream";
 import type { Db } from "../../lib/supabase";
 import type { AuditEventInput } from "../../lib/audit";
 
@@ -141,6 +143,12 @@ vi.mock("../../lib/storage", () => ({
     deleteFile: (key: string) => deleteFile(key),
     listFiles: (prefix: string) => listFiles(prefix),
     downloadFile: (...a: unknown[]) => downloadFile(...a),
+    // The documents ZIP streams its sources and uploads the finished file.
+    headFile: async () => ({ size: 3, etag: null, contentType: null }),
+    createFileReadStream: (key: string) =>
+        Readable.from((async function* () { yield await downloadFile(key); })()),
+    uploadFileFromPath: async (key: string, path: string, contentType: string) =>
+        uploadFile(key, (await readFile(path)).buffer as ArrayBuffer, contentType),
     downloadFileIfAvailable: (...a: unknown[]) => downloadFile(...a),
 }));
 
