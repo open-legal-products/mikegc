@@ -442,11 +442,13 @@ function sanitizeOpinionHtmlAttrs(tagName: string, attrs: string): string {
 function sanitizeOpinionHtml(value: string | null): string | null {
     if (!value) return null;
     const withoutActiveContent = [
-        /<!--[\s\S]*?-->/g,
-        /<(script|style|iframe|object|embed|form|svg|math)\b[\s\S]*?<\/\1>/gi,
+        // Browsers also end a comment at "--!>" and accept spaces or
+        // attributes in an end tag ("</script foo>").
+        /<!--[\s\S]*?--!?>/g,
+        /<(script|style|iframe|object|embed|form|svg|math)\b[\s\S]*?<\/\1\b[^>]*>/gi,
         /<(script|style|iframe|object|embed|form|svg|math)\b[^>]*\/?>/gi,
     ].reduce(removeAll, value);
-    const normalized = removeAll(withoutActiveContent, /<!--|-->/g)
+    const normalized = removeAll(withoutActiveContent, /<!--|--!?>/g)
         .replace(
             /<page-number\b[^>]*>([\s\S]*?)<\/page-number>/gi,
             (_m, inner) =>
