@@ -10,6 +10,7 @@ const {
   startLocalStack,
   stopLocalStack,
   localStackActive,
+  isLocalStackStopped,
 } = require("./supervisor");
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -37,32 +38,64 @@ test("hasExited is true for a child killed by a signal, not only for a clean exi
 // Cmd+Q during the first-run boot used to find localStackRunning() false and
 // skip the stop, orphaning postgres/gotrue on the fixed ports. The quit path
 // must see a booting stack as active, and a stop must end the boot without
-// it spawning anything more.
-test("a stop during boot ends the boot and leaves nothing running", async (t) => {
+// it spawning anything more. The stop must also outlast the step in flight:
+// before, it returned while that step was still running, so the boot
+// rejected later, after the quit had moved on (shown as "Local mode failed
+// to start", or an unhandled rejection when nobody was listening yet).
+test("a stop during boot waits out the step in flight, which then spawns nothing", async (t) => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "mike-supervisor-"));
   const pgBin = path.join(tmp, "resources", "local-stack", "bin", "pg", "bin");
   fs.mkdirSync(pgBin, { recursive: true });
-  // A "postgres" that never becomes reachable, so the boot stays in waitFor.
   fs.writeFileSync(path.join(pgBin, "postgres"), "#!/bin/sh\nexec sleep 30\n", { mode: 0o755 });
   const userData = path.join(tmp, "userData");
   fs.mkdirSync(path.join(userData, "local", "pgdata"), { recursive: true });
   fs.writeFileSync(path.join(userData, "local", "pgdata", "PG_VERSION"), "16\n");
 
+  // Postgres "answers" at once, and role bootstrap is a step this test
+  // finishes by hand after the stop has been requested.
+  const { Client } = require("pg");
+  const schema = require("./schema");
+  const original = { connect: Client.prototype.connect, query: Client.prototype.query, end: Client.prototype.end, bootstrapRoles: schema.bootstrapRoles };
+  Client.prototype.connect = async () => {};
+  Client.prototype.query = async () => ({ rows: [] });
+  Client.prototype.end = async () => {};
+  let finishStep;
+  schema.bootstrapRoles = () => new Promise((resolve) => { finishStep = resolve; });
   const originalResources = process.resourcesPath;
   process.resourcesPath = path.join(tmp, "resources");
+  const unhandled = [];
+  const onUnhandled = (err) => unhandled.push(err);
+  process.on("unhandledRejection", onUnhandled);
   t.after(() => {
+    Object.assign(Client.prototype, { connect: original.connect, query: original.query, end: original.end });
+    schema.bootstrapRoles = original.bootstrapRoles;
     process.resourcesPath = originalResources;
+    process.off("unhandledRejection", onUnhandled);
   });
   const app = { isPackaged: true, getPath: () => userData };
 
   const statuses = [];
   const booting = startLocalStack(app, (msg) => statuses.push(msg));
   const deadline = Date.now() + 5_000;
-  while (!statuses.includes("Starting database…") && Date.now() < deadline) await sleep(20);
+  while (!finishStep && Date.now() < deadline) await sleep(20);
+  assert.ok(finishStep, "boot reached the role bootstrap step");
   assert.equal(localStackActive(), true, "a booting stack must count as active");
 
-  await stopLocalStack();
-  await assert.rejects(booting, /stopped during boot/);
+  let stopped = false;
+  const stopping = stopLocalStack().then(() => { stopped = true; });
+  await sleep(300);
+  assert.equal(stopped, false, "the stop waits for the step in flight");
+  finishStep(); // the step succeeds after the stop was requested
+  await stopping;
+
+  // Settled by the time the stop returns: nothing later can reject or spawn.
+  const outcome = await Promise.race([
+    booting.then(() => "resolved", (err) => err),
+    sleep(0).then(() => "still pending"),
+  ]);
+  assert.ok(isLocalStackStopped(outcome), `boot ended as stopped, got ${outcome}`);
+  await sleep(50);
+  assert.deepEqual(unhandled, []);
   assert.equal(localStackActive(), false);
   assert.ok(!statuses.includes("Starting auth…"), "no service starts after the stop");
 });

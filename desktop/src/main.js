@@ -570,7 +570,7 @@ async function showConnectPage(error) {
 let localBootInFlight = null;
 async function startLocalAndLoad() {
   if (!win) return;
-  const { startLocalStack, localStackRunning } = require("./local/supervisor");
+  const { startLocalStack, localStackRunning, isLocalStackStopped } = require("./local/supervisor");
   if (localStackRunning()) return void (await win.loadURL(LOCAL_FRONTEND_URL));
   if (localBootInFlight) return;
   await win.loadFile(LOCAL_BOOT_PAGE);
@@ -581,6 +581,9 @@ async function startLocalAndLoad() {
       });
       await win.loadURL(LOCAL_FRONTEND_URL);
     } catch (err) {
+      // A quit during boot stops the stack on purpose; the app is closing,
+      // so there is no failure to show.
+      if (isLocalStackStopped(err)) return;
       console.error("[mike-desktop] local stack failed", err);
       await showConnectPage(
         `Local mode failed to start: ${String(err?.message ?? err).slice(0, 300)}`,
