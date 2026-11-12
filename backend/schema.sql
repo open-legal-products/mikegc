@@ -819,22 +819,28 @@ create table if not exists public.org_profiles (
     constraint org_profiles_about_length check (char_length(about) <= 2000),
   industry text
     constraint org_profiles_industry_length check (char_length(industry) <= 200),
-  headquarters text
-    constraint org_profiles_headquarters_length
-    check (char_length(headquarters) <= 200),
-  -- Where it does business.
-  jurisdictions text
-    constraint org_profiles_jurisdictions_length
-    check (char_length(jurisdictions) <= 500),
+  -- Where it is headquartered; the country is picked from a list.
+  headquarters_city text
+    constraint org_profiles_headquarters_city_length
+    check (char_length(headquarters_city) <= 100),
+  headquarters_country text
+    constraint org_profiles_headquarters_country_length
+    check (char_length(headquarters_country) <= 100),
+  -- Where it does business, picked from a list of countries and their states,
+  -- provinces and legal systems. The backend holds each entry to 100
+  -- characters; the list as a whole is bounded here.
+  jurisdictions text[] not null default '{}'
+    constraint org_profiles_jurisdictions_count
+    check (cardinality(jurisdictions) <= 300),
   -- The companies in its group, so the assistant can tell which party to a
   -- document is the organization.
   legal_entities text
     constraint org_profiles_legal_entities_length
     check (char_length(legal_entities) <= 1000),
-  -- Who is in the legal team and what it covers.
-  legal_team text
-    constraint org_profiles_legal_team_length
-    check (char_length(legal_team) <= 1000),
+  -- What the legal team covers, and what goes elsewhere.
+  legal_team_scope text
+    constraint org_profiles_legal_team_scope_length
+    check (char_length(legal_team_scope) <= 1000),
   -- Anything else: standard positions, preferred governing law, risk appetite.
   additional_context text
     constraint org_profiles_additional_context_length

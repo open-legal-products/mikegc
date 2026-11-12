@@ -9,6 +9,7 @@ describe("buildOrganizationPrompt", () => {
         profile: {
           about: "Makes accounting software.",
           legal_entities: "Acme Ltd (England and Wales)\nAcme Inc. (Delaware)",
+          jurisdictions: ["England and Wales", "Delaware"],
         },
       },
       "nonce-1",
@@ -22,6 +23,9 @@ describe("buildOrganizationPrompt", () => {
     expect(prompt).toContain('"about": "Makes accounting software."');
     expect(prompt).toContain(
       '"legal_entities": "Acme Ltd (England and Wales)\\nAcme Inc. (Delaware)"',
+    );
+    expect(prompt).toContain(
+      '"jurisdictions": [\n    "England and Wales",\n    "Delaware"\n  ]',
     );
     expect(prompt).not.toContain('"industry"');
   });

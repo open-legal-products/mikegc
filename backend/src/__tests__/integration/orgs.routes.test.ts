@@ -1916,10 +1916,11 @@ describe("organization profile", () => {
     const EMPTY = {
         about: null,
         industry: null,
-        headquarters: null,
-        jurisdictions: null,
+        headquarters_city: null,
+        headquarters_country: null,
+        jurisdictions: [],
         legal_entities: null,
-        legal_team: null,
+        legal_team_scope: null,
         additional_context: null,
         updated_at: null,
     };
@@ -1940,7 +1941,8 @@ describe("organization profile", () => {
         expect(saved.body).toMatchObject({
             about: "We make accounting software.\nFor small firms.",
             industry: "Software",
-            headquarters: null,
+            headquarters_city: null,
+            jurisdictions: [],
         });
         expect(typeof saved.body.updated_at).toBe("string");
         expect(tables.org_profiles).toEqual([
@@ -1970,27 +1972,47 @@ describe("organization profile", () => {
         await patchProfile({ about: "Accounting software", industry: "Software" });
         as("admin-1", "admin@firm.example");
 
-        const cleared = await patchProfile({ industry: "", headquarters: "London" });
+        const cleared = await patchProfile({
+            industry: "",
+            headquarters_city: "London",
+            headquarters_country: "United Kingdom",
+            jurisdictions: ["England and Wales", "Delaware"],
+        });
         expect(cleared.status).toBe(200);
         expect(cleared.body).toMatchObject({
             about: "Accounting software",
             industry: null,
-            headquarters: "London",
+            headquarters_city: "London",
+            headquarters_country: "United Kingdom",
+            jurisdictions: ["England and Wales", "Delaware"],
         });
         // Only the changed columns are written.
         expect(tables.org_profiles).toHaveLength(1);
         expect(tables.org_profiles[0]).toMatchObject({
             about: "Accounting software",
             industry: null,
-            headquarters: "London",
+            headquarters_city: "London",
+            jurisdictions: ["England and Wales", "Delaware"],
             updated_by: "admin-1",
         });
 
-        const same = await patchProfile({ headquarters: " London " });
+        // The same values again change nothing; a reordered list does.
+        const same = await patchProfile({
+            headquarters_city: " London ",
+            jurisdictions: ["England and Wales", "Delaware", "england and wales"],
+        });
         expect(same.status).toBe(200);
+        await patchProfile({ jurisdictions: ["Delaware", "England and Wales"] });
+        await patchProfile({ jurisdictions: [] });
+        expect(tables.org_profiles[0]).toMatchObject({ jurisdictions: [] });
         expect(tables.audit_events.map((event) => event.detail)).toEqual([
             { org_id: "org-1", fields: ["about", "industry"] },
-            { org_id: "org-1", fields: ["industry", "headquarters"] },
+            {
+                org_id: "org-1",
+                fields: ["industry", "headquarters_city", "headquarters_country", "jurisdictions"],
+            },
+            { org_id: "org-1", fields: ["jurisdictions"] },
+            { org_id: "org-1", fields: ["jurisdictions"] },
         ]);
     });
 
@@ -2009,15 +2031,21 @@ describe("organization profile", () => {
             { website: "https://acme.example" },
             { about: 42 },
             { industry: ["Software"] },
+            { legal_team: "Commercial" },
+            { jurisdictions: "England and Wales" },
+            { jurisdictions: ["x".repeat(101)] },
             { about: "x".repeat(2001) },
             { industry: "x".repeat(201) },
+            { headquarters_city: "x".repeat(101) },
             [],
         ]) {
             const res = await patchProfile(body);
             expect([body, res.status]).toEqual([body, 400]);
         }
-        const tooLong = await patchProfile({ legal_team: "x".repeat(1001) });
-        expect(tooLong.body.detail).toBe("Legal team must be 1,000 characters or fewer.");
+        const tooLong = await patchProfile({ legal_team_scope: "x".repeat(1001) });
+        expect(tooLong.body.detail).toBe(
+            "Scope of legal team must be 1,000 characters or fewer.",
+        );
         expect(tables.org_profiles).toEqual([]);
         expect(tables.audit_events).toEqual([]);
     });

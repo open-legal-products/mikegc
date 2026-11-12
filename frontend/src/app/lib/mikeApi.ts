@@ -1837,21 +1837,27 @@ export async function deleteOrgLogo(orgId: string): Promise<void> {
     await apiRequest(`/orgs/${orgId}/logo`, { method: "DELETE" });
 }
 
-/** A field of an organization's profile. */
-export type OrgProfileField =
+/** A text field of an organization's profile. */
+export type OrgProfileTextField =
     | "about"
     | "industry"
-    | "headquarters"
-    | "jurisdictions"
+    | "headquarters_city"
+    | "headquarters_country"
     | "legal_entities"
-    | "legal_team"
+    | "legal_team_scope"
     | "additional_context";
+
+/** Every field of an organization's profile. */
+export type OrgProfileFields = Record<OrgProfileTextField, string | null> & {
+    /** Picked from the jurisdiction options; empty until set. */
+    jurisdictions: string[];
+};
 
 /**
  * What an organization's owners and admins tell the assistant and the intake
- * agent about it. Every field is null until set.
+ * agent about it. Every text field is null until set.
  */
-export type OrgProfile = Record<OrgProfileField, string | null> & {
+export type OrgProfile = OrgProfileFields & {
     /** When it last changed, or null before anything was ever set. */
     updated_at: string | null;
 };
@@ -1862,12 +1868,12 @@ export async function getOrgProfile(orgId: string): Promise<OrgProfile> {
 }
 
 /**
- * Change the fields given (owner or admin); an empty string or null clears
- * one. Answers with the whole profile.
+ * Change the fields given (owner or admin); an empty string or null clears a
+ * text field, an empty list the jurisdictions. Answers with the whole profile.
  */
 export async function updateOrgProfile(
     orgId: string,
-    changes: Partial<Record<OrgProfileField, string | null>>,
+    changes: Partial<OrgProfileFields>,
 ): Promise<OrgProfile> {
     return apiRequest<OrgProfile>(`/orgs/${orgId}/profile`, {
         method: "PATCH",

@@ -1,10 +1,13 @@
 import { describe, expect, it, vi } from "vitest";
 import type { Db } from "../supabase";
 import {
-    ORG_PROFILE_FIELDS,
+    MAX_ORG_JURISDICTIONS,
+    ORG_PROFILE_TEXT_FIELDS,
+    emptyOrgProfile,
     loadOrgContext,
     normalizeOrgProfileText,
     orgProfileFromRow,
+    orgPromptProfile,
     parseOrgProfileInput,
 } from "../orgProfile";
 
@@ -35,11 +38,15 @@ describe("parseOrgProfileInput", () => {
             parseOrgProfileInput({
                 about: "  Line one\r\nLine two\u0000  ",
                 industry: "   ",
-                headquarters: null,
+                headquarters_city: null,
             }),
         ).toEqual({
             ok: true,
-            changes: { about: "Line one\nLine two", industry: null, headquarters: null },
+            changes: {
+                about: "Line one\nLine two",
+                industry: null,
+                headquarters_city: null,
+            },
         });
     });
 
@@ -53,18 +60,19 @@ describe("parseOrgProfileInput", () => {
                 ok: false,
                 detail: "Expected a JSON object",
             });
-        expect(parseOrgProfileInput({ website: "x" })).toEqual({
-            ok: false,
-            detail: "Unsupported profile field: website",
-        });
+        for (const field of ["website", "legal_team", "headquarters"])
+            expect(parseOrgProfileInput({ [field]: "x" })).toEqual({
+                ok: false,
+                detail: `Unsupported profile field: ${field}`,
+            });
         expect(parseOrgProfileInput({ about: 1 })).toEqual({
             ok: false,
             detail: "about must be a string or null",
         });
     });
 
-    it("holds every field to its limit, counted after tidying", () => {
-        for (const { key, label, max } of ORG_PROFILE_FIELDS) {
+    it("holds every text field to its limit, counted after tidying", () => {
+        for (const { key, label, max } of ORG_PROFILE_TEXT_FIELDS) {
             expect(parseOrgProfileInput({ [key]: ` ${"x".repeat(max)} ` })).toEqual({
                 ok: true,
                 changes: { [key]: "x".repeat(max) },
@@ -75,6 +83,41 @@ describe("parseOrgProfileInput", () => {
             });
         }
     });
+
+    it("keeps jurisdictions as a tidy list, each once, in the order given", () => {
+        expect(
+            parseOrgProfileInput({
+                jurisdictions: [" England and Wales ", "", "New\nYork", "england AND wales", "Delaware"],
+            }),
+        ).toEqual({
+            ok: true,
+            changes: { jurisdictions: ["England and Wales", "New York", "Delaware"] },
+        });
+        expect(parseOrgProfileInput({ jurisdictions: null })).toEqual({
+            ok: true,
+            changes: { jurisdictions: [] },
+        });
+    });
+
+    it("refuses jurisdictions that are not a short list of names", () => {
+        for (const jurisdictions of ["England", [1], [["England"]], {}])
+            expect(parseOrgProfileInput({ jurisdictions })).toEqual({
+                ok: false,
+                detail: "jurisdictions must be a list of strings or null",
+            });
+        expect(parseOrgProfileInput({ jurisdictions: ["x".repeat(101)] })).toEqual({
+            ok: false,
+            detail: "Each jurisdiction must be 100 characters or fewer.",
+        });
+        const many = Array.from({ length: MAX_ORG_JURISDICTIONS + 1 }, (_, i) => `Place ${i}`);
+        expect(parseOrgProfileInput({ jurisdictions: many })).toEqual({
+            ok: false,
+            detail: `Choose at most ${MAX_ORG_JURISDICTIONS} jurisdictions.`,
+        });
+        expect(
+            parseOrgProfileInput({ jurisdictions: many.slice(0, MAX_ORG_JURISDICTIONS) }),
+        ).toMatchObject({ ok: true });
+    });
 });
 
 describe("normalizeOrgProfileText", () => {
@@ -84,17 +127,47 @@ describe("normalizeOrgProfileText", () => {
 });
 
 describe("orgProfileFromRow", () => {
-    it("reads every field, null where blank or missing", () => {
-        expect(orgProfileFromRow({ about: "Ours", industry: "", extra: "x" })).toEqual({
+    it("reads every field: text null where blank or missing, jurisdictions as strings", () => {
+        expect(
+            orgProfileFromRow({
+                about: "Ours",
+                industry: "",
+                jurisdictions: ["England and Wales", "", 3],
+                extra: "x",
+            }),
+        ).toEqual({
             about: "Ours",
             industry: null,
-            headquarters: null,
-            jurisdictions: null,
+            headquarters_city: null,
+            headquarters_country: null,
+            jurisdictions: ["England and Wales"],
             legal_entities: null,
-            legal_team: null,
+            legal_team_scope: null,
             additional_context: null,
         });
-        expect(orgProfileFromRow(null).about).toBeNull();
+        expect(orgProfileFromRow(null)).toEqual(emptyOrgProfile());
+    });
+});
+
+describe("orgPromptProfile", () => {
+    it("gives only what is set, with the headquarters as one place", () => {
+        expect(
+            orgPromptProfile({
+                ...emptyOrgProfile(),
+                headquarters_city: "London",
+                headquarters_country: "United Kingdom",
+                jurisdictions: ["England and Wales"],
+                legal_team_scope: "Commercial contracts",
+            }),
+        ).toEqual({
+            headquarters: "London, United Kingdom",
+            jurisdictions: ["England and Wales"],
+            legal_team_scope: "Commercial contracts",
+        });
+        expect(
+            orgPromptProfile({ ...emptyOrgProfile(), headquarters_country: "Singapore" }),
+        ).toEqual({ headquarters: "Singapore" });
+        expect(orgPromptProfile(emptyOrgProfile())).toEqual({});
     });
 });
 
@@ -109,13 +182,23 @@ describe("loadOrgContext", () => {
         const { db } = fakeDb({
             organizations: { data: { id: "org-1", name: " Acme Ltd ", kind: "team" }, error: null },
             org_profiles: {
-                data: { about: "Accounting software", industry: null, legal_team: "  " },
+                data: {
+                    about: "Accounting software",
+                    industry: null,
+                    legal_team_scope: "  ",
+                    headquarters_city: "London",
+                    jurisdictions: ["England and Wales"],
+                },
                 error: null,
             },
         });
         expect(await loadOrgContext(db, "org-1")).toEqual({
             name: "Acme Ltd",
-            profile: { about: "Accounting software" },
+            profile: {
+                about: "Accounting software",
+                headquarters: "London",
+                jurisdictions: ["England and Wales"],
+            },
         });
     });
 

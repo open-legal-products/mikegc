@@ -83,12 +83,12 @@ export async function saveOrgProfile(
     if (!current.ok)
         return { ok: false, kind: "db_error", detail: current.detail };
 
-    const changed: OrgProfileField[] = ORG_PROFILE_FIELDS.map(
-        (field) => field.key,
-    ).filter(
+    const changed: OrgProfileField[] = ORG_PROFILE_FIELDS.filter(
         (key) =>
             key in parsed.changes &&
-            parsed.changes[key] !== current.profile[key],
+            // Text compares as text; the jurisdictions as an ordered list.
+            JSON.stringify(parsed.changes[key]) !==
+                JSON.stringify(current.profile[key]),
     );
     if (changed.length === 0) return { ok: true, profile: current.profile };
 
@@ -98,7 +98,7 @@ export async function saveOrgProfile(
         updated_by: params.actorId,
         updated_at: updatedAt,
     };
-    for (const key of changed) write[key] = parsed.changes[key] ?? null;
+    for (const key of changed) write[key] = parsed.changes[key];
     const { error } = await db
         .from("org_profiles")
         .upsert(write, { onConflict: "org_id" });
@@ -116,6 +116,9 @@ export async function saveOrgProfile(
         ...current.profile,
         updated_at: updatedAt,
     };
-    for (const key of changed) profile[key] = parsed.changes[key] ?? null;
+    Object.assign(
+        profile,
+        Object.fromEntries(changed.map((key) => [key, parsed.changes[key]])),
+    );
     return { ok: true, profile };
 }

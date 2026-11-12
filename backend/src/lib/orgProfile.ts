@@ -1,11 +1,11 @@
 // An organization's profile.
 //
 // What an organization's owners and admins tell MikeGC about it: what it
-// does, its industry, where it is based and where it operates, the companies
-// in its group, its legal team, and anything else that helps. The assistant
-// (chat and project chat) and the intake agent read it, with the
-// organization's name, as background for work in the organization's
-// workspace.
+// does, its industry, where it is headquartered and where it operates, the
+// companies in its group, the scope of its legal team, and anything else that
+// helps. The assistant (chat and project chat) and the intake agent read it,
+// with the organization's name, as background for work in the
+// organization's workspace.
 //
 // In lib/ because three modules read it for their prompts (chat,
 // project-chat and intake) and the orgs module, which owns the settings that
@@ -17,36 +17,53 @@ import { safeError } from "./safeError";
 import type { Db } from "./supabase";
 
 /**
- * The fields, in the order the settings page shows them and a prompt lists
- * them. Each limit is the CHECK on the org_profiles column of the same name;
- * the web app's OrganizationProfileSettings mirrors them.
+ * The text fields. Each limit is the CHECK on the org_profiles column of the
+ * same name; the web app's OrganizationProfileSettings mirrors them.
  */
-export const ORG_PROFILE_FIELDS = [
+export const ORG_PROFILE_TEXT_FIELDS = [
     { key: "about", label: "About", max: 2000 },
     { key: "industry", label: "Industry", max: 200 },
-    { key: "headquarters", label: "Headquarters", max: 200 },
-    { key: "jurisdictions", label: "Jurisdictions", max: 500 },
+    { key: "headquarters_city", label: "Headquarters city", max: 100 },
+    { key: "headquarters_country", label: "Headquarters country", max: 100 },
     { key: "legal_entities", label: "Legal entities", max: 1000 },
-    { key: "legal_team", label: "Legal team", max: 1000 },
+    { key: "legal_team_scope", label: "Scope of legal team", max: 1000 },
     { key: "additional_context", label: "Other context", max: 2000 },
 ] as const;
 
-export type OrgProfileField = (typeof ORG_PROFILE_FIELDS)[number]["key"];
+/** Jurisdictions are a list, picked from the web app's jurisdiction options. */
+export const MAX_ORG_JURISDICTIONS = 300;
+export const MAX_ORG_JURISDICTION_LENGTH = 100;
 
-/** Every field, null where it is not set. */
-export type OrgProfile = Record<OrgProfileField, string | null>;
+export type OrgProfileTextField =
+    (typeof ORG_PROFILE_TEXT_FIELDS)[number]["key"];
+export type OrgProfileField = OrgProfileTextField | "jurisdictions";
 
-const FIELD_KEYS = new Set<string>(ORG_PROFILE_FIELDS.map((field) => field.key));
+/** Every field: text is null where it is not set, jurisdictions empty. */
+export type OrgProfile = Record<OrgProfileTextField, string | null> & {
+    jurisdictions: string[];
+};
+
+/** Every field, in the order the settings page shows them. */
+export const ORG_PROFILE_FIELDS: readonly OrgProfileField[] = [
+    "about",
+    "industry",
+    "headquarters_city",
+    "headquarters_country",
+    "jurisdictions",
+    "legal_entities",
+    "legal_team_scope",
+    "additional_context",
+];
+
+const FIELD_KEYS = new Set<string>(ORG_PROFILE_FIELDS);
 
 /** The org_profiles columns that hold the fields, for a select. */
-export const ORG_PROFILE_COLUMNS = ORG_PROFILE_FIELDS.map(
-    (field) => field.key,
-).join(", ");
+export const ORG_PROFILE_COLUMNS = ORG_PROFILE_FIELDS.join(", ");
 
 export function emptyOrgProfile(): OrgProfile {
-    return Object.fromEntries(
-        ORG_PROFILE_FIELDS.map((field) => [field.key, null]),
-    ) as OrgProfile;
+    const profile = { jurisdictions: [] as string[] } as OrgProfile;
+    for (const { key } of ORG_PROFILE_TEXT_FIELDS) profile[key] = null;
+    return profile;
 }
 
 /**
@@ -61,22 +78,32 @@ export function normalizeOrgProfileText(value: string): string {
         .trim();
 }
 
+/** A jurisdiction as it is stored: one line, single spaces. */
+function normalizeJurisdiction(value: string): string {
+    return normalizeOrgProfileText(value).replace(/\s+/g, " ");
+}
+
 /** A stored row, or none, as a profile. */
 export function orgProfileFromRow(row: unknown): OrgProfile {
     const profile = emptyOrgProfile();
     if (!row || typeof row !== "object") return profile;
-    for (const { key } of ORG_PROFILE_FIELDS) {
-        const value = (row as Record<string, unknown>)[key];
-        profile[key] =
-            typeof value === "string" && value.trim() ? value : null;
+    const record = row as Record<string, unknown>;
+    for (const { key } of ORG_PROFILE_TEXT_FIELDS) {
+        const value = record[key];
+        profile[key] = typeof value === "string" && value.trim() ? value : null;
     }
+    if (Array.isArray(record.jurisdictions))
+        profile.jurisdictions = record.jurisdictions.filter(
+            (item): item is string => typeof item === "string" && !!item.trim(),
+        );
     return profile;
 }
 
 /**
  * The changes a request body asks for. Only the fields it names change; an
- * empty string or null clears one. A value over its limit is refused rather
- * than cut short, so nobody's text is silently lost.
+ * empty string or null clears a text field, and an empty list or null clears
+ * the jurisdictions. A value over its limit is refused rather than cut short,
+ * so nobody's text is silently lost.
  */
 export function parseOrgProfileInput(
     body: unknown,
@@ -93,7 +120,7 @@ export function parseOrgProfileInput(
             detail: `Unsupported profile field: ${unknownField}`,
         };
     const changes: Partial<OrgProfile> = {};
-    for (const { key, label, max } of ORG_PROFILE_FIELDS) {
+    for (const { key, label, max } of ORG_PROFILE_TEXT_FIELDS) {
         if (!(key in raw)) continue;
         const value = raw[key];
         if (value === null) {
@@ -110,13 +137,75 @@ export function parseOrgProfileInput(
             };
         changes[key] = text || null;
     }
+    if ("jurisdictions" in raw) {
+        const value = raw.jurisdictions;
+        if (value === null) changes.jurisdictions = [];
+        else if (
+            !Array.isArray(value) ||
+            value.some((item) => typeof item !== "string")
+        )
+            return {
+                ok: false,
+                detail: "jurisdictions must be a list of strings or null",
+            };
+        else {
+            // Blank entries are dropped and repeats kept once, in the order given.
+            const seen = new Set<string>();
+            const list: string[] = [];
+            for (const item of value as string[]) {
+                const jurisdiction = normalizeJurisdiction(item);
+                if (!jurisdiction || seen.has(jurisdiction.toLowerCase()))
+                    continue;
+                if (jurisdiction.length > MAX_ORG_JURISDICTION_LENGTH)
+                    return {
+                        ok: false,
+                        detail: `Each jurisdiction must be ${MAX_ORG_JURISDICTION_LENGTH} characters or fewer.`,
+                    };
+                seen.add(jurisdiction.toLowerCase());
+                list.push(jurisdiction);
+            }
+            if (list.length > MAX_ORG_JURISDICTIONS)
+                return {
+                    ok: false,
+                    detail: `Choose at most ${MAX_ORG_JURISDICTIONS} jurisdictions.`,
+                };
+            changes.jurisdictions = list;
+        }
+    }
     return { ok: true, changes };
+}
+
+/** The profile as a prompt gives it: only what is set, headquarters as one place. */
+export type OrgPromptProfile = {
+    about?: string;
+    industry?: string;
+    headquarters?: string;
+    jurisdictions?: string[];
+    legal_entities?: string;
+    legal_team_scope?: string;
+    additional_context?: string;
+};
+
+export function orgPromptProfile(profile: OrgProfile): OrgPromptProfile {
+    const headquarters = [profile.headquarters_city, profile.headquarters_country]
+        .filter(Boolean)
+        .join(", ");
+    const facts: OrgPromptProfile = {};
+    if (profile.about) facts.about = profile.about;
+    if (profile.industry) facts.industry = profile.industry;
+    if (headquarters) facts.headquarters = headquarters;
+    if (profile.jurisdictions.length) facts.jurisdictions = profile.jurisdictions;
+    if (profile.legal_entities) facts.legal_entities = profile.legal_entities;
+    if (profile.legal_team_scope) facts.legal_team_scope = profile.legal_team_scope;
+    if (profile.additional_context)
+        facts.additional_context = profile.additional_context;
+    return facts;
 }
 
 /** The organization a prompt is written for: its name and the profile fields that are set. */
 export type OrgContext = {
     name: string;
-    profile: Partial<Record<OrgProfileField, string>>;
+    profile: OrgPromptProfile;
 };
 
 /**
@@ -155,12 +244,7 @@ export async function loadOrgContext(
         const values = profile.error
             ? emptyOrgProfile()
             : orgProfileFromRow(profile.data);
-        const set: OrgContext["profile"] = {};
-        for (const { key } of ORG_PROFILE_FIELDS) {
-            const value = values[key];
-            if (value) set[key] = value;
-        }
-        return { name, profile: set };
+        return { name, profile: orgPromptProfile(values) };
     } catch (error) {
         console.warn("[org-profile] organization unreadable", safeError(error));
         return null;
