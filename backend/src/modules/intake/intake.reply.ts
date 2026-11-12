@@ -1,4 +1,5 @@
 import type { IntakeExternalAuthor } from "@mike/contracts";
+import { mapWithConcurrency } from "../../lib/concurrency";
 import { NonRetryableJobError } from "../../lib/dbq/runner";
 import { safeError } from "../../lib/safeError";
 import { loadOrgContext } from "../../lib/orgProfile";
@@ -53,6 +54,7 @@ import {
   slackTextToPlain,
   slackThreadMessage,
   slackUserInfo,
+  SLACK_LOOKUPS_AT_ONCE,
 } from "./intake.slack";
 import {
   isPermanentTeamsError,
@@ -105,15 +107,19 @@ async function slackReply(
   const ids = [...new Set([payload.user, ...mentionedUsers(raw)])].slice(0, 20);
   const names = new Map<string, string>();
   let author: { name: string | null; email: string | null } = { name: null, email: null };
-  for (const id of ids) {
+  const found = await mapWithConcurrency(ids, SLACK_LOOKUPS_AT_ONCE, async (id) => {
     try {
-      const person = await slackUserInfo(token, id);
-      if (person?.name) names.set(id, person.name);
-      if (id === payload.user && person) author = person;
+      return await slackUserInfo(token, id);
     } catch (error) {
       if (isPermanentSlackError(error)) throw error;
+      return null;
     }
-  }
+  });
+  ids.forEach((id, i) => {
+    const person = found[i];
+    if (person?.name) names.set(id, person.name);
+    if (id === payload.user && person) author = person;
+  });
   return {
     text: slackTextToPlain(raw, names, settings.slack_bot_user_id),
     author: { ...author, source: "slack", user_id: payload.user },

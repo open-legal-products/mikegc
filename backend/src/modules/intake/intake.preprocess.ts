@@ -2,6 +2,7 @@ import { randomBytes } from "node:crypto";
 import { z } from "zod";
 import type { IntakePreprocessRule } from "@mike/contracts";
 import { getOrgRole, isOrgAdmin } from "../../lib/access";
+import { mapWithConcurrency } from "../../lib/concurrency";
 import { NonRetryableJobError } from "../../lib/dbq/runner";
 import type { DbJob } from "../../lib/dbq/types";
 import type { EditInput } from "../../lib/docxTrackedChanges";
@@ -294,10 +295,19 @@ async function readDocuments(
   if (error) throw error;
   const read: ReadDocument[] = [];
   const unread: string[] = [];
-  for (const { document_id } of (data ?? []) as { document_id: string }[]) {
-    const doc = await loadOrgDocument(db, job.orgId, document_id);
-    if (!doc) continue;
-    const text = await readOrgDocumentText(db, doc);
+  // Each document is several queries and often a download; a few are read
+  // at once and then taken in their stored order, so the result is the same.
+  const loaded = await mapWithConcurrency(
+    (data ?? []) as { document_id: string }[],
+    4,
+    async ({ document_id }) => {
+      const doc = await loadOrgDocument(db, job.orgId, document_id);
+      return doc ? { doc, text: await readOrgDocumentText(db, doc) } : null;
+    },
+  );
+  for (const entry of loaded) {
+    if (!entry) continue;
+    const { doc, text } = entry;
     if (text.status === "pending" && !lastAttempt)
       throw new Error("Waiting for the request's documents to be read.");
     if (text.status === "ready" && text.text.trim())

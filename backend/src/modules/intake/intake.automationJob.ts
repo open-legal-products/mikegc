@@ -1,3 +1,4 @@
+import { mapWithConcurrency } from "../../lib/concurrency";
 import { enqueueDbJob } from "../../lib/dbq/enqueue";
 import { NonRetryableJobError, dbJobsEnabled } from "../../lib/dbq/runner";
 import { safeError } from "../../lib/safeError";
@@ -59,6 +60,7 @@ import {
   slackUserInfo,
   type SlackFile,
   type SlackPerson,
+  SLACK_LOOKUPS_AT_ONCE,
 } from "./intake.slack";
 import {
   TeamsApiError,
@@ -264,18 +266,24 @@ async function slackMessage(
   ]
     .filter((id) => id !== botUserId)
     .slice(0, 30);
-  const people = new Map<string, SlackPerson>();
-  for (const id of ids) {
+  // Up to 30 lookups, a few at a time: one after another they held every
+  // new Slack message for several seconds before the agent saw it.
+  const found = await mapWithConcurrency(ids, SLACK_LOOKUPS_AT_ONCE, async (id) => {
     try {
-      const person = await slackUserInfo(token, id);
-      if (person) people.set(id, person);
+      return await slackUserInfo(token, id);
     } catch (error) {
       // Without users:read the request is still recorded; a token Slack
       // refuses outright stops here.
       if (error instanceof SlackApiError && SLACK_TOKEN_ERRORS.has(error.code))
         throw error;
+      return null;
     }
-  }
+  });
+  const people = new Map<string, SlackPerson>();
+  ids.forEach((id, i) => {
+    const person = found[i];
+    if (person) people.set(id, person);
+  });
   const names = new Map(
     [...people].flatMap(([id, p]) => (p.name ? [[id, p.name] as const] : [])),
   );
