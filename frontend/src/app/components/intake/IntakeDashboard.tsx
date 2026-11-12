@@ -3,6 +3,7 @@
 import {
   useEffect,
   useId,
+  useRef,
   useState,
   type ReactNode,
 } from "react";
@@ -37,6 +38,7 @@ import {
   LIQUID_GLASS_HOVER_CLASS,
 } from "@mike/ui";
 import { PillButtonUI } from "@mike/ui";
+import { notifyError } from "@/app/lib/userFacingError";
 import { intakeError } from "./useIntakeOperation";
 import { INTAKE_STATE_LABELS } from "./intakeLabels";
 import { IntakePageHeader } from "./IntakePageHeader";
@@ -136,7 +138,16 @@ export function IntakeDashboard({ orgId }: { orgId: string }) {
   const [periods, setPeriods] = useState<Periods>(DEFAULT_PERIODS);
   const choose = (patch: Partial<Periods>) =>
     setPeriods((current) => ({ ...current, ...patch }));
+  // A failed change of period keeps the dashboard on screen and puts its
+  // periods back; only a first load that fails shows the error instead.
+  const shown = useRef<Dashboard | null>(null);
+  // Set when the periods are put back: they are on screen, not to be read.
+  const restored = useRef(false);
   useEffect(() => {
+    if (restored.current) {
+      restored.current = false;
+      return;
+    }
     let active = true;
     getIntakeDashboard(
       orgId,
@@ -145,11 +156,25 @@ export function IntakeDashboard({ orgId }: { orgId: string }) {
     )
       .then((dashboard) => {
         if (!active) return;
+        shown.current = dashboard;
         setData(dashboard);
         setError(null);
       })
       .catch((e) => {
-        if (active) setError(intakeError(e, "load the dashboard"));
+        if (!active) return;
+        const current = shown.current;
+        if (!current) {
+          setError(intakeError(e, "load the dashboard"));
+          return;
+        }
+        notifyError(e, { action: "load the dashboard" });
+        restored.current = true;
+        setPeriods({
+          weeks: current.weeks_shown,
+          created_days: current.created_days,
+          resolved_days: current.resolved_days,
+          median_days: current.median_days,
+        });
       });
     return () => {
       active = false;
