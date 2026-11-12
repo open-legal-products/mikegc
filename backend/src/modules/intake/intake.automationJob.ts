@@ -795,7 +795,7 @@ const FAILED_REPLY =
  * When a message's job has failed for good: mark it failed with the reason
  * already recorded, and drop its content and staged files. A request that
  * was recorded keeps its link, and its thread is acknowledged rather than
- * told nothing was logged; a Slack thread with no request is told so.
+ * told nothing was logged; a Slack or Teams thread with no request is told so.
  */
 export async function markInboundFailed(db: Db, row: InboundRow): Promise<void> {
   const parsed = inboundPayload.safeParse(row.payload);
@@ -809,15 +809,18 @@ export async function markInboundFailed(db: Db, row: InboundRow): Promise<void> 
         if (settings)
           await linkRequestThread(db, row.org_id, row.request_id, settings, payload);
         await acknowledgeRequest(db, row.org_id, row.request_id);
-      } else if (payload.kind === "slack") {
+      } else if (payload.kind === "slack" || payload.kind === "teams") {
+        // Email isn't told: a bounce of that answer could arrive as new
+        // mail, fail the same way, and be answered again.
         const settings = await loadAutomationRow(db, row.org_id);
-        const token = settings ? slackBotToken(settings) : null;
-        if (token)
-          await slackPostMessage(token, {
-            channel: payload.channel,
-            threadTs: payload.thread_ts ?? payload.ts,
-            text: FAILED_REPLY,
-          });
+        // Its attempt is saved before the send, as a chat answer's is, so a
+        // second call finds the one that landed instead of sending again.
+        const attemptedAt = payload.conversing ?? null;
+        if (!attemptedAt) {
+          payload.conversing = new Date().toISOString();
+          await saveInboundPayload(db, row.id, payload);
+        }
+        await sendChatReply(db, row, settings, payload, FAILED_REPLY, attemptedAt);
       }
     } catch (error) {
       console.warn("[intake-automation] failure reply not sent", safeError(error));

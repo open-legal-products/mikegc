@@ -1026,6 +1026,40 @@ describe("when a message fails for good", () => {
     await markIntakeAgentFailed(memory.db, job());
     expect(slackCalls.filter((c) => c.method === "chat.postMessage")).toHaveLength(1);
   });
+  it("says so in Teams too", async () => {
+    setup({
+      payload: {
+        kind: "teams",
+        tenant_id: "tenant-1",
+        service_url: "https://smba.trafficmanager.net/emea/",
+        conversation_id: "19:abc@thread.tacv2;messageid=1700000000001",
+        team_id: "team-1",
+        aad_group_id: null,
+        channel_id: "19:abc@thread.tacv2",
+        root_message_id: "1700000000001",
+        activity_id: "1700000000001",
+        from: { id: "29:jane", aad_object_id: "aad-jane", name: "Jane Business" },
+        date: "2026-11-02T09:14:00.000Z",
+        text: "Hi MikeGC",
+        files: [],
+      },
+      source: "slack",
+    });
+    mocks.teamsDeliver.mockResolvedValue({ externalId: "1700000000009", documents: [] });
+    await markIntakeAgentFailed(memory.db, job());
+    expect(row()).toMatchObject({ status: "failed", payload: null });
+    expect(mocks.teamsDeliver).toHaveBeenCalledTimes(1);
+    expect(mocks.teamsDeliver.mock.calls[0]![1]).toMatchObject({
+      source: "teams",
+      thread_key: "tenant-1:19:abc@thread.tacv2;messageid=1700000000001",
+    });
+    expect(mocks.teamsDeliver.mock.calls[0]![2]).toMatchObject({
+      id: inboundId,
+      text: "Sorry, I couldn't log this for Legal. Please try again, or contact the Legal team directly.",
+    });
+    await markIntakeAgentFailed(memory.db, job());
+    expect(mocks.teamsDeliver).toHaveBeenCalledTimes(1);
+  });
   it("points the thread at a request that was recorded", async () => {
     setup({ payload: slackPayload(), source: "slack", model: false });
     // The request is recorded, then its file can't be downloaded.

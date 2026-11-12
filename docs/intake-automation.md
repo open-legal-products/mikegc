@@ -626,7 +626,8 @@ channels are supported.
   retried job reuses the request and documents it already made and never
   acknowledges twice. A message that still fails after its retries is
   recorded as failed, with a reason, in `intake_inbound`, and MikeGC says so
-  in a Slack thread.
+  in a Slack or Teams thread. An email isn't answered, so a bounce of that
+  answer can't start a loop.
 - **Replies.** The `intake.agent` job's reply branch reads the reply from its channel,
   records it with `intake_reply_automated`, adds its files, and then queues
   the next round of `intake.preprocess` for an answer to the readiness check
