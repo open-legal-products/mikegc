@@ -631,7 +631,9 @@ channels are supported.
 - **Replies.** The `intake.agent` job's reply branch reads the reply from its channel,
   records it with `intake_reply_automated`, adds its files, and then queues
   the next round of `intake.preprocess` for an answer to the readiness check
-  (deduplicated per request and round, `intake.preprocess:<request>:<round>`),
+  (deduplicated per request and round, `intake.preprocess:<request>:<round>`;
+  a run that sees another answer arrive while it checks reads it and checks
+  again, once),
   or runs the agent on an open request: `intake_update_automated` changes the
   details it planned, skipping any in the request's `member_edited_fields`,
   `intake_ask_automated` asks once more or
@@ -666,7 +668,8 @@ channels are supported.
   same module, and posts its note with `intake_note_automated`. The note's ID
   is fixed per request, so it is posted once however many rounds run; a job
   that fails for good posts a short note saying preprocessing couldn't
-  finish.
+  finish. A request resolved or cancelled before its job runs is left alone:
+  nothing is acknowledged, run or written.
 - **Secrets.** The Slack signing secret and bot token, the Graph client
   secret and the Teams client secret are encrypted at rest with
   `MCP_CONNECTORS_ENCRYPTION_SECRET`, like connector credentials, are
