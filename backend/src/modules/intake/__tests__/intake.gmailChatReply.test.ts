@@ -20,7 +20,9 @@ const untouchedDb = new Proxy({} as Db, {
   },
 });
 
+const org = "00000000-0000-4000-8000-000000000001";
 const settings = {
+  org_id: org,
   email_enabled: true,
   email_provider: "gmail",
   email_mailbox: "intake@firm.test",
@@ -35,6 +37,7 @@ describe("Gmail: MikeGC's answer to an email that isn't a request", () => {
       private_key: "-----BEGIN PRIVATE KEY-----\nkey\n-----END PRIVATE KEY-----\n",
       client_id: "1234567890",
     });
+    process.env.INTAKE_GMAIL_SHARED_MAILBOXES = `${org}=intake@firm.test`;
     sent = null;
     vi.stubGlobal(
       "fetch",
@@ -52,6 +55,7 @@ describe("Gmail: MikeGC's answer to an email that isn't a request", () => {
   });
   afterEach(() => {
     delete process.env.INTAKE_GMAIL_SERVICE_ACCOUNT_KEY;
+    delete process.env.INTAKE_GMAIL_SHARED_MAILBOXES;
     vi.unstubAllGlobals();
   });
 

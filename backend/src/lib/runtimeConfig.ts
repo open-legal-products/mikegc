@@ -144,6 +144,32 @@ export function streamChunkTimeouts(env: NodeJS.ProcessEnv = process.env): {
   };
 }
 
+const GMAIL_SHARED_MAILBOX_GRANT =
+  /^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})=((?:[^@\s=,]+)?@[^@\s=,]+\.[^@\s=,]+)$/i;
+
+/**
+ * The intake mailboxes each organization may read and send from with the
+ * deployment's shared Gmail service account (INTAKE_GMAIL_SERVICE_ACCOUNT_KEY),
+ * by organization ID. INTAKE_GMAIL_SHARED_MAILBOXES lists
+ * `<organization id>=<address>` or `<organization id>=@<domain>` entries,
+ * separated by commas or whitespace. Domain-wide delegation lets the shared
+ * account act as any user in the delegating domain, so this list is what ties
+ * a workspace to its mailboxes: an organization with no entry can't use the
+ * shared account at all, and a malformed entry grants nothing.
+ */
+export function gmailSharedMailboxGrants(
+  env: NodeJS.ProcessEnv = process.env,
+): Map<string, string[]> {
+  const grants = new Map<string, string[]>();
+  for (const entry of (env.INTAKE_GMAIL_SHARED_MAILBOXES ?? "").split(/[\s,]+/)) {
+    const match = GMAIL_SHARED_MAILBOX_GRANT.exec(entry);
+    if (!match) continue;
+    const org = match[1]!.toLowerCase();
+    grants.set(org, [...(grants.get(org) ?? []), match[2]!.toLowerCase()]);
+  }
+  return grants;
+}
+
 function parsedUrl(value: string, name: string, errors: string[]): URL | null {
   try {
     const url = new URL(value);

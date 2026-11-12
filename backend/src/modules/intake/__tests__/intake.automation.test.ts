@@ -94,6 +94,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   clearMicrosoftTokens();
   delete process.env.INTAKE_GMAIL_SERVICE_ACCOUNT_KEY;
+  delete process.env.INTAKE_GMAIL_SHARED_MAILBOXES;
   mocks.enqueueDbJob.mockResolvedValue({ id: "job-1", deduped: false });
   process.env.MCP_CONNECTORS_ENCRYPTION_SECRET = "test-encryption-secret-for-intake";
   process.env.API_PUBLIC_URL = "https://app.example.com/api/";
@@ -476,6 +477,7 @@ describe("the intake mailbox", () => {
       private_key: "-----BEGIN PRIVATE KEY-----",
       client_id: "1234567890",
     });
+    process.env.INTAKE_GMAIL_SHARED_MAILBOXES = `${org}=intake@firm.test`;
     mocks.gmailProfile.mockResolvedValue({ emailAddress: "intake@firm.test", historyId: "9001" });
     const result = await connectIntakeMailbox(
       memory.db,
@@ -513,6 +515,27 @@ describe("the intake mailbox", () => {
       await updateIntakeAutomation(memory.db, scope(owner), { email_enabled: true }),
     ).toMatchObject({ ok: false, kind: "validation" });
   });
+  it("won't connect a mailbox with the deployment's service account the operator hasn't granted the organization", async () => {
+    process.env.INTAKE_GMAIL_SERVICE_ACCOUNT_KEY = JSON.stringify({
+      client_email: "mikegc@project.iam.gserviceaccount.com",
+      private_key: "-----BEGIN PRIVATE KEY-----",
+      client_id: "1234567890",
+    });
+    // Another organization's domain, and this one's grant for a different address.
+    process.env.INTAKE_GMAIL_SHARED_MAILBOXES = `${outsider}=@firm.test ${org}=intake@own.test`;
+    mocks.gmailProfile.mockResolvedValue({ emailAddress: "ceo@firm.test", historyId: "9001" });
+    expect(
+      await connectIntakeMailbox(memory.db, scope(owner), { provider: "gmail", mailbox: "ceo@firm.test" }),
+    ).toMatchObject({ ok: false, kind: "validation", detail: expect.stringMatching(/own service account/) });
+    expect(mocks.gmailProfile).not.toHaveBeenCalled();
+    expect(row()).toMatchObject({ email_provider: null, email_mailbox: null });
+    // Nor is the shared account offered to an organization with no grant.
+    process.env.INTAKE_GMAIL_SHARED_MAILBOXES = `${outsider}=@firm.test`;
+    expect(await getIntakeAutomation(memory.db, scope(owner))).toMatchObject({
+      ok: true,
+      data: { email: { gmail: { client_id: null, deployment_key: false } } },
+    });
+  });
   it("ends the Outlook subscription when the mailbox moves to Google Workspace", async () => {
     await getIntakeAutomation(memory.db, scope(owner));
     const secret = encryptString("graph-secret");
@@ -532,6 +555,7 @@ describe("the intake mailbox", () => {
       client_email: "mikegc@project.iam.gserviceaccount.com",
       private_key: "-----BEGIN PRIVATE KEY-----",
     });
+    process.env.INTAKE_GMAIL_SHARED_MAILBOXES = `${org}=@firm.test`;
     mocks.gmailProfile.mockResolvedValue({ emailAddress: "intake@firm.test", historyId: "9001" });
     const calls: { url: string; method: string }[] = [];
     vi.stubGlobal(

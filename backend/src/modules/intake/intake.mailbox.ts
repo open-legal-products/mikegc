@@ -350,7 +350,7 @@ async function pollGraph(db: Db, settings: AutomationRow, renew: boolean) {
 async function pollGmail(db: Db, settings: AutomationRow) {
   if (!settings.email_mailbox) return;
   const mailbox = gmailMailbox(settings);
-  if (!mailbox) throw noGmailAccount();
+  if (!mailbox) throw noGmailAccount(settings);
   let start = settings.gmail_history_id;
   if (!start) {
     start = (await gmailProfile(mailbox)).historyId;

@@ -478,7 +478,9 @@ Group can't be connected, but a group can deliver into the account.
 
 1. In Google Cloud, enable the Gmail API in a project, create a service
    account and download its JSON key. Organizations can skip this when the
-   deployment has its own in `INTAKE_GMAIL_SERVICE_ACCOUNT_KEY`.
+   deployment has its own in `INTAKE_GMAIL_SERVICE_ACCOUNT_KEY` and the
+   operator has granted them the mailbox in `INTAKE_GMAIL_SHARED_MAILBOXES`
+   (below).
 2. In the Google Admin console, under **Security → API controls → Domain-wide
    delegation**, add the service account's client ID with the scope
    `https://www.googleapis.com/auth/gmail.modify`. The Gmail dialog shows the
@@ -729,7 +731,19 @@ Apply both before starting the new build. Jobs queued as `intake.inbound` or
 
 `INTAKE_GMAIL_SERVICE_ACCOUNT_KEY` (a Google service account's JSON key) is
 optional: it serves Gmail mailboxes whose organization didn't paste its own
-key. Otherwise no new environment variables are
+key, but only the mailboxes `INTAKE_GMAIL_SHARED_MAILBOXES` grants that
+organization. Domain-wide delegation lets the shared account act as any user
+in the delegating domain, so without this list any organization's admin could
+connect any of those users' mailboxes. List entries as
+`<organization id>=<address>` or `<organization id>=@<domain>`, separated by
+commas or spaces, for example
+`INTAKE_GMAIL_SHARED_MAILBOXES=3f2a…=intake@acme.com,9c1d…=@globex.com`
+(organization IDs are `public.organizations.id`). An organization with no
+entry isn't offered the shared account and must paste its own key; a mailbox
+already connected that isn't granted stops being read and replied from, and
+Intake settings asks for the organization's own key. Upgrading a deployment
+that uses the shared key: add an entry for every organization whose Gmail
+mailbox relies on it. Otherwise no new environment variables are
 required: the webhook and notification URLs are built from `API_PUBLIC_URL`,
 the request links in members' notes from `FRONTEND_URL`, and secrets are
 encrypted with `MCP_CONNECTORS_ENCRYPTION_SECRET` (or

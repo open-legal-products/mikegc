@@ -27,7 +27,9 @@ import {
   gmailProfile,
   gmailSendTest,
   gmailServiceAccount,
+  noGmailAccountSentence,
   parseGmailServiceAccount,
+  sharedGmailGrants,
 } from "./intake.gmail";
 import { graphNotificationUrl, startMailboxPolling } from "./intake.mailbox";
 import { MicrosoftApiError, clearMicrosoftTokens } from "./intake.microsoft";
@@ -199,7 +201,8 @@ async function present(
       scope.actorId,
       ruleRows.map(preprocessRef),
     );
-    const gmailDeployment = deploymentGmailServiceAccount();
+    // Offered only to an organization the operator granted mailboxes to.
+    const gmailDeployment = sharedGmailGrants(row.org_id).length ? deploymentGmailServiceAccount() : null;
     return ok({
       email: {
         enabled: row.email_enabled,
@@ -779,7 +782,7 @@ export async function connectIntakeMailbox(
   } else {
     // A pasted key, else the one saved, else the deployment's.
     const pasted = input.service_account_key?.trim();
-    const account = pasted ? parseGmailServiceAccount(pasted) : gmailServiceAccount(row);
+    const account = pasted ? parseGmailServiceAccount(pasted) : gmailServiceAccount(row, mailbox);
     // Google Cloud's download names the client ID Google Admin delegates to.
     const delegateId = account && gmailDelegateId(account);
     if (pasted && !delegateId)
@@ -788,7 +791,7 @@ export async function connectIntakeMailbox(
         "Paste the service account's JSON key as Google Cloud downloads it.",
       );
     if (!account)
-      return failure("validation", "Paste the service account's JSON key.");
+      return failure("validation", noGmailAccountSentence(row) ?? "Paste the service account's JSON key.");
     if (pasted) {
       const sealed = encryptedColumns("gmail_service_account_key", pasted);
       if (!sealed) return ENCRYPTION_UNAVAILABLE;

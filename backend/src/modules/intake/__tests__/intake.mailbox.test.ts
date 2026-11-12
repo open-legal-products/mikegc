@@ -27,6 +27,7 @@ import { DbJobDeferredError } from "../../../lib/dbq/types";
 import { encryptString } from "../../../lib/mcp/client";
 import { handleIntakeDeliver } from "../intake.deliver";
 import { handleIntakeMailboxPoll, recordMail } from "../intake.mailbox";
+import { gmailAdapter } from "../intake.gmail";
 import { clearMicrosoftTokens } from "../intake.microsoft";
 import type { ReadMail } from "../intake.outlook";
 import type { AutomationRow } from "../intake.settingsRow";
@@ -404,7 +405,24 @@ describe("reading the mailbox", () => {
         client_email: "mikegc@project.iam.gserviceaccount.com",
         private_key: "-----BEGIN PRIVATE KEY-----\ntest\n-----END PRIVATE KEY-----\n",
       });
+      process.env.INTAKE_GMAIL_SHARED_MAILBOXES = `${org}=intake@firm.test`;
       Object.assign(memory.rows("intake_automation")[0]!, { email_provider: "gmail", gmail_history_id: "100" });
+    });
+    it("won't read or reply from a saved mailbox the operator hasn't granted the organization", async () => {
+      // Saved before the grant was required, or the grant since withdrawn.
+      process.env.INTAKE_GMAIL_SHARED_MAILBOXES = "00000000-0000-4000-8000-0000000000ff=intake@firm.test";
+      vi.stubGlobal("fetch", vi.fn(async () => Response.json({ history: [], historyId: "200" })));
+      await expect(handleIntakeMailboxPoll(memory.db, poll())).rejects.toBeInstanceOf(DbJobDeferredError);
+      expect(fetch).not.toHaveBeenCalled();
+      expect(settings().email_error).toMatch(/own service account/);
+      linkThread();
+      const reply = {
+        id: "m1", author: { kind: "mikegc" }, body: "Which entity is signing?", documents: [],
+      } as unknown as Parameters<typeof gmailAdapter.deliver>[2];
+      const ctx = { db: memory.db, settings: settings(), fromName: "Legal" } as unknown as Parameters<typeof gmailAdapter.deliver>[0];
+      const link = memory.rows("intake_channel_links")[0] as unknown as Parameters<typeof gmailAdapter.deliver>[1];
+      await expect(gmailAdapter.deliver(ctx, link, reply, null)).rejects.toThrow(/isn't connected/);
+      expect(fetch).not.toHaveBeenCalled();
     });
     it("starts the next read after the last record when the history is too long for one", async () => {
       let page = 0;
