@@ -293,8 +293,15 @@ export function Detail({
   const [announcement, setAnnouncement] = useState("");
   const deliveryStates = useRef(new Map<string, IntakeDelivery["status"]>());
   const epoch = useRef(0);
-  const refresh = useCallback(async () => {
+  // Whether a loaded request is on screen, and how many loads are running.
+  const loaded = useRef(false);
+  const inFlight = useRef(0);
+  const refresh = useCallback(async (poll = false) => {
+    // A delivery check never overlaps a load: on a slow connection each
+    // would supersede the last before it landed, and nothing would update.
+    if (poll && inFlight.current) return;
     const generation = ++epoch.current;
+    inFlight.current++;
     try {
       const r = await getIntakeRequest(orgId, requestId);
       const [m, e, d, roster] = await Promise.all([
@@ -315,6 +322,7 @@ export function Detail({
       setDocuments(d);
       setMembers(roster);
       setError(null);
+      loaded.current = true;
       // A message to the requester that settled since the last load is said once.
       const said = settledDeliveryAnnouncement(deliveryStates.current, [
         ...m.flatMap((message) => (message.delivery ? [message.delivery] : [])),
@@ -322,14 +330,24 @@ export function Detail({
       ]);
       if (said) setAnnouncement(said);
     } catch (e) {
-      if (generation === epoch.current) {
-        setRequest(null);
-        setMessages([]);
-        setEvents([]);
-        setDocuments([]);
-        setMembers([]);
-        setError(intakeError(e, "load the request"));
+      if (generation !== epoch.current) return;
+      const status =
+        e && typeof e === "object" && "status" in e ? Number(e.status) : 0;
+      // A failed refresh keeps the request on screen, unless the account
+      // may no longer read it. A delivery check tries again by itself.
+      if (loaded.current && ![401, 403, 404].includes(status)) {
+        if (!poll) notifyError(e, { action: "refresh the request" });
+        return;
       }
+      loaded.current = false;
+      setRequest(null);
+      setMessages([]);
+      setEvents([]);
+      setDocuments([]);
+      setMembers([]);
+      setError(intakeError(e, "load the request"));
+    } finally {
+      inFlight.current--;
     }
   }, [orgId, requestId]);
   const invalidate = useCallback(() => {
@@ -349,7 +367,6 @@ export function Detail({
     });
   }, [messagesOpen, newReplyAt, orgId, requestId]);
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- refresh sets state only after its first request resolves
     void refresh();
     return invalidate;
   }, [refresh, invalidate]);
@@ -461,6 +478,7 @@ export function Detail({
       queuedDetails.current = null;
       setDetailsEpoch((epoch) => epoch + 1);
       if ([401, 403, 404].includes(status)) {
+        loaded.current = false;
         setRequest(null);
         setMessages([]);
         setEvents([]);
@@ -615,7 +633,7 @@ export function Detail({
   const sending = deliveries.some((d) => d.status === "pending");
   useEffect(() => {
     if (!sending) return;
-    const timer = setInterval(() => void refresh(), DELIVERY_REFRESH_MS);
+    const timer = setInterval(() => void refresh(true), DELIVERY_REFRESH_MS);
     return () => clearInterval(timer);
   }, [sending, refresh]);
   function retryDelivery(outboundId: string) {

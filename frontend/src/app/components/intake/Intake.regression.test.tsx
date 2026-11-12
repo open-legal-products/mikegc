@@ -2735,6 +2735,27 @@ describe("request detail", () => {
     ).toBeInTheDocument();
   });
 
+  it("keeps the loaded request when a refresh fails", async () => {
+    render(detail());
+    await screen.findByRole("heading", {
+      level: 1,
+      name: "Confidential request A",
+    });
+    mocks.request.mockRejectedValue(new TypeError("offline"));
+    act(() => {
+      window.dispatchEvent(new Event("focus"));
+    });
+    await waitFor(() =>
+      expect(mocks.notify).toHaveBeenCalledWith(expect.any(TypeError), {
+        action: "refresh the request",
+      }),
+    );
+    expect(
+      screen.getByRole("heading", { level: 1, name: "Confidential request A" }),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("Unable to load request")).not.toBeInTheDocument();
+  });
+
   it("hides revoked content immediately after an uncertain 403 while retaining the command", async () => {
     const recheck = deferred<IntakeRequest>();
     mocks.request
@@ -3357,6 +3378,52 @@ describe("requester loop", () => {
       });
       await waitFor(() => expect(log).toHaveTextContent("Sent"));
       expect(activity).toHaveTextContent("Message to the requester sent.");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("waits for a slow check on a sending message before starting the next", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const pending = message({
+        id: "question-a",
+        kind: "question",
+        body: "Which entity signs?",
+        delivery: {
+          outbound_id: "out-1",
+          kind: "question",
+          status: "pending",
+          error: null,
+          sent_at: null,
+          message_id: "question-a",
+          documents: [],
+        },
+      });
+      const slow = deferred<IntakeRequest>();
+      mocks.request
+        .mockResolvedValueOnce(threaded())
+        .mockReturnValue(slow.promise);
+      mocks.messages
+        .mockResolvedValueOnce([pending])
+        .mockResolvedValue([
+          { ...pending, delivery: { ...pending.delivery!, status: "sent" } },
+        ]);
+      render(detail());
+      const activity = await screen.findByRole("region", { name: "Activity" });
+      await act(async () => {
+        vi.advanceTimersByTime(5_100);
+      });
+      expect(mocks.request).toHaveBeenCalledTimes(2);
+      // The first check is still loading: later ticks must not supersede it.
+      await act(async () => {
+        vi.advanceTimersByTime(10_200);
+      });
+      expect(mocks.request).toHaveBeenCalledTimes(2);
+      await act(async () => slow.resolve(threaded()));
+      await waitFor(() =>
+        expect(activity).toHaveTextContent("Message to the requester sent."),
+      );
     } finally {
       vi.useRealTimers();
     }
