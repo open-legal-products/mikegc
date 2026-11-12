@@ -824,8 +824,15 @@ if (!app.requestSingleInstanceLock()) {
   // shutdown) before the process dies, or the next boot pays crash
   // recovery. Intercept the first quit, stop the stack, then quit for real.
   let stackStopped = false;
+  let stackStopping = false;
   app.on("before-quit", (event) => {
     if (stackStopped) return;
+    // A second quit while the stack is still stopping waits for it too:
+    // letting it through would end the app with its services still running.
+    if (stackStopping) {
+      event.preventDefault();
+      return;
+    }
     let supervisor;
     try {
       supervisor = require("./local/supervisor");
@@ -834,8 +841,11 @@ if (!app.requestSingleInstanceLock()) {
     }
     if (!supervisor.localStackActive()) return; // running OR still booting
     event.preventDefault();
-    stackStopped = true;
-    void supervisor.stopLocalStack().finally(() => app.quit());
+    stackStopping = true;
+    void supervisor.stopLocalStack().finally(() => {
+      stackStopped = true;
+      app.quit();
+    });
   });
 }
 
