@@ -15,7 +15,7 @@ import {
   SETTINGS_MODELS,
   modelDisplayName,
   type ModelOption,
-} from "@/shared/lib/modelCatalog";
+} from "@mike/client";
 import {
   Dropdown,
   DropdownContent,
@@ -24,13 +24,13 @@ import {
   DropdownRadioItem,
   DropdownSeparator,
   DropdownTrigger,
-} from "@/shared/ui/dropdown";
-import { orderedModelGroups } from "@/shared/ui/ModelToggleUI";
-import { GlassCardUI } from "@/shared/ui/GlassCardUI";
-import { pillButtonUIClassName } from "@/shared/ui/PillButtonUI.styles";
-import { TextButtonUI } from "@/shared/ui/TextButtonUI";
-import { textButtonUIClassName } from "@/shared/ui/TextButtonUI.styles";
-import { TextSlabUI } from "@/shared/ui/TextSlabUI";
+} from "@mike/ui";
+import { orderedModelGroups } from "@mike/ui";
+import { GlassCardUI } from "@mike/ui";
+import { pillButtonUIClassName } from "@mike/ui";
+import { TextButtonUI } from "@mike/ui";
+import { textButtonUIClassName } from "@mike/ui";
+import { TextSlabUI } from "@mike/ui";
 import type { IntakeAutomationDraft } from "./intakeAutomation";
 import {
   ROW_DESCRIPTION_CLASS,

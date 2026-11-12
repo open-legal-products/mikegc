@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { IntakeNotification } from "@mike/contracts";
 import { claimIntakeNotifications } from "@/app/lib/mikeApi";
 import { useWorkspace } from "@/app/contexts/WorkspaceContext";
-import { ToastViewportUI, clearToasts } from "@/shared/ui/ToastUI";
+import { ToastViewportUI, clearToasts } from "@mike/ui";
 import {
   INTAKE_NOTIFICATION_CLAIM_WAIT_MS,
   INTAKE_NOTIFICATION_MAX_BACKOFF_MS,

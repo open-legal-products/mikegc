@@ -40,9 +40,9 @@ import {
   DropdownRadioItem,
   DropdownSeparator,
   DropdownTrigger,
-} from "@/shared/ui/dropdown";
-import { GlassCardUI } from "@/shared/ui/GlassCardUI";
-import { PillButtonUI } from "@/shared/ui/PillButtonUI";
+} from "@mike/ui";
+import { GlassCardUI } from "@mike/ui";
+import { PillButtonUI } from "@mike/ui";
 
 // The Profile section of an organization's settings: what its owners and
 // admins tell Mike about the organization. The assistant (chat and project

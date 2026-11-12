@@ -3,8 +3,8 @@ import { NonRetryableJobError } from "../../lib/dbq/runner";
 import type { DbJob } from "../../lib/dbq/types";
 import type { Db } from "../../lib/supabase";
 import { markInboundFailed, runInbound } from "./intake.automationJob";
-import type { ChannelSource } from "./intake.channels";
 import { markReplyFailed, runReply } from "./intake.reply";
+import type { InboundRow } from "./intake.inboundStore";
 import { dispatchIntakeJob } from "./intake.shared";
 
 /**
@@ -19,19 +19,6 @@ export const INTAKE_AGENT_JOB = "intake.agent";
 const JOB_ATTEMPTS = 4;
 
 const jobPayload = z.object({ inboundId: z.uuid(), orgId: z.uuid() });
-
-/** A stored message, as both branches read it. */
-export type InboundRow = {
-  id: string;
-  org_id: string;
-  source: ChannelSource;
-  /** A new message, or a message in a recorded request's thread. */
-  kind: "request" | "reply";
-  status: "pending" | "done" | "failed" | "ignored";
-  payload: unknown;
-  request_id: string | null;
-  error: string | null;
-};
 
 async function loadInbound(
   db: Db,

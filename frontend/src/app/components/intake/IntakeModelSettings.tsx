@@ -7,8 +7,8 @@ import { getIntakeAutomation } from "@/app/lib/mikeApi";
 import { describeError } from "@/app/lib/userFacingError";
 import { SkeletonLine } from "@/app/components/shared/TablePrimitive";
 import { EmptyState } from "@/app/components/ui/empty-state";
-import { GlassCardUI } from "@/shared/ui/GlassCardUI";
-import { PillButtonUI } from "@/shared/ui/PillButtonUI";
+import { GlassCardUI } from "@mike/ui";
+import { PillButtonUI } from "@mike/ui";
 import {
   intakeAutomationDraft,
   type IntakeAutomationDraft,

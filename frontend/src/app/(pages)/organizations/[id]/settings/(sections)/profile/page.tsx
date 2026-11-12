@@ -9,7 +9,7 @@ import {
 import { OrganizationSkeuoIcon } from "@/app/components/shared/AppSidebarSkeuoIcons";
 import { EmptyState } from "@/app/components/ui/empty-state";
 import { isOrgAdmin } from "@/app/lib/permissions";
-import { PillButtonUI } from "@/shared/ui/PillButtonUI";
+import { PillButtonUI } from "@mike/ui";
 
 /**
  * What the assistant and the intake agent are told about the organization:

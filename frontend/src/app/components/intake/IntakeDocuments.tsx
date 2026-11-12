@@ -21,13 +21,13 @@ import { FileTypeIcon } from "@/app/components/shared/FileTypeIcon";
 import { IntakeUploadPrompt } from "./IntakeDocumentDropZone";
 import { LIQUID_GLASS_MODAL_ROW_HOVER_CLASS } from "@/app/components/ui/liquid-surface";
 import { DocumentSidePanel } from "@/app/components/shared/DocumentSidePanel";
-import { TextButtonUI } from "@/shared/ui/TextButtonUI";
+import { TextButtonUI } from "@mike/ui";
 import {
   Dropdown,
   DropdownContent,
   DropdownItem,
   DropdownTrigger,
-} from "@/shared/ui/dropdown";
+} from "@mike/ui";
 
 const noop = () => {};
 

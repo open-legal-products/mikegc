@@ -21,7 +21,7 @@ vi.mock("google-auth-library", () => ({
     }
   },
 }));
-vi.mock("../../user/user.service", () => ({ getEffectiveApiKeys: vi.fn(), envApiKeys: vi.fn(() => ({})) }));
+vi.mock("../../../lib/providerCredentials/index", () => ({ getEffectiveApiKeys: vi.fn(), envApiKeys: vi.fn(() => ({})) }));
 import type { DbJob } from "../../../lib/dbq/types";
 import { DbJobDeferredError } from "../../../lib/dbq/types";
 import { encryptString } from "../../../lib/mcp/client";

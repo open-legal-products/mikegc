@@ -11,7 +11,7 @@ import type {
 } from "@mike/contracts";
 import { useWorkspace } from "@/app/contexts/WorkspaceContext";
 import { notifyPartialFailure, notifyError } from "@/app/lib/userFacingError";
-import { notifySuccess } from "@/shared/lib/errorNotifier";
+import { notifySuccess } from "@mike/client";
 import {
   commandIntakeRequest,
   getIntakeMembers,
@@ -48,8 +48,8 @@ import {
 import { IntakeSkeuoIcon } from "@/app/components/shared/AppSidebarSkeuoIcons";
 import { formatDate } from "@/app/components/projects/ProjectPageParts";
 import { EmptyState } from "@/app/components/ui/empty-state";
-import { PillButtonUI } from "@/shared/ui/PillButtonUI";
-import { DropdownItem, DropdownSeparator } from "@/shared/ui/dropdown";
+import { PillButtonUI } from "@mike/ui";
+import { DropdownItem, DropdownSeparator } from "@mike/ui";
 import { ConfirmPopup } from "@/app/components/popups/ConfirmPopup";
 import { discardIntakeDraft, getIntakeMemory } from "@/app/lib/intakeMemory";
 import {
@@ -60,7 +60,7 @@ import {
   type IntakeTab,
 } from "./intakeQuery";
 import { IntakePageHeader } from "./IntakePageHeader";
-import { TabPillButtonUI } from "@/shared/ui/TabPillButtonUI";
+import { TabPillButtonUI } from "@mike/ui";
 import { IntakeReasonModal } from "./IntakeReasonModal";
 import { intakeError } from "./useIntakeOperation";
 import {

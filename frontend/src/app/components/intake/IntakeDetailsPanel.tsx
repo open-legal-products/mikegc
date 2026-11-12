@@ -11,7 +11,7 @@ import type {
 } from "@mike/contracts";
 import { SETTINGS_CONTROL_CLASS } from "@/app/components/settings/SettingsTextInput";
 import { FormTextInput } from "@/app/components/ui/form-field";
-import { TextButtonUI } from "@/shared/ui/TextButtonUI";
+import { TextButtonUI } from "@mike/ui";
 import { UserAvatar } from "@/app/components/ui/user-avatar";
 import { cn } from "@/app/lib/utils";
 import {
@@ -22,7 +22,7 @@ import {
   DropdownRadioItem,
   DropdownTrigger,
   DropdownSurface,
-} from "@/shared/ui/dropdown";
+} from "@mike/ui";
 import {
   DateCalendar,
   localDateValue,

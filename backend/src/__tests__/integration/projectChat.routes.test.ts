@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import request from "supertest";
+import { isReported } from "../../lib/observability/sentry";
 
 const {
     runLLMStream,
@@ -324,6 +325,31 @@ describe("POST /projects/:projectId/chat", () => {
             expect(dbUpdates.some(({ table }) => table === "chats")).toBe(false);
         },
     );
+
+    it("carries the request id on the terminal error frame when the stream fails", async () => {
+        runLLMStream.mockRejectedValueOnce(new Error("upstream LLM failure"));
+        const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+        const res = await request(app)
+            .post("/projects/p1/chat")
+            .set("Authorization", "Bearer test")
+            .send(VALID_BODY);
+
+        expect(res.status).toBe(200);
+        const errorFrame = JSON.parse(
+            res.text
+                .split("\n")
+                .filter((line) => line.includes('"type":"error"'))
+                .at(-1)!
+                .replace(/^data:\s*/, ""),
+        ) as { message: string; request_id?: string };
+        expect(errorFrame.message).toBe(
+            "The response could not be completed. Please try again.",
+        );
+        expect(errorFrame.request_id).toBe(res.headers["x-request-id"]);
+        expect(res.text).toContain("data: [DONE]");
+        errorSpy.mockRestore();
+    });
 
     it("streams SSE on the happy path with project access granted", async () => {
         const res = await request(app)
@@ -747,7 +773,8 @@ describe("POST /projects/:projectId/chat", () => {
     });
 
     it("surfaces a stream failure as an in-stream error event, not an HTTP error", async () => {
-        runLLMStream.mockRejectedValue(new Error("upstream LLM failure"));
+        const original = new Error("upstream LLM failure");
+        runLLMStream.mockRejectedValue(original);
 
         const res = await request(app)
             .post("/projects/p1/chat")
@@ -757,6 +784,8 @@ describe("POST /projects/:projectId/chat", () => {
         expect(res.status).toBe(200);
         expect(res.text).toContain('"type":"error"');
         expect(res.text).toContain("[DONE]");
+        expect(isReported(original)).toBe(true);
+        expect(res.text).toContain('"reporting_owner":"backend"');
     expect(releaseMemoryConversationTurn).toHaveBeenCalledWith({
       db: expect.anything(),
       surface: "chat",

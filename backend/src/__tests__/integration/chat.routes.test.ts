@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import request from "supertest";
+import { isReported } from "../../lib/observability/sentry";
 import { streamAiSdk } from "../../lib/llm/aiSdk";
 import {
     callStep,
@@ -1416,12 +1417,24 @@ describe("POST /chat — streaming endpoint", () => {
         const doneIndex = res.text.indexOf("data: [DONE]");
         expect(errorIndex).toBeGreaterThanOrEqual(0);
         expect(doneIndex).toBeGreaterThan(errorIndex);
+        // The database's error is logged wrapped in the AppError that names
+        // the kind (and was reported first), not as a bare PostgREST object.
         expect(errorSpy).toHaveBeenCalledWith(
             "[chat/stream] failed to save assistant response",
             expect.objectContaining({
-                message: "terminal update failed (attempt 3)",
+                kind: "chat.message_save_failed",
+                cause: expect.objectContaining({
+                    message: "terminal update failed (attempt 3)",
+                }),
             }),
         );
+        const errorFrame = JSON.parse(
+            res.text
+                .split("\n")
+                .find((line) => line.includes("could not be saved"))!
+                .replace(/^data:\s*/, ""),
+        ) as { request_id?: string };
+        expect(errorFrame.request_id).toBe(res.headers["x-request-id"]);
     expect(scheduleMemoryConsolidation).not.toHaveBeenCalled();
         errorSpy.mockRestore();
     });
@@ -1452,14 +1465,18 @@ describe("POST /chat — streaming endpoint", () => {
         expect(errorSpy).toHaveBeenCalledWith(
             "[chat/stream] failed to reserve assistant message",
             expect.objectContaining({
-                message: "assistant reservation failed",
+                kind: "chat.message_reserve_failed",
+                cause: expect.objectContaining({
+                    message: "assistant reservation failed",
+                }),
             }),
         );
         errorSpy.mockRestore();
     });
 
     it("surfaces a stream failure as an in-stream error event, not an HTTP error", async () => {
-        runLLMStream.mockRejectedValue(new Error("upstream LLM failure"));
+        const original = new Error("upstream LLM failure");
+        runLLMStream.mockRejectedValue(original);
 
         const res = await request(app)
             .post("/chat")
@@ -1471,6 +1488,20 @@ describe("POST /chat — streaming endpoint", () => {
         expect(res.status).toBe(200);
         expect(res.text).toContain('"type":"error"');
         expect(res.text).toContain("[DONE]");
+        expect(isReported(original)).toBe(true);
+        expect(res.text).toContain('"reporting_owner":"backend"');
+        // The terminal frame carries the request id (the X-Request-ID header)
+        // so the user can quote the one handle that finds this failure.
+        const errorFrame = JSON.parse(
+            res.text
+                .split("\n")
+                .filter((line) => line.includes('"type":"error"'))
+                .at(-1)!
+                .replace(/^data:\s*/, ""),
+        ) as { message: string; request_id?: string; safe_to_display?: boolean };
+        expect(errorFrame.request_id).toBe(res.headers["x-request-id"]);
+        expect(errorFrame.request_id).toMatch(/^[0-9a-f-]{36}$/);
+        expect(errorFrame.safe_to_display).toBeUndefined();
 
         const metadata = JSON.parse(
             res.text
@@ -1621,7 +1652,7 @@ describe("POST /chat — streaming endpoint", () => {
             }));
             if (decision === "approve") {
                 expect(execute).toHaveBeenCalledExactlyOnceWith(
-                    "u1", approval, expect.anything(),
+                    { userId: "u1", orgId: null }, approval, expect.anything(),
                 );
                 expect(row.content).toContainEqual(expect.objectContaining({
                     type: "mcp_tool_call", approval_id: approval.id, status: "ok",

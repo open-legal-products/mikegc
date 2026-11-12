@@ -36,11 +36,11 @@ import {
 } from "@/app/lib/mikeApi";
 import { useAssignLatest } from "@/app/hooks/useLatestRef";
 import { notifyError } from "@/app/lib/userFacingError";
-import { notifySuccess } from "@/shared/lib/errorNotifier";
-import { GlassCardUI } from "@/shared/ui/GlassCardUI";
-import { PillButtonUI } from "@/shared/ui/PillButtonUI";
-import { TextButtonUI } from "@/shared/ui/TextButtonUI";
-import { ToggleSwitchUI } from "@/shared/ui/ToggleSwitchUI";
+import { notifySuccess } from "@mike/client";
+import { GlassCardUI } from "@mike/ui";
+import { PillButtonUI } from "@mike/ui";
+import { TextButtonUI } from "@mike/ui";
+import { ToggleSwitchUI } from "@mike/ui";
 import { slackIntakeManifest } from "./slackManifest";
 import {
   intakeAutomationChanges,

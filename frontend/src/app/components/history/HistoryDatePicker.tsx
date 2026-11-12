@@ -10,13 +10,13 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/app/components/ui/popover";
-import { DropdownSurface } from "@/shared/ui/dropdown";
+import { DropdownSurface } from "@mike/ui";
 import {
   DateCalendar,
   localDateValue,
   parseDateValue,
 } from "@/app/components/ui/date-calendar";
-import { TextButtonUI } from "@/shared/ui/TextButtonUI";
+import { TextButtonUI } from "@mike/ui";
 
 export { localDateValue, parseDateValue as parseHistoryDate };
 

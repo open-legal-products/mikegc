@@ -19,7 +19,7 @@ import {
   type ChannelLink,
 } from "./intake.channels";
 import { runIntakeAgent, type AgentField, type AgentRequest } from "./intake.agent";
-import type { InboundRow } from "./intake.agentJob";
+import type { InboundRow } from "./intake.inboundStore";
 import { MAX_CLARIFY_ROUNDS, stableId } from "./intake.clarify";
 import {
   MAX_ATTACHMENT_BYTES,

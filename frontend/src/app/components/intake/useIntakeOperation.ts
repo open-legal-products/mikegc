@@ -1,7 +1,7 @@
 "use client";
 import { createElement, useEffect, useState } from "react";
 import { ConfirmPopup } from "@/app/components/popups/ConfirmPopup";
-import { notifyInfo } from "@/shared/lib/errorNotifier";
+import { notifyInfo } from "@mike/client";
 import {
   createIntakeMemory,
   notifyIntakeMemory,

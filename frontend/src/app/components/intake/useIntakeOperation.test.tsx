@@ -19,7 +19,10 @@ import {
 } from "@/app/lib/intakeMemory";
 
 const mocks = vi.hoisted(() => ({ notifyInfo: vi.fn() }));
-vi.mock("@/shared/lib/errorNotifier", () => ({ notifyInfo: mocks.notifyInfo }));
+vi.mock("@mike/client", async (importOriginal) => ({
+    ...(await importOriginal<typeof import("@mike/client")>()),
+    notifyInfo: mocks.notifyInfo,
+}));
 vi.mock("@/app/lib/userFacingError", () => ({
   notifyError: vi.fn(),
   describeError: vi.fn(),

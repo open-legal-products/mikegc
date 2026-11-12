@@ -1,7 +1,21 @@
 import { randomUUID } from "node:crypto";
 import { internalFailure, ok, type ServiceResult } from "../../lib/serviceResult";
 import type { Db } from "../../lib/supabase";
-import type { ChannelSource } from "./intake.channels";
+// From the contract, not intake.channels: that module stores through this one.
+import type { IntakeChannel as ChannelSource } from "@mike/contracts";
+
+/** A stored message, as both branches read it. */
+export type InboundRow = {
+  id: string;
+  org_id: string;
+  source: ChannelSource;
+  /** A new message, or a message in a recorded request's thread. */
+  kind: "request" | "reply";
+  status: "pending" | "done" | "failed" | "ignored";
+  payload: unknown;
+  request_id: string | null;
+  error: string | null;
+};
 
 /** Ownership of this attempt's payload, including its staged attachment keys. */
 type PayloadOwnership = "owned" | "unowned" | "unknown";

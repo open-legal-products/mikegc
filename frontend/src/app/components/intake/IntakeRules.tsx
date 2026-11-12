@@ -65,7 +65,7 @@ import {
 import { describeError } from "@/app/lib/userFacingError";
 import { setRowDragPreview } from "@/app/lib/rowDragPreview";
 import { cn } from "@/app/lib/utils";
-import { LIQUID_GLASS_FLOAT_CLASS } from "@/shared/ui/LiquidGlassUI";
+import { LIQUID_GLASS_FLOAT_CLASS } from "@mike/ui";
 import {
   Dropdown,
   DropdownContent,
@@ -75,8 +75,8 @@ import {
   DropdownRadioItem,
   DropdownSeparator,
   DropdownTrigger,
-} from "@/shared/ui/dropdown";
-import { PillButtonUI } from "@/shared/ui/PillButtonUI";
+} from "@mike/ui";
+import { PillButtonUI } from "@mike/ui";
 import { PLAIN_FIELD_CLASS } from "./IntakeDetailsPanel";
 import {
   MAX_INTAKE_RULE_CONDITION,

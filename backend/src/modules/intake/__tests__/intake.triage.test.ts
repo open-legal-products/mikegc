@@ -10,7 +10,7 @@ vi.mock("../../../lib/access", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../../lib/access")>()),
   getOrgRole: mocks.getOrgRole,
 }));
-vi.mock("../../user/user.service", () => ({
+vi.mock("../../../lib/providerCredentials/index", () => ({
   getEffectiveApiKeys: mocks.getEffectiveApiKeys,
   envApiKeys: mocks.envApiKeys,
 }));

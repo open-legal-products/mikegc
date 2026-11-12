@@ -26,7 +26,7 @@ vi.mock("../../playbooks/playbooks.service", () => ({
 vi.mock("../../workflows/workflows.service", () => ({
   getWorkflowDetail: mocks.getWorkflowDetail,
 }));
-vi.mock("../../user/user.service", () => ({
+vi.mock("../../../lib/providerCredentials/index", () => ({
   getEffectiveApiKeys: mocks.getEffectiveApiKeys,
   envApiKeys: mocks.envApiKeys,
 }));

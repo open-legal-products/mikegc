@@ -13,7 +13,7 @@ import {
 } from "../../lib/llm/models";
 import { hasApiKeyForModel } from "../../lib/modelSelection";
 import type { Db } from "../../lib/supabase";
-import { envApiKeys, getEffectiveApiKeys } from "../user/user.service";
+import { envApiKeys, getEffectiveApiKeys } from "../../lib/providerCredentials/index";
 import type { IntakeChannel } from "@mike/contracts";
 import {
   MAX_ATTACHMENT_BYTES,

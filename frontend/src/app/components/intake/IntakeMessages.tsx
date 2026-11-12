@@ -11,7 +11,7 @@ import type {
 } from "@mike/contracts";
 import { SkeletonLine } from "@/app/components/shared/TablePrimitive";
 import { cn } from "@/app/lib/utils";
-import { GlassCardUI } from "@/shared/ui/GlassCardUI";
+import { GlassCardUI } from "@mike/ui";
 import { IntakeActorAvatar } from "./IntakeActorAvatar";
 import { IntakeDeliveryStatus } from "./IntakeDeliveryStatus";
 import { INTAKE_TEXTAREA_CLASS } from "./IntakeDetailsPanel";
