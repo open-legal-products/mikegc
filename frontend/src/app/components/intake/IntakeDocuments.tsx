@@ -195,6 +195,8 @@ export function useIntakeDocumentViewer() {
       versionsLoading={historyLoading}
       canDelete={false}
       onClose={() => {
+        // A document still on its way must not reopen the closed panel.
+        openRequest.current++;
         setViewing(null);
         setVersionId(null);
       }}
