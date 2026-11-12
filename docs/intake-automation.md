@@ -14,7 +14,8 @@ three kinds of channel:
   in a channel MikeGC has been added to. A top-level message becomes the
   request, and its author is the requester. A mention in a thread sends the
   whole thread, up to the mention, and the thread's first author is the
-  requester.
+  requester. People from another organization in a channel shared with it
+  (Slack Connect) are ignored.
 - **Microsoft Teams.** Anyone mentions `@MikeGC` in a channel of a team the
   organization's own MikeGC bot has been added to, the same way as in Slack.
 

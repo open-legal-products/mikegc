@@ -296,6 +296,22 @@ describe("Slack events", () => {
     expect(inbound()).toEqual([]);
     expect(mocks.enqueueDbJob).not.toHaveBeenCalled();
   });
+  it("ignores people from another organization in a shared channel, and other workspaces", async () => {
+    memory.rows("intake_automation")[0]!.slack_team_id = "T1";
+    linkThread();
+    for (const body of [
+      mention({ user_team: "T2", team: "T2" }),
+      mention({ team: "T2" }),
+      { ...mention(), team_id: "T2" },
+      threadMessage({ user_team: "T2" }),
+    ])
+      expect((await slack(body)).status).toBe(200);
+    expect(inbound()).toEqual([]);
+    // The connected workspace's own people, named or not.
+    expect((await slack(mention({ user_team: "T1", team: "T2", ts: "1762074841.000100" }))).status).toBe(200);
+    expect((await slack(mention({ ts: "1762074842.000100" }))).status).toBe(200);
+    expect(inbound()).toHaveLength(2);
+  });
   it("asks Slack to retry when the message can't be queued", async () => {
     mocks.enqueueDbJob.mockRejectedValueOnce(new Error("db down"));
     vi.spyOn(console, "error").mockImplementation(() => undefined);
