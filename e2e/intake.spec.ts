@@ -220,8 +220,8 @@ test("Legal creates a business request, works it and resolves it exactly once", 
       await lawyerA.reload();
       await expect(
         activity.getByRole("button", { name: "Open test.pdf" }),
-      ).toBeVisible({ timeout: 2000 });
-    }).toPass({ timeout: 60000 });
+      ).toBeVisible({ timeout: render });
+    }).toPass({ timeout: process.env.REACT_STRESS === "1" ? 120000 : 60000 });
     await expect(
       documents.getByRole("button", { name: "Open test.pdf" }),
     ).toHaveCount(2);
