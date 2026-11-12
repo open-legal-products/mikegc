@@ -48,6 +48,12 @@ export {
     removeOrgLogo,
 } from "./orgs.logo";
 
+export {
+    getOrgProfile,
+    saveOrgProfile,
+    type OrgProfileSettings,
+} from "./orgs.profile";
+
 // Deleting an organization, or one kind of its content, needs the documents
 // and projects modules, so it lives here rather than in lib/orgs.ts.
 export {

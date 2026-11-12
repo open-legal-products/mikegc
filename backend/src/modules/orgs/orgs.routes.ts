@@ -47,6 +47,8 @@ import {
     getOrgLogo,
     saveOrgLogo,
     removeOrgLogo,
+    getOrgProfile,
+    saveOrgProfile,
     saveOrgRouterModels,
     normalizeOrgRouterSlug,
     listDepartureArchives,
@@ -253,6 +255,33 @@ orgsRouter.delete("/:orgId/logo", requireOrgAuth, asyncRoute(async (req, res) =>
     });
     if (!result.ok) return sendOrgFailure(res, result);
     res.json({ logo_updated_at: result.logo_updated_at });
+}));
+
+// GET /orgs/:orgId/profile — what the organization's owners and admins have
+// told the assistant and the intake agent about it (any member). Every field
+// is null until set.
+orgsRouter.get("/:orgId/profile", requireOrgAuth, asyncRoute(async (req, res) => {
+    const db = createServerSupabase();
+    const result = await getOrgProfile(db, {
+        userId: res.locals.userId as string,
+        orgId: req.params.orgId,
+    });
+    if (!result.ok) return sendOrgFailure(res, result);
+    res.json(result.profile);
+}));
+
+// PATCH /orgs/:orgId/profile — change the fields the body names (owner or
+// admin); an empty string or null clears one. Answers with the whole profile.
+orgsRouter.patch("/:orgId/profile", requireOrgAuth, asyncRoute(async (req, res) => {
+    const db = createServerSupabase();
+    const result = await saveOrgProfile(db, {
+        actorId: res.locals.userId as string,
+        actorEmail: res.locals.userEmail as string | undefined,
+        orgId: req.params.orgId,
+        body: req.body,
+    });
+    if (!result.ok) return sendOrgFailure(res, result);
+    res.json(result.profile);
 }));
 
 // DELETE /orgs/:orgId/data/:kind — permanently delete one kind of content

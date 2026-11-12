@@ -48,6 +48,7 @@ export const ACTION_LABELS: Record<string, string> = {
   "org.member.role_changed": "Member role changed",
   "org.logo.updated": "Logo updated",
   "org.logo.removed": "Logo removed",
+  "org.profile.updated": "Profile updated",
   "org.router_models.updated": "Models updated",
   "org.departure.item.transferred": "Departed work transferred",
   "org.departure.item.archived": "Departed work archived",

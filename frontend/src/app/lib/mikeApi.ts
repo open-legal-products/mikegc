@@ -1837,6 +1837,51 @@ export async function deleteOrgLogo(orgId: string): Promise<void> {
     await apiRequest(`/orgs/${orgId}/logo`, { method: "DELETE" });
 }
 
+/** A text field of an organization's profile. */
+export type OrgProfileTextField =
+    | "about"
+    | "industry"
+    | "headquarters_city"
+    | "headquarters_country"
+    | "legal_entities"
+    | "legal_team_scope"
+    | "additional_context";
+
+/** Every field of an organization's profile. */
+export type OrgProfileFields = Record<OrgProfileTextField, string | null> & {
+    /** Picked from the jurisdiction options; empty until set. */
+    jurisdictions: string[];
+};
+
+/**
+ * What an organization's owners and admins tell the assistant and the intake
+ * agent about it. Every text field is null until set.
+ */
+export type OrgProfile = OrgProfileFields & {
+    /** When it last changed, or null before anything was ever set. */
+    updated_at: string | null;
+};
+
+/** The organization's profile (any member may read it). */
+export async function getOrgProfile(orgId: string): Promise<OrgProfile> {
+    return apiRequest<OrgProfile>(`/orgs/${orgId}/profile`);
+}
+
+/**
+ * Change the fields given (owner or admin); an empty string or null clears a
+ * text field, an empty list the jurisdictions. Answers with the whole profile.
+ */
+export async function updateOrgProfile(
+    orgId: string,
+    changes: Partial<OrgProfileFields>,
+): Promise<OrgProfile> {
+    return apiRequest<OrgProfile>(`/orgs/${orgId}/profile`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(changes),
+    });
+}
+
 /**
  * An organization's model provider keys, as its members see them. Never a
  * key itself: only which providers are set up.
