@@ -445,6 +445,10 @@ Apply migrations before starting the new application build:
   made from and refuse the update once the request has changed since, and
   makes `intake_ask_automated` refuse a question to choose the rule once the
   rule is settled.
+- `20261112_05_intake_thread_claim.sql` makes `intake_submit_automated`
+  link a Slack or Teams request's thread in the call that records it, and
+  adds `intake_follow_thread`, so a second mention in that thread stored as a
+  new request becomes the first request's reply instead of a second request.
 
 Use the existing migration runner documented in [deployment.md](deployment.md).
 Do not replay historical migrations over a fresh schema. Fresh installations use

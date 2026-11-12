@@ -41,6 +41,7 @@ import {
   type InboundPayload,
   type MailInboundPayload,
   type AgentPlan,
+  type ReplyPayload,
   type SlackInboundPayload,
 } from "./intake.inboundPayload";
 import { gmailAdapter } from "./intake.gmail";
@@ -347,14 +348,78 @@ async function inboundMessage(
   }
 }
 
+type ChatPayload = Extract<InboundPayload, { kind: "slack" | "teams" }>;
+type ChatThread = { source: "slack" | "teams"; key: string };
+type Thread = { source: ChannelSource; key: string; address: Record<string, unknown> };
+
+/**
+ * A Slack or Teams thread's key, as links and conversations key it, from the
+ * message alone: no call to the channel.
+ */
+function chatThreadKey(settings: AutomationRow | null, payload: ChatPayload): ChatThread {
+  if (payload.kind === "teams") return { source: "teams", key: teamsThread(payload).key };
+  const team = payload.team_id ?? settings?.slack_team_id ?? "";
+  return { source: "slack", key: `${team}:${payload.channel}:${payload.thread_ts ?? payload.ts}` };
+}
+
+/**
+ * A Slack or Teams message as the reply branch stores it, for when another
+ * request's thread turns out to hold it. Only what identifies the message:
+ * none of the new-message branch's progress, so it is planned as a reply.
+ */
+function replyFor(payload: ChatPayload): ReplyPayload {
+  if (payload.kind === "slack")
+    return {
+      kind: "slack_reply",
+      channel: payload.channel,
+      ts: payload.ts,
+      // A mention at the top level is its thread's root.
+      thread_ts: payload.thread_ts ?? payload.ts,
+      user: payload.user,
+    };
+  return {
+    kind: "teams_reply",
+    activity_id: payload.activity_id,
+    service_url: payload.service_url,
+    from: payload.from,
+    date: payload.date,
+    text: payload.text,
+    files: payload.files,
+  };
+}
+
+/**
+ * Hand a Slack or Teams message to the request whose thread it is in, when
+ * that thread is already linked: it becomes the request's reply. The request,
+ * or null when the thread is free.
+ */
+async function followThread(
+  db: Db,
+  row: InboundRow,
+  settings: AutomationRow | null,
+  payload: ChatPayload,
+): Promise<string | null> {
+  const thread = chatThreadKey(settings, payload);
+  const result = await intakeRpc<string | null>(db, "intake_follow_thread", {
+    p_org: row.org_id,
+    p_inbound: row.id,
+    p_source: thread.source,
+    p_thread_key: thread.key,
+    p_reply: replyFor(payload),
+  });
+  if (!result.ok) throw result.kind === "error" ? result.error : new Error(result.detail);
+  return result.data;
+}
+
+/** What runInbound returns for a message it handed to the reply branch. */
+export const REROUTED_TO_REPLY = { rerouted: "reply" } as const;
+
 /** The thread to link a request to: its key and what posting there needs. */
-async function threadOf(
-  settings: AutomationRow,
-  payload: InboundPayload,
-): Promise<{ source: ChannelSource; key: string; address: Record<string, unknown> } | null> {
+async function threadOf(settings: AutomationRow, payload: InboundPayload): Promise<Thread | null> {
   switch (payload.kind) {
     case "slack": {
       const token = requireSlackToken(settings);
+      const { key } = chatThreadKey(settings, payload);
       const root = payload.thread_ts ?? payload.ts;
       const team = payload.team_id ?? settings.slack_team_id ?? "";
       const [channelName, permalink] = await Promise.all([
@@ -363,7 +428,7 @@ async function threadOf(
       ]);
       return {
         source: "slack",
-        key: `${team}:${payload.channel}:${root}`,
+        key,
         address: {
           team_id: team || null,
           channel: payload.channel,
@@ -380,15 +445,19 @@ async function threadOf(
   }
 }
 
-/** Link a recorded request to the thread its message came from. */
+/**
+ * Link a recorded request to the thread its message came from. A Slack or
+ * Teams request was linked when it was recorded; this finds that link.
+ */
 async function linkRequestThread(
   db: Db,
   orgId: string,
   requestId: string,
   settings: AutomationRow,
   payload: InboundPayload,
+  known?: Thread | null,
 ) {
-  const thread = await threadOf(settings, payload);
+  const thread = known ?? (await threadOf(settings, payload));
   if (!thread) return;
   const linkId = await linkThread(db, {
     orgId,
@@ -415,13 +484,16 @@ function downloader(settings: AutomationRow | null): CandidateDownloader {
 /**
  * Record the request. One the database refuses is recorded once more
  * without its date and requester email, which are the fields a model or a
- * sender could get wrong.
+ * sender could get wrong. A Slack or Teams request is linked to its thread
+ * in the same call; when another request linked that thread first, the
+ * message becomes its reply and that request's ID comes back instead.
  */
 async function submit(
   db: Db,
   row: InboundRow,
   record: NonNullable<AgentPlan["record"]>,
   assigneeId: string | null,
+  chat: { thread: Thread; reply: ReplyPayload } | null,
 ): Promise<string> {
   const args = (r: NonNullable<AgentPlan["record"]>) => ({
     p_org: row.org_id,
@@ -433,6 +505,14 @@ async function submit(
     p_requester_email: r.requester_email,
     p_date: r.requested_by_date,
     p_assignee: assigneeId,
+    ...(chat
+      ? {
+          p_source: chat.thread.source,
+          p_thread_key: chat.thread.key,
+          p_address: chat.thread.address,
+          p_reply: chat.reply,
+        }
+      : {}),
   });
   let result = await intakeRpc<string>(db, "intake_submit_automated", args(record));
   if (!result.ok && result.kind === "validation")
@@ -480,12 +560,7 @@ function conversationThread(
   settings: AutomationRow | null,
   payload: InboundPayload,
 ): { source: ConversationSource; key: string } | null {
-  if (payload.kind === "slack")
-    return {
-      source: "slack",
-      key: `${payload.team_id ?? settings?.slack_team_id ?? ""}:${payload.channel}:${payload.thread_ts ?? payload.ts}`,
-    };
-  if (payload.kind === "teams") return { source: "teams", key: teamsThread(payload).key };
+  if (payload.kind === "slack" || payload.kind === "teams") return chatThreadKey(settings, payload);
   if (payload.kind === "mail" && settings && !payload.related_request_id) {
     const thread = mailThread(settings, payload);
     return thread ? { source: thread.source as ConversationSource, key: thread.key } : null;
@@ -631,8 +706,13 @@ async function processInbound(db: Db, row: InboundRow): Promise<Record<string, u
   // own. Mail in another request's thread is recorded apart, and the thread
   // stays that request's.
   const canAsk = !(payload.kind === "mail" && payload.related_request_id);
+  // A Slack or Teams thread holds one request. A mention stored as a new
+  // request before another in its thread was recorded is that request's
+  // reply: checked before the model plans it, and again as it is recorded.
+  const chat = payload.kind === "slack" || payload.kind === "teams" ? payload : null;
 
   if (!payload.agent) {
+    if (chat && (await followThread(db, row, settings, chat))) return { ...REROUTED_TO_REPLY };
     payload.agent = await planInbound(db, row, settings, payload);
     await save();
   }
@@ -675,14 +755,27 @@ async function processInbound(db: Db, row: InboundRow): Promise<Record<string, u
   if (!plan.record) throw new NonRetryableJobError(GENERIC_FAILURE);
   // With questions, the rule is undecided: recorded unassigned, waiting.
   const rule = plan.questions.length ? null : plan.rule;
-  const requestId =
-    row.request_id ?? (await submit(db, row, plan.record, rule?.assignee_id ?? null));
+  let thread: Thread | null = null;
+  let requestId = row.request_id;
+  if (!requestId) {
+    thread = chat && settings ? await threadOf(settings, chat) : null;
+    requestId = await submit(
+      db,
+      row,
+      plan.record,
+      rule?.assignee_id ?? null,
+      chat && thread ? { thread, reply: replyFor(chat) } : null,
+    );
+    // Another request linked the thread first: the message is its reply now,
+    // with the reply's payload, so nothing more is saved here.
+    if (requestId !== row.id) return { ...REROUTED_TO_REPLY };
+  }
   if (!payload.recorded) {
     payload.recorded = true;
     await save();
   }
   if (settings && !payload.linked) {
-    await linkRequestThread(db, row.org_id, requestId, settings, payload);
+    await linkRequestThread(db, row.org_id, requestId, settings, payload, thread);
     payload.linked = true;
     await save();
   }

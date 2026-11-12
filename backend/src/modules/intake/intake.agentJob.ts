@@ -2,7 +2,7 @@ import { z } from "zod";
 import { NonRetryableJobError } from "../../lib/dbq/runner";
 import type { DbJob } from "../../lib/dbq/types";
 import type { Db } from "../../lib/supabase";
-import { markInboundFailed, runInbound } from "./intake.automationJob";
+import { REROUTED_TO_REPLY, markInboundFailed, runInbound } from "./intake.automationJob";
 import { markReplyFailed, runReply } from "./intake.reply";
 import type { InboundRow } from "./intake.inboundStore";
 import { intakeOrgDeleted } from "./intake.settingsRow";
@@ -50,7 +50,13 @@ export async function handleIntakeAgent(
   if (!row) return { skipped: "missing" };
   if (row.status !== "pending") return { skipped: row.status };
   if (await intakeOrgDeleted(db, row.org_id)) return { skipped: "organization_deleted" };
-  return row.kind === "reply" ? runReply(db, row) : runInbound(db, row);
+  if (row.kind === "reply") return runReply(db, row);
+  const result = await runInbound(db, row);
+  if (result.rerouted !== REROUTED_TO_REPLY.rerouted) return result;
+  // A mention whose thread another request had linked became its reply.
+  const reply = await loadInbound(db, ids.data);
+  if (!reply || reply.status !== "pending" || reply.kind !== "reply") return result;
+  return runReply(db, reply);
 }
 
 /** When a message's job has failed for good. */

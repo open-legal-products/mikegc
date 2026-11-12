@@ -630,9 +630,14 @@ channels are supported.
   its documents and links them with `intake_attach_automated`, and asks
   (`intake_ask_automated`) or acknowledges (`intake_acknowledge_automated`). A
   retried job reuses the request and documents it already made and never
-  acknowledges twice. A message that still fails after its retries is
-  recorded as failed, with a reason, in `intake_inbound`, and MikeGC says so
-  in a Slack or Teams thread. An email isn't answered, so a bounce of that
+  acknowledges twice. A Slack or Teams thread holds one request: its link is
+  written in the same `intake_submit_automated` call that records the
+  request, and a mention stored as a new request in a thread another request
+  has since linked becomes that request's reply (`intake_follow_thread`,
+  checked before the agent plans and again as the request is recorded), so
+  two mentions arriving together make one request and one reply. A message
+  that still fails after its retries is recorded as failed, with a reason, in
+  `intake_inbound`, and MikeGC says so in a Slack or Teams thread. An email isn't answered, so a bounce of that
   answer can't start a loop.
 - **Replies.** The `intake.agent` job's reply branch reads the reply from its channel,
   records it with `intake_reply_automated`, adds its files, and then queues
