@@ -536,6 +536,53 @@ describe("the intake mailbox", () => {
       data: { email: { gmail: { client_id: null, deployment_key: false } } },
     });
   });
+  it("refuses the shared account by default, and stops a connected mailbox's test email once its grant goes", async () => {
+    process.env.INTAKE_GMAIL_SERVICE_ACCOUNT_KEY = JSON.stringify({
+      client_email: "mikegc@project.iam.gserviceaccount.com",
+      private_key: "-----BEGIN PRIVATE KEY-----",
+      client_id: "1234567890",
+    });
+    // The key alone grants nobody: the list is unset.
+    mocks.gmailProfile.mockResolvedValue({ emailAddress: "intake@firm.test", historyId: "9001" });
+    expect(
+      await connectIntakeMailbox(memory.db, scope(owner), { provider: "gmail", mailbox: "intake@firm.test" }),
+    ).toMatchObject({ ok: false, kind: "validation", detail: expect.stringMatching(/own service account/) });
+    expect(mocks.gmailProfile).not.toHaveBeenCalled();
+    expect(await getIntakeAutomation(memory.db, scope(owner))).toMatchObject({
+      ok: true,
+      data: { email: { gmail: { client_id: null, deployment_key: false } } },
+    });
+    // Granted, it connects; an address in different case is the same mailbox.
+    process.env.INTAKE_GMAIL_SHARED_MAILBOXES = `${org.toUpperCase()}=Intake@Firm.test`;
+    expect(
+      await connectIntakeMailbox(
+        memory.db,
+        { ...scope(owner), userEmail: "olive@firm.test" },
+        { provider: "gmail", mailbox: "intake@firm.test" },
+      ),
+    ).toMatchObject({ ok: true });
+    expect(row()).toMatchObject({ email_provider: "gmail", email_mailbox: "intake@firm.test" });
+    // Moving it to an address the grant doesn't cover is refused, and the
+    // connected mailbox stays as it was.
+    mocks.gmailProfile.mockClear();
+    expect(
+      await connectIntakeMailbox(memory.db, scope(owner), { provider: "gmail", mailbox: "ceo@firm.test" }),
+    ).toMatchObject({ ok: false, kind: "validation" });
+    expect(mocks.gmailProfile).not.toHaveBeenCalled();
+    expect(row().email_mailbox).toBe("intake@firm.test");
+    // The grant withdrawn: the saved mailbox can no longer send, even a test.
+    mocks.gmailSendTest.mockClear();
+    delete process.env.INTAKE_GMAIL_SHARED_MAILBOXES;
+    expect(
+      await sendIntakeMailboxTest(memory.db, { ...scope(owner), userEmail: "olive@firm.test" }),
+    ).toMatchObject({ ok: false });
+    expect(mocks.gmailSendTest).not.toHaveBeenCalled();
+    // Restored, it sends again without reconnecting.
+    process.env.INTAKE_GMAIL_SHARED_MAILBOXES = `${org}=@firm.test`;
+    expect(
+      await sendIntakeMailboxTest(memory.db, { ...scope(owner), userEmail: "olive@firm.test" }),
+    ).toEqual({ ok: true, data: { sent_to: "olive@firm.test" } });
+  });
   it("ends the Outlook subscription when the mailbox moves to Google Workspace", async () => {
     await getIntakeAutomation(memory.db, scope(owner));
     const secret = encryptString("graph-secret");

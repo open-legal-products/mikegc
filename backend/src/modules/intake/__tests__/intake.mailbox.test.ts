@@ -444,6 +444,26 @@ describe("reading the mailbox", () => {
       await expect(gmailAdapter.deliver(ctx, link, reply, null)).rejects.toThrow(/isn't connected/);
       expect(fetch).not.toHaveBeenCalled();
     });
+    it("reads the mailbox again by itself once its grant is restored, and looks for nothing sent while refused", async () => {
+      delete process.env.INTAKE_GMAIL_SHARED_MAILBOXES;
+      const fetched = vi.fn(async () => Response.json({ history: [], historyId: "200" }));
+      vi.stubGlobal("fetch", fetched);
+      await expect(handleIntakeMailboxPoll(memory.db, poll())).rejects.toBeInstanceOf(DbJobDeferredError);
+      expect(fetched).not.toHaveBeenCalled();
+      expect(settings().email_error).toMatch(/own service account/);
+      // A delivery being retried finds nothing to reconcile, without asking Google.
+      linkThread();
+      const ctx = { db: memory.db, settings: settings(), fromName: "Legal" } as unknown as Parameters<typeof gmailAdapter.findDelivered>[0];
+      const link = memory.rows("intake_channel_links")[0] as unknown as Parameters<typeof gmailAdapter.findDelivered>[1];
+      const message = { id: "m1", author: { kind: "mikegc" }, body: "x", documents: [] } as unknown as Parameters<typeof gmailAdapter.findDelivered>[2];
+      await expect(gmailAdapter.findDelivered(ctx, link, message, new Date().toISOString())).resolves.toBeNull();
+      expect(fetched).not.toHaveBeenCalled();
+      // The operator lists the organization: the same job reads on its next run.
+      process.env.INTAKE_GMAIL_SHARED_MAILBOXES = `${org}=@firm.test`;
+      await expect(handleIntakeMailboxPoll(memory.db, poll())).rejects.toBeInstanceOf(DbJobDeferredError);
+      expect(fetched).toHaveBeenCalled();
+      expect(settings().email_error).toBeNull();
+    });
     it("starts the next read after the last record when the history is too long for one", async () => {
       let page = 0;
       const reads: string[] = [];

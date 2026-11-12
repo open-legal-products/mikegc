@@ -7,6 +7,8 @@ import {
   uploadConversionTimeoutMs,
   uploadJobWallClockMs,
   uploadProcessingConfiguration,
+  gmailSharedMailboxGrants,
+  gmailSharedMailboxWarnings,
   storagePublicEndpointWarnings,
   uploadSessionRateLimitConfiguration,
   validateRuntimeConfiguration,
@@ -313,5 +315,91 @@ describe("storagePublicEndpointWarnings", () => {
     ["https://mike.firm.example", "https://mike.firm.example"],
   ])("is quiet for FRONTEND_URL %s with public storage %s", (frontend, endpoint) => {
     expect(at(frontend, endpoint)).toEqual([]);
+  });
+});
+
+describe("the shared Gmail account's grants (INTAKE_GMAIL_SHARED_MAILBOXES)", () => {
+  const acme = "3f2a1b4c-0000-4000-8000-00000000000a";
+  const globex = "9c1d2e3f-0000-4000-8000-00000000000b";
+  const grants = (value: string | undefined) =>
+    Object.fromEntries(
+      gmailSharedMailboxGrants({ INTAKE_GMAIL_SHARED_MAILBOXES: value } as NodeJS.ProcessEnv),
+    );
+
+  it("grants nothing when unset or empty", () => {
+    expect(grants(undefined)).toEqual({});
+    expect(grants("")).toEqual({});
+    expect(grants("  \n ")).toEqual({});
+  });
+  it("reads addresses and domains per organization, separated by commas, spaces or lines", () => {
+    expect(
+      grants(`${acme}=intake@acme.com, ${globex}=@globex.com\n${acme}=legal@acme.com\t${acme}=@acme.co.uk`),
+    ).toEqual({
+      [acme]: ["intake@acme.com", "legal@acme.com", "@acme.co.uk"],
+      [globex]: ["@globex.com"],
+    });
+  });
+  it("compares organization IDs, addresses and domains without regard to case", () => {
+    expect(grants(`${acme.toUpperCase()}=Intake@Acme.COM`)).toEqual({ [acme]: ["intake@acme.com"] });
+  });
+  it("grants nothing for an entry it cannot read, and still reads the others", () => {
+    const malformed = [
+      "intake@acme.com", // no organization
+      `${acme}`, // no mailbox
+      `${acme}=`, // no mailbox
+      `${acme}=acme.com`, // a bare domain: neither an address nor @domain
+      `${acme}=@`, // no domain
+      `${acme}=@localhost`, // no dot
+      `${acme}=a@b@acme.com`, // two @
+      `${acme}=*@acme.com=x`, // a second =
+      `not-a-uuid=intake@acme.com`,
+      `${acme.slice(0, 35)}=intake@acme.com`, // a short ID
+      `"${acme}=intake@acme.com"`, // quoted
+      `${acme}:intake@acme.com`, // wrong separator
+      `${acme}=intake@acme.com;${globex}=@globex.com`, // semicolons
+    ];
+    for (const entry of malformed) expect(grants(entry), entry).toEqual({});
+    expect(grants(`${malformed.join(" ")} ${globex}=@globex.com`)).toEqual({
+      [globex]: ["@globex.com"],
+    });
+  });
+  it("never treats a wildcard or a pattern as one: an entry is an exact address or domain", () => {
+    // Read as literal text, so they can only ever match that literal mailbox.
+    expect(grants(`${acme}=*@acme.com`)).toEqual({ [acme]: ["*@acme.com"] });
+    expect(grants(`${acme}=@*.com`)).toEqual({ [acme]: ["@*.com"] });
+  });
+
+  describe("warnings at boot", () => {
+    const warnings = (env: Record<string, string | undefined>) =>
+      gmailSharedMailboxWarnings(env as NodeJS.ProcessEnv);
+    it("says nothing when the shared account is not in use, or is granted", () => {
+      expect(warnings({})).toEqual([]);
+      // Grants without a key are harmless: there is no account to use.
+      expect(warnings({ INTAKE_GMAIL_SHARED_MAILBOXES: `${acme}=@acme.com` })).toEqual([]);
+      expect(
+        warnings({
+          INTAKE_GMAIL_SERVICE_ACCOUNT_KEY: "{}",
+          INTAKE_GMAIL_SHARED_MAILBOXES: `${acme}=@acme.com`,
+        }),
+      ).toEqual([]);
+    });
+    it("warns when the shared key is set and no organization is granted a mailbox", () => {
+      for (const list of [undefined, "", `${acme}=acme.com`]) {
+        const said = warnings({
+          INTAKE_GMAIL_SERVICE_ACCOUNT_KEY: "{}",
+          INTAKE_GMAIL_SHARED_MAILBOXES: list,
+        });
+        expect(said.at(-1)).toMatch(/grants no organization a mailbox/);
+      }
+    });
+    it("counts entries it cannot read without printing them", () => {
+      const said = warnings({
+        INTAKE_GMAIL_SERVICE_ACCOUNT_KEY: "{}",
+        INTAKE_GMAIL_SHARED_MAILBOXES: `${acme}=@acme.com ${acme}=secret-typo.example intake@oops.example`,
+      });
+      expect(said).toHaveLength(1);
+      expect(said[0]).toMatch(/has 2 entries that are not/);
+      expect(said.join(" ")).not.toMatch(/secret-typo|oops\.example|3f2a1b4c/);
+    });
   });
 });

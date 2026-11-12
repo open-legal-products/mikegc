@@ -768,7 +768,9 @@ entry isn't offered the shared account and must paste its own key; a mailbox
 already connected that isn't granted stops being read and replied from, and
 Intake settings asks for the organization's own key. Upgrading a deployment
 that uses the shared key: add an entry for every organization whose Gmail
-mailbox relies on it. Otherwise no new environment variables are
+mailbox relies on it. The backend warns at startup when the shared key is
+set and no organization is granted a mailbox, and when an entry can't be read
+(it counts such entries; a mistyped entry grants nothing). Otherwise no new environment variables are
 required: the webhook and notification URLs are built from `API_PUBLIC_URL`,
 the request links in members' notes from `FRONTEND_URL`, and secrets are
 encrypted with `MCP_CONNECTORS_ENCRYPTION_SECRET` (or

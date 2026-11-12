@@ -170,6 +170,29 @@ export function gmailSharedMailboxGrants(
   return grants;
 }
 
+/**
+ * What an operator should know at boot about the shared Gmail account's
+ * grants, or [] when nothing is visibly wrong. The list denies by default,
+ * so a forgotten variable or a mistyped entry looks the same as a refusal:
+ * mailboxes quietly stop being read. Entries are counted, never printed.
+ */
+export function gmailSharedMailboxWarnings(
+  env: NodeJS.ProcessEnv = process.env,
+): string[] {
+  const entries = (env.INTAKE_GMAIL_SHARED_MAILBOXES ?? "").split(/[\s,]+/).filter(Boolean);
+  const malformed = entries.filter((entry) => !GMAIL_SHARED_MAILBOX_GRANT.test(entry)).length;
+  const warnings: string[] = [];
+  if (malformed)
+    warnings.push(
+      `INTAKE_GMAIL_SHARED_MAILBOXES has ${malformed} ${malformed === 1 ? "entry that is" : "entries that are"} not "<organization id>=<address>" or "<organization id>=@<domain>" and ${malformed === 1 ? "grants" : "grant"} nothing (docs/intake-automation.md).`,
+    );
+  if (env.INTAKE_GMAIL_SERVICE_ACCOUNT_KEY?.trim() && entries.length === malformed)
+    warnings.push(
+      "INTAKE_GMAIL_SERVICE_ACCOUNT_KEY is set but INTAKE_GMAIL_SHARED_MAILBOXES grants no organization a mailbox, so no organization can use the shared Gmail account: mailboxes that relied on it are not read or replied from until each is listed (docs/intake-automation.md).",
+    );
+  return warnings;
+}
+
 function parsedUrl(value: string, name: string, errors: string[]): URL | null {
   try {
     const url = new URL(value);
