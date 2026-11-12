@@ -111,7 +111,8 @@ describe("intake RPC failures", () => {
     const result = await intakeRpc({ rpc } as unknown as Db, "intake_submit_request", {});
     expect(result).toMatchObject({ ok: false, kind: "error" });
     const reported = (result as { error: Error }).error;
-    expect(reported.message).toBe("Intake database operation failed (XX000)");
+    // Which operation failed, and its code: never the database's own text.
+    expect(reported.message).toBe("Intake database operation intake_submit_request failed (XX000)");
     expect(reported.cause).toBe(error);
   });
 });
