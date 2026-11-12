@@ -303,14 +303,18 @@ export function redactShaped(value: unknown, depth = 0): unknown {
  * (it ships in every browser bundle). Community installs report here by
  * default so the project learns what forks run into; the opt-out and the
  * override are one variable each (see resolveDsn).
+ *
+ * MikeGC: these are the mikegc-backend, mikegc-frontend and
+ * mikegc-word-addin projects, not upstream Mike's. Keep them when merging
+ * upstream.
  */
 export const MIKE_SENTRY_DSN = {
   backend:
-    "https://d0d66029ed783707289c965cd3d5c868@o4512288166510592.ingest.us.sentry.io/4512288204718080",
+    "https://cd123952c9b47e9bce2ad831097fa6d6@o4512288166510592.ingest.us.sentry.io/4512420131110912",
   frontend:
-    "https://fa97921af9f387723a4bc3d42dd7bb44@o4512288166510592.ingest.us.sentry.io/4512288207798272",
+    "https://04a67eb767e7d826be4cf3e6b3e84b46@o4512288166510592.ingest.us.sentry.io/4512420131241984",
   wordAddin:
-    "https://2b90028876534676ea38580cfc61cdde@o4512288166510592.ingest.us.sentry.io/4512288210812928",
+    "https://f19d6ed80b9f752010ccd1b2324294f1@o4512288166510592.ingest.us.sentry.io/4512420131307521",
 } as const;
 
 export type DsnResolution = {

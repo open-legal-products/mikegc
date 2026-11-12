@@ -27,6 +27,17 @@ To opt out, set `SENTRY_DISABLED=true`
 browser and add-in builds); to use your own Sentry instead, set the matching
 `*_SENTRY_DSN`.
 
+**MikeGC destination.** In this repository "the Mike project's Sentry" and
+"the built-in Mike DSNs" mean MikeGC's own projects in the
+`open-legal-products` Sentry organization: `mikegc-backend`,
+`mikegc-frontend` and `mikegc-word-addin`. Upstream Mike reports to the
+separate `mike-*` projects. The table is `MIKE_SENTRY_DSN` in
+`backend/src/lib/observability/sentry.ts` and
+`packages/client/src/sentryEvent.ts`; keep MikeGC's values when merging
+upstream. The repository variables for image publication are
+`SENTRY_ORG=open-legal-products`, `SENTRY_PROJECT_FRONTEND=mikegc-frontend`
+and `SENTRY_PROJECT_BACKEND=mikegc-backend`.
+
 The [data audit](sentry-data-audit.md) preserves the earlier leak findings and
 records the final transport boundary that closes them. Internal source-code
 filenames identify the failing code; client document filenames are excluded.
