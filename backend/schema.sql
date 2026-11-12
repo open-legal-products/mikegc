@@ -11531,6 +11531,16 @@ alter table public.intake_events drop constraint if exists intake_events_outboun
 alter table public.intake_events add constraint intake_events_outbound_id_fkey
   foreign key (outbound_id) references public.intake_outbound(id) on delete set null;
 create index if not exists intake_events_outbound on public.intake_events(outbound_id) where outbound_id is not null;
+-- intake_claim_notifications (polled by every open tab) asks whether an event
+-- exists for a message, and deleting an intake message cascades to its
+-- events by the same column. Neither had an index to use, so both read every
+-- organization's events.
+create index if not exists intake_events_message
+  on public.intake_events(message_id) where message_id is not null;
+-- intake_dashboard reads each time one organization resolved a request; no
+-- index on intake_events led with org_id.
+create index if not exists intake_events_org_resolved
+  on public.intake_events(org_id, created_at) where to_state = 'resolved' and request_id is not null;
 
 -- Every Message-ID seen or sent in a request's email thread, so a reply is
 -- matched on In-Reply-To or References even when its subject was edited.
@@ -14690,5 +14700,6 @@ insert into public.schema_migrations (filename) values
   ('20261111_03_intake_retire_postmark.sql'),
   ('20261111_04_intake_answer_automated.sql'),
   ('20261112_01_org_profiles.sql'),
-  ('20261112_02_intake_after_upstream_sync.sql')
+  ('20261112_02_intake_after_upstream_sync.sql'),
+  ('20261112_03_intake_event_indexes.sql')
 on conflict (filename) do nothing;
