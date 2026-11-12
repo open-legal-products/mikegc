@@ -20,6 +20,7 @@ import type {
 import { IntakeInbox, Inbox } from "./IntakeInbox";
 import { IntakeDetail, Detail } from "./IntakeDetail";
 import { IntakeNewRequestPage } from "./IntakeNewRequest";
+import { INTAKE_NOTIFIED_EVENT } from "./intakeNotificationToasts";
 import { setIntakeMemoryAccount } from "@/app/lib/intakeMemory";
 
 const mocks = vi.hoisted(() => ({
@@ -3491,4 +3492,226 @@ describe("requester loop", () => {
     expect(window.location.search).toBe("?reply=new");
   });
 
+});
+
+describe("detail edit automation handoff", () => {
+  const waiting = (extra: Partial<IntakeRequest> = {}) => request({
+    state: "needs_information", clarify_stage: "rule", clarify_rounds: 1,
+    new_reply: true, last_reply_at: "2026-11-04T12:00:00Z", ...extra,
+  });
+  const dialog = () => screen.getByRole("dialog", { name: "Stop automatic follow-up?" });
+  const saveButton = () => within(dialog()).getByRole("button", { name: "Save and stop follow-up" });
+  async function editDate() {
+    const date = await screen.findByLabelText("Target date");
+    fireEvent.change(date, { target: { value: "Nov 10, 2026" } });
+    fireEvent.keyDown(date, { key: "Enter" });
+    fireEvent.blur(date);
+    await screen.findByRole("dialog", { name: "Stop automatic follow-up?" });
+  }
+  beforeEach(() => { mocks.request.mockResolvedValue(waiting()); });
+
+  it("keeps the pending handoff when an active field blurs into the Assistant header", async () => {
+    const user = userEvent.setup(); render(detail());
+    const date = await screen.findByLabelText("Target date");
+    await user.click(date);
+    fireEvent.change(date, { target: { value: "Nov 10, 2026" } });
+    await user.click(screen.getByRole("button", { name: "Process this request in a new Assistant chat" }));
+    expect(dialog()).toBeInTheDocument();
+    expect(mocks.push).not.toHaveBeenCalled();
+    expect(mocks.edit).not.toHaveBeenCalled();
+    expect(mocks.replySeen).not.toHaveBeenCalled();
+  });
+  it("invalidates pending approval when a status notification refreshes the request", async () => {
+    render(detail()); await editDate();
+    mocks.request.mockResolvedValue(waiting({ version: 2, state: "in_review", clarify_stage: null }));
+    act(() => window.dispatchEvent(new CustomEvent(INTAKE_NOTIFIED_EVENT, {
+      detail: { requests: [{ workspace: "org-a", request_id: "request-a" }] },
+    })));
+    await waitFor(() => expect(saveButton()).toBeDisabled());
+    expect(within(dialog()).getByRole("alert")).toHaveTextContent("The request changed");
+    fireEvent.click(saveButton());
+    expect(mocks.edit).not.toHaveBeenCalled();
+    expect(mocks.replySeen).not.toHaveBeenCalled();
+  });
+  it("refreshes the inbox through the same notification helper", async () => {
+    mocks.list.mockResolvedValue(page([summary()]));
+    render(<Inbox orgId="org-a" accountId="account-a" />);
+    await screen.findByRole("link", { name: "Confidential request A" });
+    mocks.list.mockResolvedValue(page([summary({ subject: "Updated from Assistant", version: 2 })]));
+    act(() => window.dispatchEvent(new CustomEvent(INTAKE_NOTIFIED_EVENT, {
+      detail: { requests: [{ workspace: "org-a", request_id: "request-a" }] },
+    })));
+    expect(await screen.findByRole("link", { name: "Updated from Assistant" })).toBeInTheDocument();
+    expect(mocks.replySeen).not.toHaveBeenCalled();
+  });
+  it("leaves a new reply unread after saving details and navigating to Assistant", async () => {
+    mocks.request.mockResolvedValue(waiting({ conversation: { source: "gmail", channel_name: null, team_name: null, permalink: null, mailbox: "intake@example.test", to: ["jane@business.test"], cc: [], documents: true, max_attachment_bytes: 25000000 } }));
+    mocks.edit.mockResolvedValue(receipt);
+    render(detail()); await editDate();
+    mocks.request.mockResolvedValue(waiting({ version: 2, clarify_stage: null, state: "in_review", requested_by_date: "2026-11-10", conversation: { source: "gmail", channel_name: null, team_name: null, permalink: null, mailbox: "intake@example.test", to: ["jane@business.test"], cc: [], documents: true, max_attachment_bytes: 25000000 } }));
+    fireEvent.click(saveButton());
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    fireEvent.click(screen.getByRole("button", { name: "Process this request in a new Assistant chat" }));
+    expect(mocks.push).toHaveBeenCalled();
+    expect(mocks.replySeen).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: /^Messages/ }));
+    await waitFor(() => expect(mocks.replySeen).toHaveBeenCalledWith("org-a", "request-a", "2026-11-04T12:00:00Z"));
+  });
+  it("requires approval once for Enter plus blur, without marking a reply read", async () => {
+    render(detail()); await editDate();
+    expect(dialog()).toHaveTextContent("Target date");
+    expect(dialog()).toHaveTextContent("Nov 10, 2026");
+    expect(mocks.edit).not.toHaveBeenCalled(); expect(mocks.command).not.toHaveBeenCalled();
+    expect(mocks.replySeen).not.toHaveBeenCalled();
+    expect(screen.getAllByRole("dialog")).toHaveLength(1);
+  });
+  it("cancels without a write and restores the date and keyboard focus", async () => {
+    render(detail()); await editDate();
+    fireEvent.click(within(dialog()).getByRole("button", { name: "Cancel edit" }));
+    await waitFor(() => expect(screen.getByLabelText("Target date")).toHaveFocus());
+    expect(screen.getByLabelText("Target date")).toHaveValue("");
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(mocks.edit).not.toHaveBeenCalled();
+    expect(screen.getByText(/MikeGC is waiting/)).toBeInTheDocument();
+  });
+  it("cancels a description edit without consuming an unrelated comment draft", async () => {
+    render(detail());
+    fireEvent.change(await noteEditor(), { target: { value: "Keep this internal draft" } });
+    fireEvent.click(screen.getByRole("button", { name: "Edit request" }));
+    fireEvent.change(screen.getByRole("textbox", { name: "Request" }), { target: { value: "A changed summary" } });
+    const editor = screen.getByRole("textbox", { name: "Request" }).closest("section")!;
+    fireEvent.click(within(editor).getByRole("button", { name: "Submit" }));
+    await screen.findByRole("dialog", { name: "Stop automatic follow-up?" });
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(screen.queryByRole("textbox", { name: "Request" })).not.toBeInTheDocument();
+    expect(screen.getByText("Request description")).toBeInTheDocument();
+    expect(await noteEditor()).toHaveValue("Keep this internal draft");
+    expect(mocks.edit).not.toHaveBeenCalled();
+  });
+  it("freezes all fields and prevents dismissal or duplicate writes while saving", async () => {
+    const pending = deferred<typeof receipt>(); mocks.edit.mockReturnValue(pending.promise);
+    render(detail()); await editDate();
+    fireEvent.click(saveButton()); fireEvent.click(saveButton());
+    expect(mocks.edit).toHaveBeenCalledTimes(1);
+    const input = mocks.edit.mock.calls[0][2];
+    expect(input).toMatchObject({ expected_version: 1, requested_by_date: "2026-11-10",
+      subject: "Confidential request A", description: "Request description", requester_name: "Jane Business",
+      requester_email: "jane@business.test", requester_team: "Procurement", command_id: expect.any(String) });
+    expect(within(dialog()).getByRole("button", { name: "Close" })).toBeDisabled();
+    expect(within(dialog()).getByRole("button", { name: "Cancel edit" })).toBeDisabled();
+    fireEvent.keyDown(window, { key: "Escape" }); expect(dialog()).toBeInTheDocument();
+    mocks.request.mockResolvedValue(waiting({ version: 2, clarify_stage: null, state: "in_review", requested_by_date: "2026-11-10" }));
+    await act(async () => pending.resolve(receipt));
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    expect(mocks.edit).toHaveBeenCalledTimes(1);
+  });
+  it("includes unsent secondary blur edits in the preview, never a background write", async () => {
+    render(detail());
+    fireEvent.click(await screen.findByRole("button", { name: "Requester: Jane Business" }));
+    const name = screen.getByLabelText("Name"), email = screen.getByLabelText("Email");
+    fireEvent.change(name, { target: { value: "Sam Business" } }); fireEvent.blur(name);
+    fireEvent.change(email, { target: { value: "sam@example.test" } }); fireEvent.blur(email);
+    expect(dialog()).toHaveTextContent("Sam Business"); expect(dialog()).toHaveTextContent("sam@example.test");
+    expect(mocks.edit).not.toHaveBeenCalled();
+    mocks.edit.mockReturnValue(deferred<typeof receipt>().promise);
+    fireEvent.click(saveButton());
+    expect(mocks.edit.mock.calls[0][2]).toMatchObject({ requester_name: "Sam Business", requester_email: "sam@example.test" });
+    expect(mocks.edit).toHaveBeenCalledTimes(1);
+  });
+  it("blocks stale confirmation after another request revision arrives", async () => {
+    render(detail()); await editDate();
+    mocks.request.mockResolvedValue(waiting({ version: 2, subject: "Changed by colleague" }));
+    fireEvent(window, new Event("focus"));
+    await waitFor(() => expect(saveButton()).toBeDisabled());
+    expect(within(dialog()).getByRole("alert")).toHaveTextContent("The request changed");
+    fireEvent.click(saveButton()); expect(mocks.edit).not.toHaveBeenCalled();
+  });
+  it.each(["closes", "becomes read-only"] as const)(
+    "keeps stale approval dismissible when the request %s before confirmation", async (change) => {
+    render(detail()); await editDate();
+    mocks.request.mockResolvedValue(waiting({
+      ...(change === "closes" ? { version: 2, state: "cancelled", clarify_stage: null } as const : {}),
+      capabilities: { ...capabilities, edit: false, cancel: false, reopen: true },
+    }));
+    act(() => window.dispatchEvent(new CustomEvent(INTAKE_NOTIFIED_EVENT, {
+      detail: { requests: [{ workspace: "org-a", request_id: "request-a" }] },
+    })));
+    await waitFor(() => expect(mocks.request).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(saveButton()).toBeDisabled());
+    const cancel = within(dialog()).getByRole("button", { name: "Cancel edit" });
+    expect(cancel).toBeEnabled();
+    fireEvent.click(cancel);
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(mocks.edit).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Process this request in a new Assistant chat" }));
+    expect(mocks.push).toHaveBeenCalled();
+  });
+  it("reconciles the exact approved command after a lost response despite a newer refresh", async () => {
+    mocks.edit.mockRejectedValueOnce({ status: 503 }).mockRejectedValueOnce({ status: 503 })
+      .mockResolvedValueOnce({ ...receipt, replayed: true });
+    render(detail()); await editDate(); fireEvent.click(saveButton());
+    mocks.request.mockResolvedValue(waiting({ version: 2, clarify_stage: null, state: "in_review", requested_by_date: "2026-11-10" }));
+    const check = await within(dialog()).findByRole("button", { name: "Check again" });
+    await waitFor(() => expect(check).toBeEnabled());
+    expect(saveButton()).toBeDisabled();
+    fireEvent.click(check);
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    expect(mocks.edit).toHaveBeenCalledTimes(3);
+    expect(mocks.edit.mock.calls[1]).toEqual(mocks.edit.mock.calls[0]);
+    expect(mocks.edit.mock.calls[2]).toEqual(mocks.edit.mock.calls[0]);
+  });
+  it("retains approval and one in-flight operation across navigation", async () => {
+    const pending = deferred<typeof receipt>(); mocks.edit.mockReturnValue(pending.promise);
+    const first = render(detail()); await editDate(); fireEvent.click(saveButton()); first.unmount();
+    render(detail());
+    expect(await screen.findByRole("dialog", { name: "Stop automatic follow-up?" })).toHaveTextContent("Nov 10, 2026");
+    expect(saveButton()).toBeDisabled(); expect(mocks.edit).toHaveBeenCalledTimes(1);
+    mocks.request.mockResolvedValue(waiting({ version: 2, clarify_stage: null, requested_by_date: "2026-11-10" }));
+    await act(async () => pending.resolve(receipt));
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    expect(mocks.edit).toHaveBeenCalledTimes(1);
+  });
+  it("hides retained handoff data after access failure and clears it on account change", async () => {
+    const first = render(detail()); await editDate(); first.unmount();
+    mocks.request.mockRejectedValue({ status: 403 });
+    const second = render(detail()); await screen.findByRole("alert");
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(screen.queryByText(/Nov 10/)).not.toBeInTheDocument();
+    second.unmount();setIntakeMemoryAccount("account-b");mocks.workspace.accountId="account-b";
+    mocks.request.mockResolvedValue(waiting());render(detail());await screen.findByLabelText("Target date");
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
+  it("does not change the approved payload when another field blurs during the write", async () => {
+    const pending = deferred<typeof receipt>(); mocks.edit.mockReturnValueOnce(pending.promise).mockResolvedValueOnce({ ...receipt, applied_version: 3 });
+    render(detail()); await editDate(); fireEvent.click(saveButton());
+    const approved = { ...mocks.edit.mock.calls[0][2] };
+    const subject = screen.getByRole("textbox", { name: "Subject" });
+    fireEvent.change(subject, { target: { value: "A later subject edit" } }); fireEvent.blur(subject);
+    expect(mocks.edit).toHaveBeenCalledTimes(1); expect(mocks.edit.mock.calls[0][2]).toEqual(approved);
+    mocks.request.mockResolvedValue(waiting({ version: 2, state: "in_review", clarify_stage: null, requested_by_date: "2026-11-10" }));
+    await act(async () => pending.resolve(receipt));
+    await waitFor(() => expect(mocks.edit).toHaveBeenCalledTimes(2));
+    expect(mocks.edit.mock.calls[1][2]).toMatchObject({ expected_version: 2, subject: "A later subject edit", requested_by_date: "2026-11-10" });
+    expect(mocks.edit.mock.calls[1][2].command_id).not.toBe(approved.command_id);
+  });
+  it("does not open a cancellation dialog from a status click following a handoff blur", async () => {
+    const user = userEvent.setup(); render(detail());
+    const status = await screen.findByRole("button", { name: /Status: Waiting on requester/ });
+    await user.click(status);
+    const cancel = screen.getByRole("menuitemradio", { name: "Cancelled" });
+    const date = screen.getByLabelText("Target date");
+    fireEvent.change(date, { target: { value: "Nov 10, 2026" } }); fireEvent.blur(date);
+    fireEvent.click(cancel);
+    expect(screen.getAllByRole("dialog")).toHaveLength(1);
+    expect(dialog()).toBeInTheDocument(); expect(mocks.command).not.toHaveBeenCalled();
+  });
+  it("keeps text-free Check again when uncertain access cannot be refreshed", async () => {
+    mocks.edit.mockRejectedValue({ status: 503 });
+    render(detail()); await editDate(); mocks.request.mockRejectedValue({ status: 403 });
+    fireEvent.click(saveButton());
+    await screen.findByRole("alert");
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(screen.queryByText(/Nov 10/)).not.toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "Check again" })).toBeEnabled();
+  });
 });

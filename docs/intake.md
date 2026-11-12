@@ -144,7 +144,7 @@ required reason, and
 **New** cannot be chosen. A resolved or cancelled request's status menu offers
 **Reopen** instead.
 
-Details are edited in place; there is no edit dialog. While a request is open,
+Details are edited in place. While a request is open,
 each sidebar field saves when it is left or Enter is pressed (Escape puts the
 saved value back), the reviewer saves as soon as it is chosen
 from its menu, the title saves the same way as a field, and the description
@@ -152,6 +152,13 @@ has a pen button that opens it with **Submit** and **Cancel**. Every edit sends 
 details at its loaded version, so an edit made while another change is saving
 waits for the refreshed request before it is sent. A resolved or cancelled
 request shows its details as text.
+
+If MikeGC is asking automatic questions, a detail edit first shows the exact
+changes and asks **Save and stop follow-up**. **Cancel edit** restores the
+saved fields without stopping the questions. An unresolved save keeps the
+approved changes and offers **Check again**, which checks the same command
+rather than submitting a new edit. A request changed by someone else must be
+reviewed again before a new edit can be approved.
 
 A **Request** panel holds the description and the documents, and an
 **Activity** panel holds the timeline. Notes and every change appear together

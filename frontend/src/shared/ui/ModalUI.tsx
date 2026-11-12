@@ -15,6 +15,7 @@ export type ModalUISize = "sm" | "md" | "lg" | "xl";
 export interface ModalUIProps {
     open: boolean;
     onClose: () => void;
+    closeDisabled?: boolean;
     children: ReactNode;
     breadcrumbs?: ReactNode[];
     headerAction?: ReactNode;
@@ -40,6 +41,7 @@ const sizeClassName: Record<ModalUISize, string> = {
 export function ModalUI({
     open,
     onClose,
+    closeDisabled = false,
     children,
     breadcrumbs,
     headerAction,
@@ -61,8 +63,8 @@ export function ModalUI({
     useEffect(() => setHasMounted(true), []);
 
     useEffect(() => {
-        onCloseRef.current = onClose;
-    }, [onClose]);
+        onCloseRef.current = () => { if (!closeDisabled) onClose(); };
+    }, [onClose, closeDisabled]);
 
     useEffect(() => {
         if (!open) return;
@@ -147,7 +149,7 @@ export function ModalUI({
         <div
             className={`fixed inset-0 z-[200] flex items-center justify-center bg-white/10 px-4 py-4 backdrop-blur-[2px] ${open ? "" : "hidden"}`}
             onMouseDown={(event) => {
-                if (event.target === event.currentTarget) onClose();
+                if (!closeDisabled && event.target === event.currentTarget) onClose();
             }}
         >
             <section
@@ -179,7 +181,7 @@ export function ModalUI({
                             </div>
                             {headerAction}
                         </div>
-                        <CloseButton onClick={onClose} size="md" />
+                        <CloseButton onClick={onClose} disabled={closeDisabled} size="md" />
                     </header>
                 )}
 

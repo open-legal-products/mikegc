@@ -13,6 +13,7 @@ import { useIntakeMemory, useIntakeDraft } from "./useIntakeMemory";
 import type {
   IntakeAction,
   IntakeCommand,
+  IntakeClarifyStage,
   IntakeDelivery,
   IntakeDetails,
   IntakeDocument,
@@ -55,6 +56,8 @@ import { EmptyState } from "@/app/components/ui/empty-state";
 import { IntakeSkeuoIcon } from "@/app/components/shared/AppSidebarSkeuoIcons";
 import { GlassCardUI } from "@/shared/ui/GlassCardUI";
 import { HeaderButtonUI } from "@/shared/ui/HeaderButtonsUI";
+import { formatIntakeDate } from "./intakeLabels";
+import { IntakeHandoffDialog } from "./IntakeHandoffDialog";
 import { ConfirmPopup } from "@/app/components/popups/ConfirmPopup";
 import {
   Dropdown,
@@ -213,7 +216,22 @@ type Closing = "resolve" | "cancel";
  * no documents), or the cancel reason. "request" means the request itself
  * is gone, so the page leaves it.
  */
-type Consumed = "note" | "message" | "reason" | "request" | null;
+type Consumed = "note" | "message" | "reason" | "request" | "details" | null;
+type DetailHandoff = {
+  before: IntakeDetails;
+  input: IntakeEdit;
+  stage: IntakeClarifyStage;
+};
+const DETAIL_LABELS: Record<keyof IntakeDetails, string> = {
+  subject: "Subject", description: "Request summary", requester_name: "Requester name",
+  requester_email: "Requester email", requester_team: "Team", requested_by_date: "Target date",
+};
+function detailValue(key: keyof IntakeDetails, value: string | null): string {
+  if (!value) return "None";
+  if (key === "requested_by_date") return formatIntakeDate(value);
+  if (key === "description") return parseIntakeDescription(value)?.summary ?? value;
+  return value;
+}
 /** Show the current request and gate commands on its server-provided capabilities. */
 export function Detail({
   orgId,
@@ -227,6 +245,9 @@ export function Detail({
   const router = useRouter();
   const memory = useIntakeMemory(orgId, requestId);
   const [request, setRequest] = useState<IntakeRequest | null>(null);
+  const detailRoot = useRef<HTMLDivElement>(null);
+  const [handoff, setHandoff] = useIntakeDraft<DetailHandoff | null>(memory, "detailHandoff", null);
+  const [descriptionEpoch, setDescriptionEpoch] = useState(0);
   const [messages, setMessages] = useState<IntakeMessage[]>([]);
   // Messages starts collapsed; sending the requester something opens it.
   const [messagesOpen, setMessagesOpen] = useState(false);
@@ -419,6 +440,7 @@ export function Detail({
         return;
       }
       savedVersion.current = receipt.applied_version;
+      if (consumes === "details") setHandoff(null);
       if (consumes === "note") {
         // The note exists now, so its documents can be added with it.
         // A resolution without text has no message, so its documents go
@@ -472,7 +494,8 @@ export function Detail({
     memory,
   );
   useIntakeDraftWarning(
-    !!note ||
+    !!handoff ||
+      !!note ||
       !!requesterMessage ||
       !!resolveMessage ||
       noteFiles.length > 0 ||
@@ -503,7 +526,7 @@ export function Detail({
   ) {
     // A command that would not start must not claim a draft either: its
     // receipt would be read as this command's.
-    if (!request || !operation.idle()) return;
+    if (!request || !operation.idle() || memory.values.get("detailHandoff")) return;
     const input: IntakeCommand = {
       command_id: crypto.randomUUID(),
       // Notes leave the request unchanged, so they carry no version. This
@@ -529,24 +552,64 @@ export function Detail({
       return receipt;
     }, label);
   }
-  function sendDetails(patch: Partial<IntakeDetails>) {
-    if (!request) return;
-    const details = { ...detailsOf(request), ...patch };
-    // A field left after Enter, or an edit queued behind its own save, can
-    // name only what is saved already: sending it would record a change.
-    if (DETAIL_KEYS.every((key) => details[key] === request[key])) return;
-    const input: IntakeEdit = {
-      ...details,
-      command_id: crypto.randomUUID(),
-      expected_version: request.version,
-    };
-    setConsumes(null);
+  /** Approvals and retries use the complete frozen payload, never live form values. */
+  function executeDetails(input: IntakeEdit) {
+    if (!operation.idle()) return;
+    setConsumes("details");
     void operation.execute(async () => {
       const receipt = await editIntakeRequest(orgId, requestId, input);
-      if (receipt.request_id !== requestId)
-        throw new Error("Mismatched intake receipt");
+      if (receipt.request_id !== requestId) throw new Error("Mismatched intake receipt");
       return receipt;
     }, "save the details");
+  }
+  function sendDetails(patch: Partial<IntakeDetails>) {
+    if (!request || !request.capabilities.edit) return;
+    const pending = memory.values.get("detailHandoff") as DetailHandoff | null | undefined;
+    if (pending) {
+      // Blur events can arrive before React has mounted the dialog. Accumulate
+      // only unsent edits; a command already approved is immutable.
+      if (memory.values.get("consumes") !== "details" && operation.idle()) {
+        const input = { ...pending.input, ...patch };
+        if (DETAIL_KEYS.some((key) => input[key] !== pending.input[key]))
+          setHandoff({ ...pending, input });
+      } else queuedDetails.current = { ...queuedDetails.current, ...patch };
+      return;
+    }
+    const details = { ...detailsOf(request), ...patch };
+    if (DETAIL_KEYS.every((key) => details[key] === request[key])) return;
+    const input: IntakeEdit = {
+      ...details, command_id: crypto.randomUUID(), expected_version: request.version,
+    };
+    if (request.clarify_stage) {
+      setConsumes(null);
+      setHandoff({ before: detailsOf(request), input, stage: request.clarify_stage });
+      return;
+    }
+    executeDetails(input);
+  }
+  const handoffStale = !!handoff && (!request ||
+    !request.capabilities.edit ||
+    request.version !== handoff.input.expected_version ||
+    request.clarify_stage !== handoff.stage);
+  function confirmHandoff() {
+    // A synchronous blur may have changed the preview since its last render.
+    if (!handoff || memory.values.get("detailHandoff") !== handoff || handoffStale ||
+      !request?.capabilities.edit || request.version < savedVersion.current || !operation.idle() ||
+      !DETAIL_KEYS.some((key) => handoff.input[key] !== handoff.before[key])) return;
+    executeDetails(handoff.input);
+  }
+  function cancelHandoff() {
+    if (!handoff || !operation.idle()) return;
+    const changed = DETAIL_KEYS.filter((key) => handoff.input[key] !== handoff.before[key]);
+    setHandoff(null);
+    queuedDetails.current = null;
+    if (consumes === "details") setConsumes(null);
+    setDetailsEpoch((epoch) => epoch + 1);
+    if (changed.includes("description")) setDescriptionEpoch((epoch) => epoch + 1);
+    const field = changed[0];
+    const target = field === "requester_name" || field === "requester_email" ? "requester" : field;
+    requestAnimationFrame(() => detailRoot.current
+      ?.querySelector<HTMLElement>(`[data-intake-detail="${target}"]`)?.focus());
   }
   function saveDetails(patch: Partial<IntakeDetails>) {
     if (!request) return;
@@ -558,7 +621,7 @@ export function Detail({
   }
   useEffect(() => {
     const queued = queuedDetails.current;
-    if (!queued || !request || !operation.idle()) return;
+    if (!queued || !request || memory.values.get("detailHandoff") || !operation.idle()) return;
     if (request.version < savedVersion.current) return;
     queuedDetails.current = null;
     sendDetails(queued);
@@ -569,7 +632,7 @@ export function Detail({
   const canMessage = !!conversation && !!caps?.send_to_requester;
   /** Resolve: with a thread, the dialog that also replies; else at once. */
   function startResolving() {
-    if (!request) return;
+    if (!request || memory.values.get("detailHandoff")) return;
     if (conversation) {
       // It asks first whether to reply, and never assumes so: the reply is
       // written apart from the comment, which stays the internal resolution.
@@ -713,7 +776,11 @@ export function Detail({
     command("assignment", "assign the request", { assignee_id: assigneeId });
   // An unresolved save stays retryable even while the request is hidden. The
   // cancel dialog offers its own Check again, but only while the request shows.
+  // A read-only request still needs a way to cancel an unsent approval.
+  // Loss of read access hides the dialog, while unresolved writes retain recovery.
+  const handoffVisible = !!handoff && !!request;
   const cancelRechecks =
+    handoffVisible ||
     (closing === "cancel" || (closing === "resolve" && !!conversation)) &&
     !!request;
   const recheck = operation.uncertain && !cancelRechecks && (
@@ -732,7 +799,7 @@ export function Detail({
     </div>
   );
   return (
-    <div className="flex h-full min-h-0 flex-col">
+    <div ref={detailRoot} className="flex h-full min-h-0 flex-col">
       <PageHeader
         shrink
         // Processing in the Assistant is a group of its own, apart from the
@@ -749,8 +816,11 @@ export function Detail({
                     ),
                     // A new chat, with the request's pill and a suggested
                     // prompt in its composer; the user sends it.
-                    onClick: () =>
-                      router.push(assistantPathWithIntake(requestId, orgId)),
+                    onClick: () => {
+                      // A field's blur may open the handoff before this click.
+                      if (memory.values.get("detailHandoff")) return;
+                      router.push(assistantPathWithIntake(requestId, orgId));
+                    },
                   },
                 ],
                 [
@@ -786,7 +856,9 @@ export function Detail({
                           <DropdownContent align="end">
                             <DropdownItem
                               variant="destructive"
-                              onSelect={() => setConfirmingDelete(true)}
+                              onSelect={() => {
+                                if (!memory.values.get("detailHandoff")) setConfirmingDelete(true);
+                              }}
                             >
                               Delete request
                             </DropdownItem>
@@ -917,6 +989,8 @@ export function Detail({
                   command("stop_asking", "stop MikeGC asking the requester")
                 }
                 onStatus={(action) => {
+                  // Blur can open the handoff dialog before this click runs.
+                  if (memory.values.get("detailHandoff")) return;
                   // Resolving is written as a note: open the note form and
                   // bring it into view; "Resolve request" there saves it.
                   // With a thread, the resolve dialog also replies there.
@@ -940,6 +1014,7 @@ export function Detail({
             <GlassCardUI>
               <div className="divide-y divide-gray-100">
                 <IntakeDescription
+                  key={descriptionEpoch}
                   value={request.description}
                   editable={caps.edit}
                   locked={operation.locked}
@@ -952,7 +1027,9 @@ export function Detail({
                     warning={upload.warning}
                     onAdd={(files) => void upload.add(files)}
                     onOpen={(documentId) => void viewer.open(documentId)}
-                    onBrowse={() => setPicking("request")}
+                    onBrowse={() => {
+                      if (!memory.values.get("detailHandoff")) setPicking("request");
+                    }}
                   />
                 </div>
               </div>
@@ -1131,7 +1208,9 @@ export function Detail({
                       )
                     }
                     picked={notePicked}
-                    onBrowse={() => setPicking("note")}
+                    onBrowse={() => {
+                      if (!memory.values.get("detailHandoff")) setPicking("note");
+                    }}
                     onRemovePicked={(id) =>
                       setNotePicked((current) =>
                         current.filter((document) => document.id !== id),
@@ -1176,6 +1255,20 @@ export function Detail({
           command("delete", "delete the request", {}, "request");
         }}
       />
+      {handoffVisible && handoff && (
+        <IntakeHandoffDialog
+          stage={handoff.stage}
+          changes={DETAIL_KEYS.filter((key) => handoff.input[key] !== handoff.before[key])
+            .map((key) => ({ label: DETAIL_LABELS[key], before: detailValue(key, handoff.before[key]), after: detailValue(key, handoff.input[key]) }))}
+          stale={handoffStale}
+          locked={operation.locked}
+          busy={operation.busy}
+          uncertain={operation.uncertain}
+          onCheckAgain={() => void operation.execute()}
+          onConfirm={confirmHandoff}
+          onCancel={cancelHandoff}
+        />
+      )}
       {/* With a thread, resolving asks what to send the requester. */}
       {closing === "resolve" && request && conversation && (
         <IntakeResolveDialog

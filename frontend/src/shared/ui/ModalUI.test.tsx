@@ -63,3 +63,19 @@ describe("ModalUI", () => {
         expect(onClose).not.toHaveBeenCalled();
     });
 });
+
+it("disables all dismissal paths during a protected write, then restores them", async () => {
+    const close = vi.fn();
+    const user = userEvent.setup();
+    const view = render(<ModalUI open closeDisabled onClose={close} breadcrumbs={["Protected write"]}>Saving</ModalUI>);
+    const button = await screen.findByRole("button", { name: "Close" });
+    expect(button).toBeDisabled();
+    await user.click(button);
+    fireEvent.keyDown(window, { key: "Escape" });
+    fireEvent.mouseDown(screen.getByRole("dialog").parentElement!);
+    expect(close).not.toHaveBeenCalled();
+    view.rerender(<ModalUI open onClose={close} breadcrumbs={["Protected write"]}>Ready</ModalUI>);
+    expect(screen.getByRole("button", { name: "Close" })).toBeEnabled();
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(close).toHaveBeenCalledOnce();
+});
