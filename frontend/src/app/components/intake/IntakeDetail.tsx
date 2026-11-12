@@ -316,20 +316,24 @@ export function Detail({
       const [m, e, d, roster] = await Promise.all([
         allPages((offset) => getIntakeMessages(orgId, requestId, offset)),
         allPages((offset) => getIntakeEvents(orgId, requestId, offset)),
-        getIntakeDocuments(orgId, requestId),
+        // A delivery check reads only where a delivery's status is shown:
+        // sending a message changes neither the documents nor the members.
+        poll ? null : getIntakeDocuments(orgId, requestId),
         // Members are who an open request can be assigned to, and every
         // request's people take their photos from them. A closed request
         // falls back to initials if they cannot be read.
-        r.capabilities.assign
-          ? getIntakeMembers(orgId)
-          : getIntakeMembers(orgId).catch(() => []),
+        poll
+          ? null
+          : r.capabilities.assign
+            ? getIntakeMembers(orgId)
+            : getIntakeMembers(orgId).catch(() => []),
       ]);
       if (generation !== epoch.current) return;
       setRequest(r);
       setMessages(m);
       setEvents(e);
-      setDocuments(d);
-      setMembers(roster);
+      if (d) setDocuments(d);
+      if (roster) setMembers(roster);
       setError(null);
       loaded.current = true;
       // A message to the requester that settled since the last load is said once.

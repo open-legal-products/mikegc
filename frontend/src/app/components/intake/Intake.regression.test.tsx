@@ -3401,11 +3401,18 @@ describe("requester loop", () => {
         name: "Messages with the requester",
       });
       await waitFor(() => expect(log).toHaveTextContent("Sending"));
+      const before = [mocks.documents, mocks.members].map(
+        (read) => read.mock.calls.length,
+      );
       await act(async () => {
         vi.advanceTimersByTime(5_100);
       });
       await waitFor(() => expect(log).toHaveTextContent("Sent"));
       expect(activity).toHaveTextContent("Message to the requester sent.");
+      // The check reads where a delivery shows, not what it cannot change.
+      expect(
+        [mocks.documents, mocks.members].map((read) => read.mock.calls.length),
+      ).toEqual(before);
     } finally {
       vi.useRealTimers();
     }
