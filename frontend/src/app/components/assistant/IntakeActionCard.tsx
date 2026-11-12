@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useId, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
 import Link from "next/link";
 import { Check } from "lucide-react";
 import type {
@@ -120,14 +120,32 @@ export function IntakeActionCard({
     const [busy, setBusy] = useState(false);
     const [confirmed, setConfirmed] = useState(false);
 
-    const load = useCallback(
-        () =>
-            getIntakeRequest(event.org_id, event.request_id).then(
-                (request) => setLoaded({ status: "ready", request }),
-                () => setLoaded({ status: "unavailable" }),
-            ),
+    // An answer older than the one shown is dropped. A recheck sent just
+    // before Confirm could land after the read that follows it and put the
+    // request's old version back, so the next Confirm was refused as out of
+    // date. A failed recheck shows nothing, so it must not drop the answer
+    // to an earlier read still on its way, such as the first load.
+    const sentRead = useRef(0);
+    const shownRead = useRef(0);
+    const read = useCallback(
+        (failure: "unavailable" | "keep") => {
+            const mine = ++sentRead.current;
+            return getIntakeRequest(event.org_id, event.request_id).then(
+                (request) => {
+                    if (mine <= shownRead.current) return;
+                    shownRead.current = mine;
+                    setLoaded({ status: "ready", request });
+                },
+                () => {
+                    if (failure === "keep" || mine <= shownRead.current) return;
+                    shownRead.current = mine;
+                    setLoaded({ status: "unavailable" });
+                },
+            );
+        },
         [event.org_id, event.request_id],
     );
+    const load = useCallback(() => read("unavailable"), [read]);
     useEffect(() => {
         void load();
     }, [load]);
@@ -137,10 +155,7 @@ export function IntakeActionCard({
     useEffect(() => {
         const recheck = () => {
             if (document.visibilityState !== "visible") return;
-            getIntakeRequest(event.org_id, event.request_id).then(
-                (request) => setLoaded({ status: "ready", request }),
-                () => {},
-            );
+            void read("keep");
         };
         window.addEventListener("focus", recheck);
         document.addEventListener("visibilitychange", recheck);
@@ -148,7 +163,7 @@ export function IntakeActionCard({
             window.removeEventListener("focus", recheck);
             document.removeEventListener("visibilitychange", recheck);
         };
-    }, [event.org_id, event.request_id]);
+    }, [read]);
 
     /** Confirm shows only for a request on screen, at the version shown. */
     async function confirm(current: IntakeRequest) {
@@ -210,7 +225,9 @@ export function IntakeActionCard({
                         aria-hidden="true"
                         className="h-7 w-24 animate-pulse rounded-full bg-gray-200"
                     />
-                ) : loaded.status === "unavailable" ? (
+                ) : loaded.status === "unavailable" && !confirmed ? (
+                    // A change confirmed here was made even if the read
+                    // after it failed.
                     <p className="text-xs text-gray-600">
                         This request can’t be opened, so this change can’t be
                         made here.

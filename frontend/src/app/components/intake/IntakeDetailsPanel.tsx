@@ -120,7 +120,7 @@ export function IntakeDetailsPanel({
   request: IntakeRequest;
   members: IntakeMember[];
   accountId: string;
-  /** Another change is being saved; menus wait for it. */
+  /** Another change is being saved; menus and fields wait for it. */
   locked: boolean;
   onSave: (patch: Partial<IntakeDetails>) => void;
   onAssign: (assigneeId: string | null) => void;
@@ -281,6 +281,7 @@ export function IntakeDetailsPanel({
                   value={request.requester_name}
                   maxLength={200}
                   check={(name) => (name ? null : "Enter who asked for this.")}
+                  disabled={locked}
                   onSave={(name) => onSave({ requester_name: name })}
                 />
                 <DetailField
@@ -294,6 +295,7 @@ export function IntakeDetailsPanel({
                       ? null
                       : "Enter an email address like name@company.com."
                   }
+                  disabled={locked}
                   onSave={(email) => onSave({ requester_email: email || null })}
                 />
               </PopoverContent>
@@ -302,6 +304,7 @@ export function IntakeDetailsPanel({
           <TargetDateField
             value={request.requested_by_date}
             overdue={overdue}
+            disabled={locked}
             onSave={(date) => onSave({ requested_by_date: date })}
           />
         </>
@@ -356,6 +359,8 @@ function parseTypedDate(text: string): string | null | undefined {
     const date = parseDateValue(trimmed);
     return date && localDateValue(date) === trimmed ? trimmed : undefined;
   }
+  // Without a year the browser guesses one ("1 Dec" reads as 2001).
+  if (!/\b\d{4}\b/.test(trimmed)) return undefined;
   const parsed = new Date(trimmed);
   return Number.isNaN(parsed.getTime()) ? undefined : localDateValue(parsed);
 }
@@ -777,6 +782,7 @@ function DetailField({
   placeholder,
   list,
   boxed,
+  disabled,
 }: {
   label: string;
   value: string;
@@ -790,6 +796,8 @@ function DetailField({
   list?: string;
   /** A grey input, for fields inside a popover rather than the sidebar. */
   boxed?: boolean;
+  /** While another change is saving, an edit here could be lost with it. */
+  disabled?: boolean;
 }) {
   const id = useId();
   const [draft, setDraft] = useFieldDraft(value);
@@ -824,6 +832,7 @@ function DetailField({
         value={draft}
         maxLength={maxLength}
         placeholder={placeholder}
+        disabled={disabled}
         autoComplete="off"
         aria-invalid={!!problem}
         aria-describedby={described || undefined}

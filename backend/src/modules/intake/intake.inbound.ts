@@ -145,6 +145,9 @@ const slackMessageEvent = z.object({
   thread_ts: z.string().regex(SLACK_TS).optional(),
   channel: z.string().regex(SLACK_ID),
   files: z.array(z.unknown()).optional(),
+  /** The sender's own workspace, which Slack adds in a channel shared with another one. */
+  user_team: z.string().max(40).optional(),
+  team: z.string().max(40).optional(),
 });
 
 function slackFiles(files: unknown[] | undefined): SlackInboundPayload["files"] {
@@ -240,6 +243,14 @@ export async function receiveSlackEvent(
     !message.user ||
     message.user === settings.slack_bot_user_id
   )
+    return ok({});
+  // Only the connected workspace's people: in a channel shared with another
+  // organization (Slack Connect), its people's messages name their own
+  // workspace, and are dropped. A payload that names none is from the
+  // connected workspace, as is every event before Slack Connect.
+  const saved = settings.slack_team_id;
+  const senderTeam = message.user_team ?? message.team;
+  if (saved && ((envelope.data.team_id && envelope.data.team_id !== saved) || (senderTeam && senderTeam !== saved)))
     return ok({});
   const team = envelope.data.team_id ?? settings.slack_team_id ?? "";
   const externalId = `${message.channel}:${message.ts}`;

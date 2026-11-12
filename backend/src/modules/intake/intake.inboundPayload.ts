@@ -113,6 +113,8 @@ const documentEntry = z.object({
   document_id: z.string(),
   version_id: z.string(),
   done: z.boolean(),
+  /** Why it was left off when its file couldn't be fetched, so a retry still names it. */
+  dropped: skippedReason.optional(),
 });
 export type DocumentEntry = z.infer<typeof documentEntry>;
 
@@ -124,6 +126,11 @@ const progress = {
    * the request is deleted, and this tells that apart from never recorded.
    */
   recorded: z.boolean().optional(),
+  /**
+   * When MikeGC first tried that answer, saved before sending, so a retry
+   * looks for an earlier send that landed rather than answering twice.
+   */
+  conversing: z.string().optional(),
   /** Set once MikeGC answered in the chat instead of recording a request. */
   conversed: z.boolean().optional(),
   /** Set once that answer is counted against the thread's rounds. */
@@ -260,6 +267,10 @@ const replyProgress = {
   agent: agentPlan.optional(),
   agentStage: z.enum(["rule"]).nullable().optional(),
   agentRound: z.number().int().nonnegative().optional(),
+  /** The request's version the plan was made from, which its update requires. */
+  agentVersion: z.number().int().optional(),
+  /** Plans made for the reply so far, across the job's attempts. */
+  agentPlans: z.number().int().nonnegative().optional(),
   /** Set once the plan's changes to the request's details are made. */
   updated: z.boolean().optional(),
   /** Set once the rule stage is settled: true when it was still waiting. */
@@ -323,6 +334,17 @@ export function cleanText(value: string): string {
   return value
     .replace(/\u0000/g, "")
     .replace(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g, "");
+}
+
+/**
+ * The last `max` UTF-16 units at most, never splitting a surrogate pair. A
+ * chat thread is written oldest first, so its end is the message being acted
+ * on: shorten one from the front.
+ */
+export function clipStart(value: string, max: number): string {
+  if (value.length <= max) return value;
+  const start = value.length - max;
+  return value.slice(/[\uDC00-\uDFFF]/.test(value.charAt(start)) ? start + 1 : start);
 }
 
 /** At most `max` UTF-16 units, never splitting a surrogate pair. */

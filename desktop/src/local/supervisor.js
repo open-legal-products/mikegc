@@ -36,11 +36,25 @@ let running = false;
 // A boot in flight, and whether a stop has asked it to give up. Quitting
 // during the first-run boot (about a minute) must still stop every child,
 // and must stop the boot from spawning more after the stop has run.
+// `bootPromise` is the promise startLocalStack handed out, so a stop can
+// wait for the in-flight step to finish and clean up after it.
 let booting = false;
+let bootPromise = null;
 let aborted = false;
 
+// A boot that a stop ended rejects with this, so the caller can tell an
+// asked-for stop (quit) from a failure worth showing the user.
+const STOPPED_DURING_BOOT = "LOCAL_STACK_STOPPED";
+function isLocalStackStopped(err) {
+  return err?.code === STOPPED_DURING_BOOT;
+}
+
+function stoppedDuringBoot() {
+  return Object.assign(new Error("local stack stopped during boot"), { code: STOPPED_DURING_BOOT });
+}
+
 function throwIfAborted() {
-  if (aborted) throw new Error("local stack stopped during boot");
+  if (aborted) throw stoppedDuringBoot();
 }
 
 function log(dirs, name) {
@@ -220,9 +234,22 @@ function assertBackendNodeSupported(backendDir, env = {}) {
   }
 }
 
-async function startLocalStack(app, status = () => {}) {
-  if (running) return { frontendUrl: FRONTEND_URL };
-  if (booting) throw new Error("local stack is already starting");
+// Not async: the promise returned is the one a stop waits on, so the stop's
+// wait also marks it handled and an aborted boot cannot surface as an
+// unhandled rejection.
+function startLocalStack(app, status = () => {}) {
+  if (running) return Promise.resolve({ frontendUrl: FRONTEND_URL });
+  if (booting) return Promise.reject(new Error("local stack is already starting"));
+  booting = true;
+  aborted = false;
+  bootPromise = boot(app, status).finally(() => {
+    booting = false;
+    bootPromise = null;
+  });
+  return bootPromise;
+}
+
+async function boot(app, status) {
   const paths = stackPaths(app);
   const dirs = dataPaths(app);
   for (const d of [dirs.root, dirs.storage, dirs.logs]) {
@@ -230,8 +257,6 @@ async function startLocalStack(app, status = () => {}) {
   }
   const secrets = loadOrCreateSecrets(dirs.secretsFile);
 
-  booting = true;
-  aborted = false;
   try {
     // 1. Postgres
     hydratePgSymlinks(paths);
@@ -397,16 +422,27 @@ async function startLocalStack(app, status = () => {}) {
     status("Ready");
     return { frontendUrl: FRONTEND_URL };
   } catch (err) {
-    await stopLocalStack(paths);
-    throw err;
-  } finally {
-    booting = false;
+    // Also reached when a stop killed a child under a step in flight (that
+    // step then fails with its own error): report the stop, not the fallout.
+    await stopChildren();
+    throw aborted ? stoppedDuringBoot() : err;
   }
 }
 
-async function stopLocalStack(paths) {
+async function stopLocalStack() {
   running = false;
-  if (booting) aborted = true;
+  const inFlight = bootPromise;
+  if (inFlight) aborted = true;
+  // Stop what is running now, so a step blocked on a child (a query against
+  // postgres, a health probe) fails fast instead of running to completion.
+  await stopChildren();
+  // Then wait for the boot itself: whatever its in-flight step started
+  // before it noticed the stop is cleaned up by its catch, before the quit
+  // proceeds. Its rejection is the expected outcome of the stop.
+  if (inFlight) await inFlight.catch(() => {});
+}
+
+async function stopChildren() {
   if (gatewayServer) {
     try { gatewayServer.close(); } catch { /* already closed */ }
     gatewayServer = null;
@@ -449,5 +485,6 @@ module.exports = {
   stopLocalStack,
   localStackRunning,
   localStackActive,
+  isLocalStackStopped,
   hasExited,
 };

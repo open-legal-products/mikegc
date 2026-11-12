@@ -11,7 +11,7 @@ test("Legal creates a business request, works it and resolves it exactly once", 
   browser,
   baseURL,
 }) => {
-  test.setTimeout(150000);
+  test.setTimeout(process.env.REACT_STRESS === "1" ? 300000 : 150000);
   const supabase = readApiEnv("SUPABASE_URL")!;
   const key = readApiEnv("SUPABASE_SECRET_KEY")!;
   const headers = {
@@ -171,12 +171,16 @@ test("Legal creates a business request, works it and resolves it exactly once", 
     const detailURL = lawyerA.url();
     // The contract uploads after the request is saved and is linked to it.
     const documents = lawyerA.getByRole("region", { name: "Documents" });
+    // Each look reloads the page, so it must leave the page time to render:
+    // on a throttled development build two seconds ended before the list was
+    // drawn, and the next reload began, until the whole wait ran out.
+    const render = process.env.REACT_STRESS === "1" ? 20000 : 2000;
     await expect(async () => {
       await lawyerA.reload();
       await expect(
         documents.getByRole("button", { name: "Open test.pdf" }),
-      ).toBeVisible({ timeout: 2000 });
-    }).toPass({ timeout: 60000 });
+      ).toBeVisible({ timeout: render });
+    }).toPass({ timeout: process.env.REACT_STRESS === "1" ? 120000 : 60000 });
 
     // A note draft survives Back/Forward and is saved without a version.
     // A document added with it waits with the draft and is tagged on the note.
@@ -216,8 +220,8 @@ test("Legal creates a business request, works it and resolves it exactly once", 
       await lawyerA.reload();
       await expect(
         activity.getByRole("button", { name: "Open test.pdf" }),
-      ).toBeVisible({ timeout: 2000 });
-    }).toPass({ timeout: 60000 });
+      ).toBeVisible({ timeout: render });
+    }).toPass({ timeout: process.env.REACT_STRESS === "1" ? 120000 : 60000 });
     await expect(
       documents.getByRole("button", { name: "Open test.pdf" }),
     ).toHaveCount(2);

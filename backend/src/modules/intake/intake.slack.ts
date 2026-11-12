@@ -55,6 +55,9 @@ export function isPermanentSlackError(error: unknown): boolean {
   return error instanceof SlackApiError && PERMANENT.has(error.code);
 }
 /** Codes meaning the bot token itself was refused. */
+/** How many users.info lookups for one message run at a time. */
+export const SLACK_LOOKUPS_AT_ONCE = 5;
+
 export const SLACK_TOKEN_ERRORS = new Set([
   "invalid_auth",
   "not_authed",
@@ -620,7 +623,7 @@ export function slackMessageText(
 }
 
 /** A Slack ts a little before `iso`, so a search starts before the first attempt. */
-function slackTsBefore(iso: string | null): string | undefined {
+export function slackTsBefore(iso: string | null): string | undefined {
   if (!iso) return undefined;
   const ms = Date.parse(iso);
   if (!Number.isFinite(ms)) return undefined;

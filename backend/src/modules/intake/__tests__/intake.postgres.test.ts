@@ -167,6 +167,10 @@ describe.skipIf(!container)("intake real PostgreSQL transactions", () => {
     sql(migration("20261111_03_intake_retire_postmark.sql"));
     sql(migration("20261111_04_intake_answer_automated.sql"));
     sql(migration("20261111_04_intake_answer_automated.sql"));
+    sql(migration("20261112_04_intake_update_expected_version.sql"));
+    sql(migration("20261112_04_intake_update_expected_version.sql"));
+    sql(migration("20261112_05_intake_thread_claim.sql"));
+    sql(migration("20261112_05_intake_thread_claim.sql"));
   }, 90000);
   afterAll(() => {
     execFileSync("docker", [
@@ -1083,6 +1087,8 @@ describe.skipIf(!container)("intake real PostgreSQL transactions", () => {
     sql(migration("20261110_02_intake_conversations_email.sql"));
     sql(migration("20261111_01_intake_agent.sql"));
     sql(migration("20261111_02_intake_edit_preserves_unread.sql"));
+    sql(migration("20261112_04_intake_update_expected_version.sql"));
+    sql(migration("20261112_05_intake_thread_claim.sql"));
   };
   it("backfills legacy requests from their creator's profile", () => {
     beforeReplay();
@@ -1224,7 +1230,7 @@ describe.skipIf(!container)("intake real PostgreSQL transactions", () => {
         ).toBe("f");
       expect(
         sql(
-          `select has_function_privilege('${role}','public.intake_submit_automated(uuid,uuid,uuid,text,text,text,text,date,uuid)','EXECUTE')`,
+          `select has_function_privilege('${role}','public.intake_submit_automated(uuid,uuid,uuid,text,text,text,text,date,uuid,text,text,jsonb,jsonb)','EXECUTE')`,
         ),
       ).toBe("f");
       expect(
@@ -1428,6 +1434,9 @@ describe.skipIf(!container)("intake real PostgreSQL transactions", () => {
     // Details the database refuses fail the whole update.
     expect(() => agentUpdate(502, "' '")).toThrow(/22023/);
     expect(() => sql(`select public.intake_update_automated(${q(10)},${q(99)},${q(503)})`)).toThrow(/P0002/);
+    // Planned from an older version: refused, so newer details stand.
+    expect(() => sql(`select public.intake_update_automated(${q(10)},${q(21)},${q(504)},'Stale',null,null,'{}'::jsonb,1)`)).toThrow(/P0001/);
+    expect(sql(`select subject from public.intake_requests where id=${q(21)}`)).toBe("NDA for Acme");
   });
   it("never changes a detail a member has edited, or a closed request", () => {
     thread();
@@ -1470,6 +1479,64 @@ describe.skipIf(!container)("intake real PostgreSQL transactions", () => {
       capabilities: { send_to_requester: true, stop_asking: false },
     });
     expect(view(22)).toMatchObject({ conversation: null, capabilities: { send_to_requester: false } });
+  });
+  // Two mentions in one Slack thread, both stored as new requests.
+  const replyPayload = (ts: string) =>
+    `'{"kind":"slack_reply","channel":"C1","ts":"${ts}","thread_ts":"1.70","user":"U1"}'::jsonb`;
+  const submitInThread = (message: number, request: number, ts: string) =>
+    sql(
+      `select public.intake_submit_automated(${q(10)},${q(message)},${q(request)},'Supplier NDA','Summary',` +
+        `'Jane Business','jane@acme.test',null,null,'slack','T1:C1:1.70',` +
+        `'{"channel":"C1","thread_ts":"1.70","channel_name":"legal-requests"}'::jsonb,${replyPayload(ts)})`,
+    );
+  const inboundRow = (message: number) =>
+    json(`select jsonb_build_object('kind',kind,'request_id',request_id,'payload',payload,'status',status)
+      from public.intake_inbound where id=${q(message)}`);
+  it("records a thread's first mention with its link, and makes a later one that request's reply", () => {
+    inbound(70, "slack");
+    inbound(71, "slack");
+    expect(submitInThread(70, 21, "1.70")).toBe(uid(21));
+    // Linked in the same call that recorded it.
+    expect(
+      json(`select jsonb_agg(jsonb_build_object('request',request_id,'key',thread_key,'channel',address->>'channel'))
+        from public.intake_channel_links`),
+    ).toEqual([{ request: uid(21), key: "T1:C1:1.70", channel: "C1" }]);
+    // The second mention returns the first request, and records nothing new.
+    expect(submitInThread(71, 22, "1.71")).toBe(uid(21));
+    expect(sql("select count(*) from public.intake_requests")).toBe("1");
+    expect(sql("select count(*) from public.intake_channel_links")).toBe("1");
+    expect(inboundRow(71)).toEqual({
+      kind: "reply",
+      request_id: uid(21),
+      status: "pending",
+      payload: { kind: "slack_reply", channel: "C1", ts: "1.71", thread_ts: "1.70", user: "U1" },
+    });
+    // Its reply is recorded on the first request.
+    expect(
+      json(`select public.intake_reply_automated(${q(10)},${q(71)},${q(90)},'By Friday, please',null)`),
+    ).toMatchObject({ request_id: uid(21) });
+    // The first one asked again still returns its own request.
+    expect(submitInThread(70, 21, "1.70")).toBe(uid(21));
+  });
+  it("hands a waiting mention to the request that linked its thread, and leaves others alone", () => {
+    const follow = (message: number, key: string) =>
+      sql(`select public.intake_follow_thread(${q(10)},${q(message)},'slack','${key}',${replyPayload("1.71")})`);
+    inbound(71, "slack");
+    // No request has the thread yet.
+    expect(follow(71, "T1:C1:1.70")).toBe("");
+    expect(inboundRow(71)).toMatchObject({ kind: "request", request_id: null });
+    inbound(70, "slack");
+    submitInThread(70, 21, "1.70");
+    expect(follow(71, "T1:C1:1.70")).toBe(uid(21));
+    expect(inboundRow(71)).toMatchObject({
+      kind: "reply",
+      request_id: uid(21),
+      payload: { kind: "slack_reply", ts: "1.71" },
+    });
+    // Already a reply, or recorded as a request: left as it is.
+    expect(follow(71, "T1:C1:1.70")).toBe("");
+    expect(follow(70, "T1:C1:1.70")).toBe("");
+    expect(() => follow(99, "T1:C1:1.70")).toThrow(/P0002/);
   });
   it("asks the requester in the acknowledgement, records the answer and settles on the rule", () => {
     thread();
@@ -1528,6 +1595,19 @@ describe.skipIf(!container)("intake real PostgreSQL transactions", () => {
     ).toBe("f");
     // The acknowledgement goes once, with the questions.
     expect(sql(`select public.intake_acknowledge_automated(${q(10)},${q(21)},${q(320)})`)).toBe(uid(300));
+  });
+  it("never reopens a settled rule with a question planned before it was settled", () => {
+    thread();
+    expect(ask(300)).toBe("t");
+    expect(sql(`select public.intake_settle_clarify_automated(${q(10)},${q(21)},'rule',true,${q(3)})`)).toBe("t");
+    const settled = state(21);
+    // An older reply's plan, made while the rule waited, asks too late.
+    expect(ask(302)).toBe("f");
+    expect(clarify()).toBe("-:1:false");
+    expect(state(21)).toBe(settled);
+    // The readiness check may still ask after it.
+    expect(ask(304, "readiness")).toBe("t");
+    expect(ask(306)).toBe("f");
   });
   it.each([
     { field: "date", stage: "rule" },
@@ -1833,8 +1913,9 @@ describe.skipIf(!container)("intake real PostgreSQL transactions", () => {
         "intake_reply_automated(uuid,uuid,uuid,text,jsonb)",
         "intake_record_delivery(uuid,uuid,text,text,text,jsonb)",
         "intake_mark_reply_seen(uuid,uuid,uuid,timestamptz)",
-        "intake_update_automated(uuid,uuid,uuid,text,text,date,jsonb)",
+        "intake_update_automated(uuid,uuid,uuid,text,text,date,jsonb,integer)",
         "intake_answer_automated(uuid,uuid,uuid,uuid,text)",
+        "intake_follow_thread(uuid,uuid,text,text,jsonb)",
       ])
         expect(sql(`select has_function_privilege('${role}','public.${fn}','EXECUTE')`)).toBe("f");
     }

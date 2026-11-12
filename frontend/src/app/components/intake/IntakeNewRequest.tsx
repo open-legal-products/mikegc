@@ -225,7 +225,10 @@ export function IntakeNewRequest({
     memory,
   );
   const locked = operation.locked || addingDocuments;
-  const draftGuard = useIntakeDraftWarning(dirty || locked);
+  const draftGuard = useIntakeDraftWarning(
+    dirty || locked,
+    operation.busy || operation.uncertain,
+  );
   const ids = {
     documents: useId(),
     description: useId(),

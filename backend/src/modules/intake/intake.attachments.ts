@@ -25,6 +25,7 @@ import {
   type SkippedAttachment,
 } from "./intake.inboundPayload";
 import { intakeRpc } from "./intake.shared";
+import { SKIPPED_REASON } from "./intake.triage";
 
 /**
  * Documents MikeGC makes from what arrives with a message: a new request's
@@ -200,15 +201,42 @@ export async function addDocument(
   return true;
 }
 
-/** Fetch a channel file's bytes: null when it is larger than allowed. */
+/**
+ * Fetch a channel file's bytes: null when it is larger than allowed,
+ * "unreadable" when MikeGC can't fetch it at all.
+ */
 export type CandidateDownloader = (
   candidate: AttachmentCandidate,
-) => Promise<ArrayBuffer | null>;
+) => Promise<ArrayBuffer | "unreadable" | null>;
+
+/**
+ * A note on the request naming the files MikeGC couldn't add, so a reviewer
+ * can ask for them. Its id is the caller's, the same on every retry, so it
+ * is posted once.
+ */
+export async function noteNotAttached(
+  db: Db,
+  args: { orgId: string; requestId: string; noteId: string; dropped: SkippedAttachment[] },
+): Promise<void> {
+  if (args.dropped.length === 0) return;
+  const note = await intakeRpc<boolean>(db, "intake_note_automated", {
+    p_org: args.orgId,
+    p_request: args.requestId,
+    p_note: args.noteId,
+    p_body:
+      "Not attached: MikeGC couldn't add these files, so ask the requester for a copy.\n" +
+      args.dropped.map((s) => `- ${s.name}: ${SKIPPED_REASON[s.reason]}`).join("\n"),
+  });
+  if (!note.ok && note.kind !== "not_found")
+    throw note.kind === "error" ? note.error : new Error(note.detail);
+}
 
 /**
  * Add the chosen attachments as the request's documents. Each document's
  * ids are named and saved before it is made, so a retry makes the same one,
- * and each is marked done once made. Returns false when the request is gone.
+ * and each is marked done once made. Returns the files that couldn't be
+ * fetched, for the caller to name on the request (an earlier attempt's
+ * too), or false when the request is gone.
  */
 export async function addDocuments(
   db: Db,
@@ -223,12 +251,16 @@ export async function addDocuments(
     download: CandidateDownloader;
     messageId?: string | null;
   },
-): Promise<boolean> {
+): Promise<SkippedAttachment[] | false> {
+  const dropped: SkippedAttachment[] = [];
   for (const index of args.chosen) {
     const candidate = args.candidates[index];
     if (!candidate) continue;
     let entry = args.documents[String(index)];
-    if (entry?.done) continue;
+    if (entry?.done) {
+      if (entry.dropped) dropped.push({ name: candidate.name, reason: entry.dropped });
+      continue;
+    }
     if (!entry) {
       // Named before it is made, so a retry makes this same document.
       entry = { document_id: randomUUID(), version_id: randomUUID(), done: false };
@@ -238,11 +270,14 @@ export async function addDocuments(
     const bytes = candidate.key
       ? await downloadFile(candidate.key)
       : await args.download(candidate);
-    if (!bytes) {
-      // Larger than the channel said, or an email's staged copy is gone.
+    if (!bytes || bytes === "unreadable") {
+      // Larger than the channel said, or one MikeGC can't fetch; or an
+      // email's staged copy is gone.
       if (candidate.key) throw new Error("Staged intake attachment is missing");
       entry.done = true;
+      entry.dropped = bytes === "unreadable" ? "unreadable" : "size";
       await args.save();
+      dropped.push({ name: candidate.name, reason: entry.dropped });
       continue;
     }
     const added = await addDocument(db, {
@@ -258,5 +293,5 @@ export async function addDocuments(
     entry.done = true;
     await args.save();
   }
-  return true;
+  return dropped;
 }

@@ -33,7 +33,7 @@ import {
 } from "./intake.microsoft";
 import { teamsClientSecret } from "./intake.secrets";
 import type { AutomationRow } from "./intake.settingsRow";
-import type { InboundMessage } from "./intake.triage";
+import { chatThreadText, type InboundMessage } from "./intake.triage";
 
 /**
  * Microsoft Teams through the organization's own single-tenant bot: what
@@ -383,10 +383,10 @@ export async function teamsInboundMessage(
   }
   const sent = (d: Date) =>
     `${new Intl.DateTimeFormat("en-GB", { timeZone: "UTC", day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" }).format(d)} UTC`;
-  const text =
+  const parts =
     entries.length === 1
-      ? entries[0]!.text
-      : entries.map((e) => `${e.author}, ${sent(e.at)}:\n${e.text}`).join("\n\n");
+      ? [entries[0]!.text]
+      : entries.map((e) => `${e.author}, ${sent(e.at)}:\n${e.text}`);
   const seen = new Set<string>();
   const files = entries
     .flatMap((e) => e.files)
@@ -400,10 +400,13 @@ export async function teamsInboundMessage(
   return {
     source: "teams",
     sender: { name: entries[0]!.author, email: null },
-    sentAt: entries[0]!.at,
+    // The mention's own time: "by Friday" counts from when MikeGC was asked,
+    // not from when the thread began.
+    sentAt: new Date(payload.date),
     subject: null,
     subjectHint: firstLine,
-    text: clip(text, MAX_MESSAGE_CHARS),
+    text: chatThreadText(parts, MAX_MESSAGE_CHARS),
+    parts,
     ...channelAttachments(files, "teams"),
   };
 }
@@ -470,13 +473,17 @@ export function shareId(url: string): string {
 
 const SHAREPOINT = /^https:\/\/[a-z0-9-]+(?:-my)?\.sharepoint\.(?:com|us|de|cn)\//i;
 
-/** A file shared in a channel, through Graph; null when larger than `maxBytes`. */
+/**
+ * A file shared in a channel, through Graph; null when larger than
+ * `maxBytes`, "unreadable" when it isn't in SharePoint or the app has no
+ * document access.
+ */
 export async function teamsDownloadFile(
   settings: AutomationRow,
   url: string,
   maxBytes: number,
-): Promise<ArrayBuffer | null> {
-  if (!SHAREPOINT.test(url) || settings.teams_files_access === false) return null;
+): Promise<ArrayBuffer | "unreadable" | null> {
+  if (!SHAREPOINT.test(url) || settings.teams_files_access === false) return "unreadable";
   const token = await graphToken(settings);
   const response = await microsoftResponse(
     `${GRAPH_API}/shares/${shareId(url)}/driveItem/content`,

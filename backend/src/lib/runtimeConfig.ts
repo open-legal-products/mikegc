@@ -144,6 +144,55 @@ export function streamChunkTimeouts(env: NodeJS.ProcessEnv = process.env): {
   };
 }
 
+const GMAIL_SHARED_MAILBOX_GRANT =
+  /^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})=((?:[^@\s=,]+)?@[^@\s=,]+\.[^@\s=,]+)$/i;
+
+/**
+ * The intake mailboxes each organization may read and send from with the
+ * deployment's shared Gmail service account (INTAKE_GMAIL_SERVICE_ACCOUNT_KEY),
+ * by organization ID. INTAKE_GMAIL_SHARED_MAILBOXES lists
+ * `<organization id>=<address>` or `<organization id>=@<domain>` entries,
+ * separated by commas or whitespace. Domain-wide delegation lets the shared
+ * account act as any user in the delegating domain, so this list is what ties
+ * a workspace to its mailboxes: an organization with no entry can't use the
+ * shared account at all, and a malformed entry grants nothing.
+ */
+export function gmailSharedMailboxGrants(
+  env: NodeJS.ProcessEnv = process.env,
+): Map<string, string[]> {
+  const grants = new Map<string, string[]>();
+  for (const entry of (env.INTAKE_GMAIL_SHARED_MAILBOXES ?? "").split(/[\s,]+/)) {
+    const match = GMAIL_SHARED_MAILBOX_GRANT.exec(entry);
+    if (!match) continue;
+    const org = match[1]!.toLowerCase();
+    grants.set(org, [...(grants.get(org) ?? []), match[2]!.toLowerCase()]);
+  }
+  return grants;
+}
+
+/**
+ * What an operator should know at boot about the shared Gmail account's
+ * grants, or [] when nothing is visibly wrong. The list denies by default,
+ * so a forgotten variable or a mistyped entry looks the same as a refusal:
+ * mailboxes quietly stop being read. Entries are counted, never printed.
+ */
+export function gmailSharedMailboxWarnings(
+  env: NodeJS.ProcessEnv = process.env,
+): string[] {
+  const entries = (env.INTAKE_GMAIL_SHARED_MAILBOXES ?? "").split(/[\s,]+/).filter(Boolean);
+  const malformed = entries.filter((entry) => !GMAIL_SHARED_MAILBOX_GRANT.test(entry)).length;
+  const warnings: string[] = [];
+  if (malformed)
+    warnings.push(
+      `INTAKE_GMAIL_SHARED_MAILBOXES has ${malformed} ${malformed === 1 ? "entry that is" : "entries that are"} not "<organization id>=<address>" or "<organization id>=@<domain>" and ${malformed === 1 ? "grants" : "grant"} nothing (docs/intake-automation.md).`,
+    );
+  if (env.INTAKE_GMAIL_SERVICE_ACCOUNT_KEY?.trim() && entries.length === malformed)
+    warnings.push(
+      "INTAKE_GMAIL_SERVICE_ACCOUNT_KEY is set but INTAKE_GMAIL_SHARED_MAILBOXES grants no organization a mailbox, so no organization can use the shared Gmail account: mailboxes that relied on it are not read or replied from until each is listed (docs/intake-automation.md).",
+    );
+  return warnings;
+}
+
 function parsedUrl(value: string, name: string, errors: string[]): URL | null {
   try {
     const url = new URL(value);

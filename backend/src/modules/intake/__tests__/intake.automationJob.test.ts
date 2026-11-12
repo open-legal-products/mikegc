@@ -291,6 +291,17 @@ async function deliverQueued(attempts = 1) {
 }
 
 describe("recording an email", () => {
+  it("leaves a message for an organization being deleted unread by the model", async () => {
+    setup({ payload: emailPayload() });
+    const organizations = memory.rows("organizations");
+    if (!organizations.length) organizations.push({ id: org });
+    for (const row of organizations) row.deleted_at = "2026-11-12T00:00:00Z";
+    await expect(handleIntakeAgent(memory.db, job())).resolves.toEqual({
+      skipped: "organization_deleted",
+    });
+    expect(mocks.stream).not.toHaveBeenCalled();
+    expect(memory.rows("intake_requests")).toEqual([]);
+  });
   it("records MikeGC's triaged request with the relevant documents, then forgets the message", async () => {
     setup({ payload: emailPayload() });
     await expect(handleIntakeAgent(memory.db, job())).resolves.toEqual({
@@ -581,6 +592,21 @@ describe("recording a Slack thread", () => {
     expect(slackReplies.username).toBeUndefined();
     expect(memory.rows("intake_outbound")[0]).toMatchObject({ status: "sent", external_id: "1793610999.000900" });
   });
+  it("counts dates from the mention, not from when a days-old thread began", async () => {
+    // The thread began ten days before MikeGC was mentioned in it.
+    setup({ payload: slackPayload({ thread_ts: "1792746840.000100" }), source: "slack" });
+    stubSlack({
+      "conversations.replies": () => ({
+        ok: true,
+        messages: [
+          { ts: "1792746840.000100", user: "U1", text: "Need the Supplier Co NDA signed off by Friday" },
+          { ts: "1793610900.000300", user: "U2", text: "<@UBOT> can Legal look at this?" },
+        ],
+      }),
+    });
+    await handleIntakeAgent(memory.db, job());
+    expect(model.requests[0]!.messages[0]!.content).toContain("TODAY: 2026-11-02 (UTC)");
+  });
   it("names the reviewer who will pick the request up", async () => {
     setup({ payload: slackPayload({ thread_ts: null, ts: "1793610840.000100", user: "U1", text: "<@UBOT> NDA please" }), source: "slack", kind: "personal" });
     await handleIntakeAgent(memory.db, job());
@@ -616,6 +642,31 @@ describe("recording a Slack thread", () => {
         replies: [{ at: expect.stringMatching(/UTC$/), text: "Hi! Tell me what you need from Legal & I'll pass it on." }],
       }),
     ]);
+  });
+  it("never answers twice when a retry follows an answer Slack took", async () => {
+    setup({ payload: slackPayload({ thread_ts: null, ts: "1793610840.000100", user: "U1", text: "<@UBOT> hi there" }), source: "slack" });
+    modelCalls([replyCall("Hi! What do you need from Legal?")]);
+    // Slack posts the answer, but its response is lost on the way back.
+    let posted: Record<string, string> | null = null;
+    stubSlack({
+      "conversations.replies": () => ({
+        ok: true,
+        messages: posted ? [{ ts: "1793610999.000900", bot_id: "B1", metadata: JSON.parse(posted.metadata!) }] : [],
+      }),
+    });
+    const fetchMock = vi.mocked(globalThis.fetch);
+    const inner = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation(async (url: string | URL | Request, init?: RequestInit) => {
+      if (String(url).endsWith("chat.postMessage")) {
+        posted = Object.fromEntries(new URLSearchParams(String(init?.body ?? "")));
+        throw new TypeError("fetch failed");
+      }
+      return inner(url, init);
+    });
+    await expect(handleIntakeAgent(memory.db, job())).rejects.toBeTruthy();
+    await expect(handleIntakeAgent(memory.db, job())).resolves.toMatchObject({ replied: true });
+    expect(fetchMock.mock.calls.filter(([url]) => String(url).endsWith("chat.postMessage"))).toHaveLength(1);
+    expect(memory.rows("intake_conversations")).toEqual([expect.objectContaining({ rounds: 1 })]);
   });
   it("reads the next message in the thread with MikeGC's earlier answer, and records it once it's clear", async () => {
     setup({ payload: slackPayload({ thread_ts: "1793610840.000100", ts: "1793610900.000300", user: "U1", text: "It's a supplier NDA" }), source: "slack" });
@@ -925,6 +976,38 @@ describe("recording a Slack thread", () => {
       mocks.enqueueDbJob.mock.calls.find(([, input]) => input.kind === "intake.preprocess")?.[1].payload,
     ).toMatchObject({ round: 0, acknowledge: true, condition: "The request is about an NDA" });
   });
+  it("names on the request a Teams file it couldn't fetch, rather than dropping it unseen", async () => {
+    setup({
+      payload: {
+        kind: "teams",
+        tenant_id: "tenant-1",
+        service_url: "https://smba.trafficmanager.net/emea/",
+        conversation_id: "19:abc@thread.tacv2;messageid=1700000000001",
+        team_id: "team-1",
+        aad_group_id: null,
+        channel_id: "19:abc@thread.tacv2",
+        root_message_id: "1700000000001",
+        activity_id: "1700000000001",
+        from: { id: "29:jane", aad_object_id: "aad-jane", name: "Jane Business" },
+        date: "2026-11-02T09:14:00.000Z",
+        text: "Please review the attached NDA",
+        files: [{ name: "NDA.docx", size: null, url: "https://acme.sharepoint.com/sites/legal/NDA.docx" }],
+      },
+      source: "slack",
+      model: false,
+    });
+    // Document access is an optional Teams setup step.
+    Object.assign(memory.rows("intake_automation")[0]!, { teams_files_access: false });
+    await expect(handleIntakeAgent(memory.db, job())).resolves.toMatchObject({ request_id: inboundId });
+    expect(memory.rows("documents")).toEqual([]);
+    expect(memory.rows("intake_messages").filter((m) => m.kind === "note")).toEqual([
+      expect.objectContaining({
+        request_id: inboundId,
+        automated: true,
+        body: "Not attached: MikeGC couldn't add these files, so ask the requester for a copy.\n- NDA.docx: could not be read",
+      }),
+    ]);
+  });
   it("fails at once, with a reason an admin can act on, when MikeGC can't read the channel", async () => {
     setup({ payload: slackPayload(), source: "slack" });
     stubSlack({ "conversations.replies": () => ({ ok: false, error: "not_in_channel" }) });
@@ -933,6 +1016,142 @@ describe("recording a Slack thread", () => {
       status: "pending",
       error: "MikeGC can't read that Slack channel. Invite @MikeGC to it.",
     });
+  });
+});
+
+describe("several mentions in one chat thread", () => {
+  const secondId = "00000000-0000-4000-8000-0000000000e2";
+  const jobFor = (id: string): DbJob => ({
+    ...job(),
+    payload: { inboundId: id, orgId: org },
+    dedupe_key: `intake.agent:${id}`,
+  });
+  const second = () => memory.rows("intake_inbound").find((r) => r.id === secondId)!;
+  /** A second mention in the thread, stored as a new request before the first was recorded. */
+  function queueSecond(payload: Record<string, unknown>, externalId: string) {
+    memory.rows("intake_inbound").push({
+      id: secondId,
+      org_id: org,
+      source: "slack",
+      kind: "request",
+      status: "pending",
+      external_id: externalId,
+      payload,
+      request_id: null,
+      error: null,
+      created_at: new Date().toISOString(),
+    });
+  }
+  const slackSecond = () =>
+    slackPayload({ ts: "1793610950.000400", user: "U1", text: "<@UBOT> they need it back by Friday" });
+  function stubThreadWithSecond() {
+    stubSlack({
+      "conversations.replies": () => ({
+        ok: true,
+        messages: [
+          { ts: "1793610840.000100", user: "U1", text: "Need the Supplier Co NDA signed off" },
+          { ts: "1793610900.000300", user: "U2", text: "<@UBOT> can Legal look at this?" },
+          { ts: "1793610950.000400", user: "U1", text: "<@UBOT> they need it back by Friday" },
+        ],
+      }),
+    });
+  }
+  /** One request, one link, and the second mention recorded as its reply. */
+  function expectOneRequestWithReply(source: "slack" | "teams") {
+    expect(memory.rows("intake_requests")).toEqual([expect.objectContaining({ id: inboundId })]);
+    expect(memory.rows("intake_channel_links")).toEqual([
+      expect.objectContaining({ request_id: inboundId, source }),
+    ]);
+    expect(memory.rows("intake_messages").filter((m) => m.kind === "reply")).toEqual([
+      expect.objectContaining({ request_id: inboundId, external_author: expect.objectContaining({ source }) }),
+    ]);
+    expect(second()).toMatchObject({ kind: "reply", request_id: inboundId, status: "done", payload: null });
+  }
+  const readAsReply = (requests: { messages: { content: unknown }[] }[]) =>
+    requests.map((r) => String(r.messages[0]!.content).includes("REQUEST: none"));
+
+  it("records a mention whose thread was recorded since as that request's reply, without planning it as a request", async () => {
+    setup({ payload: slackPayload(), source: "slack" });
+    queueSecond(slackSecond(), "C42:1793610950.000400");
+    stubThreadWithSecond();
+    modelCalls([recordCall({ attachments: [] }), ruleCall(1)]);
+    await expect(handleIntakeAgent(memory.db, job())).resolves.toMatchObject({ request_id: inboundId });
+    modelCalls([replyCall("Thanks, I noted the Friday deadline.")]);
+    await expect(handleIntakeAgent(memory.db, jobFor(secondId))).resolves.toMatchObject({
+      request_id: inboundId,
+    });
+    expectOneRequestWithReply("slack");
+    // Read once, as a reply on the request: never as a new request.
+    expect(readAsReply(model.requests)).toEqual([false]);
+    expect(memory.rpcCalls.filter((c) => c.name === "intake_submit_automated")).toHaveLength(1);
+    expect(memory.rows("intake_messages").find((m) => m.kind === "reply")!.body).toBe(
+      "they need it back by Friday",
+    );
+  });
+  it("records a mention planned while the thread was free as the reply of the request that linked it first", async () => {
+    setup({ payload: slackPayload(), source: "slack" });
+    queueSecond(slackSecond(), "C42:1793610950.000400");
+    stubThreadWithSecond();
+    const asSecond = scripted([[recordCall({ subject: "Friday deadline", attachments: [] }), ruleCall(1)]]);
+    const asFirst = scripted([[recordCall({ attachments: [] }), ruleCall(1)]]);
+    const asReply = scripted([[replyCall("Thanks, I noted the Friday deadline.")]]);
+    let calls = 0;
+    mocks.stream.mockImplementation(async (params) => {
+      calls += 1;
+      if (calls === 1) {
+        // The second mention is planned as a request; meanwhile the first
+        // is recorded and links the thread.
+        const planned = await asSecond.stream(params);
+        await expect(handleIntakeAgent(memory.db, job())).resolves.toMatchObject({ request_id: inboundId });
+        return planned;
+      }
+      return (calls === 2 ? asFirst : asReply).stream(params);
+    });
+    await expect(handleIntakeAgent(memory.db, jobFor(secondId))).resolves.toMatchObject({
+      request_id: inboundId,
+    });
+    expectOneRequestWithReply("slack");
+    expect(readAsReply(asReply.requests)).toEqual([false]);
+    // Recording the second found the thread claimed, in the same call.
+    expect(
+      memory.rpcCalls
+        .filter((c) => c.name === "intake_submit_automated")
+        .map((c) => [c.args.p_inbound, c.args.p_thread_key]),
+    ).toEqual([
+      [inboundId, ":C42:1793610840.000100"],
+      [secondId, ":C42:1793610840.000100"],
+    ]);
+  });
+  it("records a second Teams mention in the thread as the first one's reply", async () => {
+    const teams = (activity: string, text: string) => ({
+      kind: "teams",
+      tenant_id: "tenant-1",
+      // Not Bot Framework's: the reply's author isn't looked up.
+      service_url: "https://teams.example.test/",
+      conversation_id: "19:abc@thread.tacv2;messageid=1700000000001",
+      team_id: "team-1",
+      aad_group_id: null,
+      channel_id: "19:abc@thread.tacv2",
+      root_message_id: "1700000000001",
+      team_name: "Legal",
+      channel_name: "Requests",
+      activity_id: activity,
+      from: { id: "29:jane", aad_object_id: "aad-jane", name: "Jane Business" },
+      date: "2026-11-02T09:14:00.000Z",
+      text,
+      files: [],
+    });
+    setup({ payload: teams("1700000000001", "I need the Acme NDA reviewed"), source: "slack" });
+    queueSecond(teams("1700000000002", "By Friday, please"), "1700000000002");
+    modelCalls([recordCall({ attachments: [] }), ruleCall(1)]);
+    await handleIntakeAgent(memory.db, job());
+    modelCalls([replyCall("Thanks, I noted the Friday deadline.")]);
+    await expect(handleIntakeAgent(memory.db, jobFor(secondId))).resolves.toMatchObject({
+      request_id: inboundId,
+    });
+    expectOneRequestWithReply("teams");
+    expect(readAsReply(model.requests)).toEqual([false]);
+    expect(memory.rows("intake_messages").find((m) => m.kind === "reply")!.body).toBe("By Friday, please");
   });
 });
 
@@ -953,6 +1172,40 @@ describe("when a message fails for good", () => {
     // Already settled: a second call changes nothing.
     await markIntakeAgentFailed(memory.db, job());
     expect(slackCalls.filter((c) => c.method === "chat.postMessage")).toHaveLength(1);
+  });
+  it("says so in Teams too", async () => {
+    setup({
+      payload: {
+        kind: "teams",
+        tenant_id: "tenant-1",
+        service_url: "https://smba.trafficmanager.net/emea/",
+        conversation_id: "19:abc@thread.tacv2;messageid=1700000000001",
+        team_id: "team-1",
+        aad_group_id: null,
+        channel_id: "19:abc@thread.tacv2",
+        root_message_id: "1700000000001",
+        activity_id: "1700000000001",
+        from: { id: "29:jane", aad_object_id: "aad-jane", name: "Jane Business" },
+        date: "2026-11-02T09:14:00.000Z",
+        text: "Hi MikeGC",
+        files: [],
+      },
+      source: "slack",
+    });
+    mocks.teamsDeliver.mockResolvedValue({ externalId: "1700000000009", documents: [] });
+    await markIntakeAgentFailed(memory.db, job());
+    expect(row()).toMatchObject({ status: "failed", payload: null });
+    expect(mocks.teamsDeliver).toHaveBeenCalledTimes(1);
+    expect(mocks.teamsDeliver.mock.calls[0]![1]).toMatchObject({
+      source: "teams",
+      thread_key: "tenant-1:19:abc@thread.tacv2;messageid=1700000000001",
+    });
+    expect(mocks.teamsDeliver.mock.calls[0]![2]).toMatchObject({
+      id: inboundId,
+      text: "Sorry, I couldn't log this for Legal. Please try again, or contact the Legal team directly.",
+    });
+    await markIntakeAgentFailed(memory.db, job());
+    expect(mocks.teamsDeliver).toHaveBeenCalledTimes(1);
   });
   it("points the thread at a request that was recorded", async () => {
     setup({ payload: slackPayload(), source: "slack", model: false });
@@ -975,14 +1228,20 @@ describe("when a message fails for good", () => {
     await deliverQueued();
     expect(String(slackReplies.text)).toMatch(/^Thanks, I.ve passed this to Legal\./);
   });
-  it("links the thread before acknowledging, when the job failed before it could", async () => {
+  it("records nothing when Slack refuses the thread's details, which are read before recording", async () => {
     setup({ payload: slackPayload(), source: "slack", model: false });
-    // Recorded, then Slack refuses the call that links its thread.
     stubSlack({ "chat.getPermalink": () => ({ ok: false, error: "invalid_auth" }) });
     await expect(handleIntakeAgent(memory.db, job())).rejects.toBeTruthy();
-    expect(row()).toMatchObject({ request_id: inboundId });
+    expect(row()).toMatchObject({ request_id: null, status: "pending" });
+    expect(memory.rows("intake_requests")).toEqual([]);
     expect(memory.rows("intake_channel_links")).toEqual([]);
-    stubSlack();
+  });
+  it("links the thread before acknowledging, when the job failed before it could", async () => {
+    setup({ payload: { ...slackPayload(), recorded: true }, source: "slack", model: false });
+    // Recorded without its thread, as a build that linked it in a later
+    // step could leave it.
+    memory.rows("intake_requests").push({ id: inboundId, org_id: org, source: "slack", subject: "NDA", state: "submitted", assignee_id: null });
+    row().request_id = inboundId;
     await markIntakeAgentFailed(memory.db, job());
     expect(memory.rows("intake_channel_links")).toHaveLength(1);
     await deliverQueued();

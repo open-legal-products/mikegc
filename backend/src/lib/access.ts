@@ -648,10 +648,22 @@ export async function ensureDocAccess(
         project_id: string | null;
         org_id?: string | null;
         workflow_id?: string | null;
+        /**
+         * Select it wherever the verdict gates a write: an uploader owns a
+         * standalone document unless it is an intake attachment, which
+         * follows its request's rule instead.
+         */
+        library_kind?: string | null;
     },
     userId: string,
     userEmail: string | null | undefined,
     db: Db,
+    /**
+     * `readOnly` is for callers that only ask whether the document can be
+     * read: it skips the question of whether an intake request also makes
+     * it editable (one more query per document) and answers "viewer".
+     */
+    options: { readOnly?: boolean } = {},
 ): Promise<ResourceAccess> {
     if (doc.project_id) {
         const access = await checkProjectAccess(
@@ -695,7 +707,8 @@ export async function ensureDocAccess(
         // An open intake request's members edit its documents; anything
         // else reached this way is read-only.
         return resourceAccessFor(
-            (await canEditIntakeDocument(db, doc.org_id, userId, doc.id))
+            !options.readOnly &&
+                (await canEditIntakeDocument(db, doc.org_id, userId, doc.id))
                 ? "editor"
                 : "viewer",
             null,
@@ -703,23 +716,42 @@ export async function ensureDocAccess(
         );
     }
     const teamOrgId = await teamOrgIdOf(db, doc.org_id);
-    if (!teamOrgId) return resourceAccessFor("owner", null, true);
-    const orgRole = await getOrgRole(userId, teamOrgId, db);
-    return orgRole
-        ? resourceAccessFor("owner", orgRole, true)
-        : { ok: false };
+    const orgRole = teamOrgId ? await getOrgRole(userId, teamOrgId, db) : null;
+    if (teamOrgId && !orgRole) return { ok: false };
+    // An intake attachment belongs to its request, not its uploader: the
+    // uploader edits it on the same terms as every other member (while the
+    // request is open) and only reads it once the request is closed.
+    if (doc.library_kind !== "intake_attachment")
+        return resourceAccessFor("owner", orgRole, true);
+    return resourceAccessFor(
+        !options.readOnly &&
+            (await canEditIntakeDocument(db, doc.org_id, userId, doc.id))
+            ? "editor"
+            : "viewer",
+        orgRole,
+        true,
+    );
 }
 
 /** Reuse only shared container/membership verdicts within one authorized batch. */
-export function createDocumentAccessChecker(userId: string, userEmail: string | null | undefined, db: Db) {
+export function createDocumentAccessChecker(
+    userId: string,
+    userEmail: string | null | undefined,
+    db: Db,
+    options: Parameters<typeof ensureDocAccess>[4] = {},
+) {
     const shared = new Map<string, Promise<ResourceAccess>>();
     return async (doc: Parameters<typeof ensureDocAccess>[0]): Promise<ResourceAccess> => {
+        // An uploader's intake attachment is editable only while its own
+        // request is open, so outside a read-only batch it is checked alone.
+        const intake = doc.library_kind === "intake_attachment";
         const key = doc.project_id ? `project:${doc.project_id}`
             : doc.workflow_id ? `workflow:${doc.workflow_id}`
-            : doc.user_id === userId && doc.org_id ? `creator-org:${doc.org_id}` : null;
-        if (!key) return ensureDocAccess(doc, userId, userEmail, db);
+            : doc.user_id === userId && doc.org_id && (!intake || options.readOnly)
+              ? `creator-org${intake ? "-intake" : ""}:${doc.org_id}` : null;
+        if (!key) return ensureDocAccess(doc, userId, userEmail, db, options);
         let pending = shared.get(key);
-        if (!pending) { pending = ensureDocAccess(doc, userId, userEmail, db); shared.set(key, pending); }
+        if (!pending) { pending = ensureDocAccess(doc, userId, userEmail, db, options); shared.set(key, pending); }
         const access = await pending;
         // A shared role never shares the uploader's provenance.
         return access.ok ? { ...access, isCreator: !!doc.user_id && doc.user_id === userId } : access;
@@ -899,7 +931,9 @@ export async function filterAccessibleDocumentIds(
         org_id?: string | null;
     };
     const accessibleIds: string[] = [];
-    const check = createDocumentAccessChecker(userId, userEmail, db);
+    // Only readability is asked here, so the per-document intake edit check
+    // is skipped: it doubled the queries for every readable standalone file.
+    const check = createDocumentAccessChecker(userId, userEmail, db, { readOnly: true });
     // Keep UUID filters below the gateway's request/header limits, as in the
     // add-on asset lookup. A failed batch is not an empty permissions verdict.
     for (const batch of chunkArray([...new Set(documentIds)], 50)) {

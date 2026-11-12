@@ -55,6 +55,29 @@ interface LocalEditRow extends WordDocumentEdit {
   owner_id: string;
 }
 
+/**
+ * Display order for a chat's stored messages. Rows with a sequence keep it.
+ * Rows written before sequences existed occupied the chat's first positions
+ * (new rows are numbered from the message count), so they sort first, in
+ * creation order; a user message precedes its answer only on a timestamp tie.
+ */
+export function compareLocalMessageRows(
+  left: Pick<LocalMessageRow, "id" | "role" | "created_at" | "sequence">,
+  right: Pick<LocalMessageRow, "id" | "role" | "created_at" | "sequence">,
+): number {
+  if (left.sequence !== undefined && right.sequence !== undefined) {
+    return left.sequence - right.sequence || left.id.localeCompare(right.id);
+  }
+  if (left.sequence !== undefined) return 1;
+  if (right.sequence !== undefined) return -1;
+  const roleRank = (role: string) => (role === "user" ? 0 : 1);
+  return (
+    left.created_at.localeCompare(right.created_at) ||
+    roleRank(left.role) - roleRank(right.role) ||
+    left.id.localeCompare(right.id)
+  );
+}
+
 function requestResult<T>(request: IDBRequest<T>): Promise<T> {
   return new Promise((resolve, reject) => {
     request.onsuccess = () => resolve(request.result);
@@ -573,16 +596,7 @@ export async function getLocalWordChat(
     return {
       chat,
       messages: rows
-        .sort((left, right) => {
-          const leftSequence = left.sequence ?? (left.role === "user" ? 0 : 1);
-          const rightSequence =
-            right.sequence ?? (right.role === "user" ? 0 : 1);
-          return (
-            leftSequence - rightSequence ||
-            left.created_at.localeCompare(right.created_at) ||
-            left.id.localeCompare(right.id)
-          );
-        })
+        .sort(compareLocalMessageRows)
         .map(
           ({
             chat_id: _chatId,

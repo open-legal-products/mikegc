@@ -296,6 +296,22 @@ describe("Slack events", () => {
     expect(inbound()).toEqual([]);
     expect(mocks.enqueueDbJob).not.toHaveBeenCalled();
   });
+  it("ignores people from another organization in a shared channel, and other workspaces", async () => {
+    memory.rows("intake_automation")[0]!.slack_team_id = "T1";
+    linkThread();
+    for (const body of [
+      mention({ user_team: "T2", team: "T2" }),
+      mention({ team: "T2" }),
+      { ...mention(), team_id: "T2" },
+      threadMessage({ user_team: "T2" }),
+    ])
+      expect((await slack(body)).status).toBe(200);
+    expect(inbound()).toEqual([]);
+    // The connected workspace's own people, named or not.
+    expect((await slack(mention({ user_team: "T1", team: "T2", ts: "1762074841.000100" }))).status).toBe(200);
+    expect((await slack(mention({ ts: "1762074842.000100" }))).status).toBe(200);
+    expect(inbound()).toHaveLength(2);
+  });
   it("asks Slack to retry when the message can't be queued", async () => {
     mocks.enqueueDbJob.mockRejectedValueOnce(new Error("db down"));
     vi.spyOn(console, "error").mockImplementation(() => undefined);
@@ -307,6 +323,13 @@ describe("Slack events", () => {
 });
 
 describe("htmlToText", () => {
+  it("drops trailing spaces in linear time", () => {
+    expect(htmlToText("<p>One  \t</p><p>Two words</p>")).toBe("One\nTwo words");
+    // 60,000 spaces with no line end after them took seconds to scan.
+    const started = performance.now();
+    expect(htmlToText(`A${"&nbsp;".repeat(60_000)}B`)).toBe(`A${" ".repeat(60_000)}B`);
+    expect(performance.now() - started).toBeLessThan(1_000);
+  });
   it("reads an HTML email as text, leaving no markup even when tags are nested", () => {
     expect(
       htmlToText("<head><title>x</title></head><p>Hi &amp; thanks</p><ul><li>One</li></ul>"),

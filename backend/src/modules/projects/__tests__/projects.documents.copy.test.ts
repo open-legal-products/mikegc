@@ -167,6 +167,20 @@ it.each([
   fake.done();
 });
 
+it("refuses to move an intake request's attachment into a project", async () => {
+  mocks.docAccess.mockResolvedValue({ ok: true, projectRole: "viewer", isCreator: true, orgRole: "member" });
+  const source = { ...firmDoc, project_id: null, library_kind: "intake_attachment" };
+  const fake = scriptedDb([
+    { table: "documents", data: source },
+    { table: "documents", data: [source] },
+    { table: "organizations", data: [{ id: "firm", kind: "team" }] },
+  ]);
+  expect(await assignOrCopyDocument(fake.db, { projectId: "firm-matter", documentId: "doc", userId: "actor" }))
+    .toEqual({ ok: false, kind: "doc_not_found" });
+  // Nothing was written: the script holds no update.
+  fake.done();
+});
+
  it("returns a typed read failure with its original cause before creating a copy", async () => {
   mocks.projectAccess.mockResolvedValue({ ok: true, projectRole: "owner", project: { org_id: null } });
   mocks.docAccess.mockResolvedValue({ ok: true, projectRole: "owner", isCreator: true });

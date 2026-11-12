@@ -2,6 +2,7 @@ import { randomBytes } from "node:crypto";
 import { z } from "zod";
 import type { IntakePreprocessRule } from "@mike/contracts";
 import { getOrgRole, isOrgAdmin } from "../../lib/access";
+import { mapWithConcurrency } from "../../lib/concurrency";
 import { NonRetryableJobError } from "../../lib/dbq/runner";
 import type { DbJob } from "../../lib/dbq/types";
 import type { EditInput } from "../../lib/docxTrackedChanges";
@@ -257,6 +258,20 @@ async function postNote(db: Db, job: JobPayload, body: string) {
     throw posted.kind === "error" ? posted.error : new Error(posted.detail);
 }
 
+/** When the requester last replied on the request, as the database wrote it. */
+async function latestReplyAt(db: Db, job: JobPayload): Promise<string | null> {
+  const { data, error } = await db
+    .from("intake_messages")
+    .select("created_at")
+    .eq("org_id", job.orgId)
+    .eq("request_id", job.requestId)
+    .eq("kind", "reply")
+    .order("created_at", { ascending: false })
+    .limit(1);
+  if (error) throw error;
+  return ((data ?? []) as { created_at: string }[])[0]?.created_at ?? null;
+}
+
 async function notePosted(db: Db, noteId: string) {
   const { data, error } = await db
     .from("intake_messages")
@@ -294,10 +309,19 @@ async function readDocuments(
   if (error) throw error;
   const read: ReadDocument[] = [];
   const unread: string[] = [];
-  for (const { document_id } of (data ?? []) as { document_id: string }[]) {
-    const doc = await loadOrgDocument(db, job.orgId, document_id);
-    if (!doc) continue;
-    const text = await readOrgDocumentText(db, doc);
+  // Each document is several queries and often a download; a few are read
+  // at once and then taken in their stored order, so the result is the same.
+  const loaded = await mapWithConcurrency(
+    (data ?? []) as { document_id: string }[],
+    4,
+    async ({ document_id }) => {
+      const doc = await loadOrgDocument(db, job.orgId, document_id);
+      return doc ? { doc, text: await readOrgDocumentText(db, doc) } : null;
+    },
+  );
+  for (const entry of loaded) {
+    if (!entry) continue;
+    const { doc, text } = entry;
     if (text.status === "pending" && !lastAttempt)
       throw new Error("Waiting for the request's documents to be read.");
     if (text.status === "ready" && text.text.trim())
@@ -517,6 +541,32 @@ async function preprocess(
     await acknowledge();
     await postNote(db, job, body);
   };
+  const { data: requestRow, error } = await db
+    .from("intake_requests")
+    .select("subject, description, state, clarify_stage, clarify_rounds, clarify_stopped")
+    .eq("org_id", job.orgId)
+    .eq("id", job.requestId)
+    .maybeSingle();
+  if (error) throw error;
+  if (!requestRow) return;
+  const request = requestRow as {
+    subject: string;
+    description: string;
+    state: string;
+    clarify_stage: "rule" | "readiness" | null;
+    clarify_rounds: number;
+    clarify_stopped: boolean;
+  };
+  // Resolved or cancelled since it was queued: nothing is acknowledged, run
+  // or written on it.
+  if (request.state === "resolved" || request.state === "cancelled")
+    return { skipped: "closed" };
+  // Waiting on an answer to a later round: this run is stale.
+  if (
+    request.clarify_stage === "rule" ||
+    (request.clarify_stage === "readiness" && request.clarify_rounds !== job.round)
+  )
+    return { skipped: "superseded" };
   const { data: settings, error: settingsError } = await db
     .from("intake_automation")
     .select("configured_by, preprocessing_model")
@@ -546,43 +596,28 @@ async function preprocess(
         ? `${title} didn't run: its model no longer has an API key. An owner or admin can choose another in Model Preferences, or add its key in Bring Your Own Keys.`
         : `${title} didn't run: no preprocessing model is chosen. An owner or admin can choose one in Model Preferences.`,
     );
-  const { data: requestRow, error } = await db
-    .from("intake_requests")
-    .select("subject, description, state, clarify_stage, clarify_rounds, clarify_stopped")
-    .eq("org_id", job.orgId)
-    .eq("id", job.requestId)
-    .maybeSingle();
-  if (error) throw error;
-  if (!requestRow) return;
-  const request = requestRow as {
-    subject: string;
-    description: string;
-    state: string;
-    clarify_stage: "rule" | "readiness" | null;
-    clarify_rounds: number;
-    clarify_stopped: boolean;
-  };
-  // Waiting on an answer to a later round: this run is stale.
-  if (
-    request.clarify_stage === "rule" ||
-    (request.clarify_stage === "readiness" && request.clarify_rounds !== job.round)
-  )
-    return { skipped: "superseded" };
-  const { read, unread } = await readDocuments(db, job, lastAttempt);
-  // Questions asked and the requester's answers, which every stage reads.
-  const thread = await loadThreadEntries(db, job.orgId, job.requestId);
-
   // The readiness check: does the playbook or workflow have what it needs?
   // It asks only while MikeGC may (a thread, no lawyer yet, a round left);
   // with the rounds used up it still runs, so the note can say what is
   // still missing.
   let missing: string[] = [];
-  const open = request.state !== "resolved" && request.state !== "cancelled";
-  const link = open ? await loadRequestLink(db, job.orgId, job.requestId) : null;
+  const link = await loadRequestLink(db, job.orgId, job.requestId);
   const mayAsk =
     !!link && !request.clarify_stopped && request.clarify_rounds < MAX_CLARIFY_ROUNDS;
-  if (link && (mayAsk || request.clarify_rounds > 0)) {
-    const check = await checkReadiness({
+  const checks = !!link && (mayAsk || request.clarify_rounds > 0);
+  let read: ReadDocument[];
+  let unread: string[];
+  let thread: Awaited<ReturnType<typeof loadThreadEntries>>;
+  let check: Awaited<ReturnType<typeof checkReadiness>> | null = null;
+  for (let pass = 0; ; pass++) {
+    // Another answer this round is deduplicated against this live job, so
+    // one that arrives while it reads is read by running the check again.
+    const repliedAt = checks ? await latestReplyAt(db, job) : null;
+    ({ read, unread } = await readDocuments(db, job, lastAttempt));
+    // Questions asked and the requester's answers, which every stage reads.
+    thread = await loadThreadEntries(db, job.orgId, job.requestId);
+    if (!checks) break;
+    check = await checkReadiness({
       model,
       request,
       thread,
@@ -595,6 +630,9 @@ async function preprocess(
           ? { name: rule.name, ...rule.playbook }
           : null,
     });
+    if (pass > 0 || (await latestReplyAt(db, job)) === repliedAt) break;
+  }
+  if (check) {
     if (!check.ready) {
       if (
         mayAsk &&

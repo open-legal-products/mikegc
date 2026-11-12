@@ -14,7 +14,8 @@ three kinds of channel:
   in a channel MikeGC has been added to. A top-level message becomes the
   request, and its author is the requester. A mention in a thread sends the
   whole thread, up to the mention, and the thread's first author is the
-  requester.
+  requester. People from another organization in a channel shared with it
+  (Slack Connect) are ignored.
 - **Microsoft Teams.** Anyone mentions `@MikeGC` in a channel of a team the
   organization's own MikeGC bot has been added to, the same way as in Slack.
 
@@ -97,7 +98,8 @@ it applies and tells the agent why when it doesn't:
   original message, its sender and time (in UTC, since members read it from
   anywhere) kept below the summary; the requester's name and email; a target
   date if the message asks for one, working out dates such as "by Friday"
-  from the day it was sent, in UTC; and the attachments that matter,
+  from the day it was sent (in a chat thread, the day MikeGC was mentioned),
+  in UTC; and the attachments that matter,
   leaving out the rest, such as signature logos.
 - **update_request** changes a recorded request's subject, summary or target
   date from what the requester writes later ("we now need it by the 14th").
@@ -376,7 +378,10 @@ everyone in the channel"). An email goes to the requester and those copied.
 
 PDF, Word, Excel and PowerPoint attachments are accepted: up to 10 per message
 and 25 MB each. Anything else, or anything over those limits, is listed at the
-end of the request's description so a reviewer can ask for it. Images
+end of the request's description so a reviewer can ask for it. A file shared
+in Slack or Teams that MikeGC can't fetch (larger than the channel said, or
+in Teams without document access) is named in a MikeGC note on the request
+instead, as not attached. Images
 embedded in an email's body, such as signature logos, are left out without
 being listed. Accepted documents become the request's documents, like ones a
 member uploads, and every member can open them: Word and PowerPoint files are
@@ -416,9 +421,12 @@ as it. One mailbox per organization, on Microsoft 365 or Google Workspace.
 
 ### What counts as a request
 
-- A new email with the intake address in To or Cc. A forward counts too: the
-  forwarder is the requester, and the agent names the original sender in the
-  summary.
+- A new email delivered to the intake mailbox: with the intake address in To
+  or Cc, or through an alias or distribution list that delivers into it, or a
+  Bcc. Mail that doesn't name the intake address in To or Cc is answered to
+  its sender alone, so no one else learns it was sent a copy. A forward
+  counts too: the forwarder is the requester, and the agent names the
+  original sender in the summary.
 - From an accepted **sender domain**. The list starts with the intake
   address's own domain; add the company's other domains (`example.com` also
   accepts its subdomains, such as `eu.example.com`). Mail from other domains
@@ -474,11 +482,15 @@ MikeGC marks recorded mail with the "MikeGC" category.
 
 The intake address must be a licensed Workspace user account, such as
 `intake@example.com`: the Gmail API reads only user mailboxes, so a Google
-Group can't be connected, but a group can deliver into the account.
+Group can't be connected. To receive mail at another address, add it to the
+account as an alternate email address (alias). A Google Group that delivers
+into the account marks its mail as list mail, which is ignored.
 
 1. In Google Cloud, enable the Gmail API in a project, create a service
    account and download its JSON key. Organizations can skip this when the
-   deployment has its own in `INTAKE_GMAIL_SERVICE_ACCOUNT_KEY`.
+   deployment has its own in `INTAKE_GMAIL_SERVICE_ACCOUNT_KEY` and the
+   operator has granted them the mailbox in `INTAKE_GMAIL_SHARED_MAILBOXES`
+   (below).
 2. In the Google Admin console, under **Security → API controls → Domain-wide
    delegation**, add the service account's client ID with the scope
    `https://www.googleapis.com/auth/gmail.modify`. The Gmail dialog shows the
@@ -572,9 +584,9 @@ changing one channel's app or secret later doesn't change the other's.
 Every request from Teams carries a Bot Connector token, which MikeGC checks
 against Bot Framework's signing keys, the bot's app ID, the activity's service
 URL and the configured tenant before reading it. Files shared in the channel
-are read through Graph when document access works, and listed as not attached
-otherwise. MikeGC's replies go through the Bot Connector; a resolution's
-documents are uploaded to the channel's files folder, under
+are read through Graph when document access works, and named as not attached
+in a note on the request otherwise. MikeGC's replies go through the Bot
+Connector; a resolution's documents are uploaded to the channel's files folder, under
 `MikeGC/<request subject>/`, and linked from the message, so channel members
 open them with their existing access. Without document access, the message
 names them and says to ask Legal for a copy. Whether Teams delivers thread
@@ -618,19 +630,33 @@ channels are supported.
   its documents and links them with `intake_attach_automated`, and asks
   (`intake_ask_automated`) or acknowledges (`intake_acknowledge_automated`). A
   retried job reuses the request and documents it already made and never
-  acknowledges twice. A message that still fails after its retries is
-  recorded as failed, with a reason, in `intake_inbound`, and MikeGC says so
-  in a Slack thread.
+  acknowledges twice. A Slack or Teams thread holds one request: its link is
+  written in the same `intake_submit_automated` call that records the
+  request, and a mention stored as a new request in a thread another request
+  has since linked becomes that request's reply (`intake_follow_thread`,
+  checked before the agent plans and again as the request is recorded), so
+  two mentions arriving together make one request and one reply. A message
+  that still fails after its retries is recorded as failed, with a reason, in
+  `intake_inbound`, and MikeGC says so in a Slack or Teams thread. An email isn't answered, so a bounce of that
+  answer can't start a loop.
 - **Replies.** The `intake.agent` job's reply branch reads the reply from its channel,
   records it with `intake_reply_automated`, adds its files, and then queues
   the next round of `intake.preprocess` for an answer to the readiness check
-  (deduplicated per request and round, `intake.preprocess:<request>:<round>`),
+  (deduplicated per request and round, `intake.preprocess:<request>:<round>`;
+  a run that sees another answer arrive while it checks reads it and checks
+  again, once),
   or runs the agent on an open request: `intake_update_automated` changes the
   details it planned, skipping any in the request's `member_edited_fields`,
   `intake_ask_automated` asks once more or
   `intake_settle_clarify_automated` returns a request whose rule is chosen
   to New or In progress, and `intake_answer_automated` posts MikeGC's answer
-  without changing the request's state.
+  without changing the request's state. The plan carries the request's
+  `version` it was made from, and `intake_update_automated` refuses it
+  (P0001) once anything has changed the request since, such as a newer
+  reply's plan or a member's edit; the agent then plans again from the
+  request as it is now, at most three plans per reply, after which the stale
+  update and the answer describing it are dropped. A question to choose the
+  rule is refused once the rule is settled, so an older plan can't reopen it.
 - **Outbox.** Every requester-facing message (an acknowledgement, a question,
   MikeGC's answer or a resolution reply) is an `intake_outbound` row written in the same
   transaction as the message it carries, and sent by the `intake.deliver`
@@ -659,7 +685,8 @@ channels are supported.
   same module, and posts its note with `intake_note_automated`. The note's ID
   is fixed per request, so it is posted once however many rounds run; a job
   that fails for good posts a short note saying preprocessing couldn't
-  finish.
+  finish. A request resolved or cancelled before its job runs is left alone:
+  nothing is acknowledged, run or written.
 - **Secrets.** The Slack signing secret and bot token, the Graph client
   secret and the Teams client secret are encrypted at rest with
   `MCP_CONNECTORS_ENCRYPTION_SECRET`, like connector credentials, are
@@ -729,7 +756,21 @@ Apply both before starting the new build. Jobs queued as `intake.inbound` or
 
 `INTAKE_GMAIL_SERVICE_ACCOUNT_KEY` (a Google service account's JSON key) is
 optional: it serves Gmail mailboxes whose organization didn't paste its own
-key. Otherwise no new environment variables are
+key, but only the mailboxes `INTAKE_GMAIL_SHARED_MAILBOXES` grants that
+organization. Domain-wide delegation lets the shared account act as any user
+in the delegating domain, so without this list any organization's admin could
+connect any of those users' mailboxes. List entries as
+`<organization id>=<address>` or `<organization id>=@<domain>`, separated by
+commas or spaces, for example
+`INTAKE_GMAIL_SHARED_MAILBOXES=3f2a…=intake@acme.com,9c1d…=@globex.com`
+(organization IDs are `public.organizations.id`). An organization with no
+entry isn't offered the shared account and must paste its own key; a mailbox
+already connected that isn't granted stops being read and replied from, and
+Intake settings asks for the organization's own key. Upgrading a deployment
+that uses the shared key: add an entry for every organization whose Gmail
+mailbox relies on it. The backend warns at startup when the shared key is
+set and no organization is granted a mailbox, and when an entry can't be read
+(it counts such entries; a mistyped entry grants nothing). Otherwise no new environment variables are
 required: the webhook and notification URLs are built from `API_PUBLIC_URL`,
 the request links in members' notes from `FRONTEND_URL`, and secrets are
 encrypted with `MCP_CONNECTORS_ENCRYPTION_SECRET` (or

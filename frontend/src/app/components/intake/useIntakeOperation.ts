@@ -127,8 +127,12 @@ export function useIntakeOperation(
  * Guard an unsent draft without browser dialogs. In-app navigation keeps the
  * draft in tab memory, so it only shows a toast; an explicit discard asks
  * through `discardPopup`, which the caller renders.
+ *
+ * While `saving` (a command sent and not yet settled), in-app navigation and
+ * workspace switches are held instead: what follows the save, such as adding
+ * a new request's documents, runs only in the view that sent it.
  */
-export function useIntakeDraftWarning(dirty: boolean) {
+export function useIntakeDraftWarning(dirty: boolean, saving = false) {
   const [pending, setPending] = useState<(() => void) | null>(null);
   /** Run `discard` at once when clean, otherwise after the person confirms. */
   const requestDiscard = (discard: () => void) => {
@@ -136,18 +140,24 @@ export function useIntakeDraftWarning(dirty: boolean) {
     else setPending(() => discard);
   };
   useEffect(() => {
-    if (!dirty) return;
-    const kept = () =>
+    if (!dirty && !saving) return;
+    const kept = (event: Event) => {
+      if (saving) {
+        event.preventDefault();
+        notifyInfo("Wait until this is saved before leaving.");
+        return;
+      }
       notifyInfo(
         "Your draft is kept in this tab until you send or discard it.",
       );
+    };
     window.addEventListener("mike:before-workspace-change", kept);
     window.addEventListener("mike:before-navigation", kept);
     return () => {
       window.removeEventListener("mike:before-workspace-change", kept);
       window.removeEventListener("mike:before-navigation", kept);
     };
-  }, [dirty]);
+  }, [dirty, saving]);
   const discardPopup = createElement(ConfirmPopup, {
     open: !!pending,
     title: "Discard this draft?",

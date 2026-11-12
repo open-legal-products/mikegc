@@ -1,3 +1,4 @@
+import { mapWithConcurrency } from "../../lib/concurrency";
 import { enqueueDbJob } from "../../lib/dbq/enqueue";
 import { NonRetryableJobError, dbJobsEnabled } from "../../lib/dbq/runner";
 import { safeError } from "../../lib/safeError";
@@ -11,10 +12,14 @@ import {
   RECORDED_INCOMPLETE,
   addDocuments,
   channelAttachments,
+  noteNotAttached,
   type CandidateDownloader,
 } from "./intake.attachments";
 import {
   ChannelDeliveryError,
+  type ChannelContext,
+  type ChannelLink,
+  type OutboundMessage,
   findConversation,
   linkThread,
   rememberConversation,
@@ -36,6 +41,7 @@ import {
   type InboundPayload,
   type MailInboundPayload,
   type AgentPlan,
+  type ReplyPayload,
   type SlackInboundPayload,
 } from "./intake.inboundPayload";
 import { gmailAdapter } from "./intake.gmail";
@@ -53,12 +59,15 @@ import {
   slackChannelName,
   slackPermalink,
   slackEscape,
+  slackFindByMetadata,
   slackPostMessage,
+  slackTsBefore,
   slackTextToPlain,
   slackThreadMessages,
   slackUserInfo,
   type SlackFile,
   type SlackPerson,
+  SLACK_LOOKUPS_AT_ONCE,
 } from "./intake.slack";
 import {
   TeamsApiError,
@@ -73,6 +82,7 @@ import {
   loadTriageRules,
   resolveIntakeModel,
   type InboundMessage,
+  chatThreadText,
 } from "./intake.triage";
 
 /**
@@ -264,18 +274,24 @@ async function slackMessage(
   ]
     .filter((id) => id !== botUserId)
     .slice(0, 30);
-  const people = new Map<string, SlackPerson>();
-  for (const id of ids) {
+  // Up to 30 lookups, a few at a time: one after another they held every
+  // new Slack message for several seconds before the agent saw it.
+  const found = await mapWithConcurrency(ids, SLACK_LOOKUPS_AT_ONCE, async (id) => {
     try {
-      const person = await slackUserInfo(token, id);
-      if (person) people.set(id, person);
+      return await slackUserInfo(token, id);
     } catch (error) {
       // Without users:read the request is still recorded; a token Slack
       // refuses outright stops here.
       if (error instanceof SlackApiError && SLACK_TOKEN_ERRORS.has(error.code))
         throw error;
+      return null;
     }
-  }
+  });
+  const people = new Map<string, SlackPerson>();
+  ids.forEach((id, i) => {
+    const person = found[i];
+    if (person) people.set(id, person);
+  });
   const names = new Map(
     [...people].flatMap(([id, p]) => (p.name ? [[id, p.name] as const] : [])),
   );
@@ -284,12 +300,10 @@ async function slackMessage(
     ...m,
     text: slackTextToPlain(m.text, names, botUserId),
   }));
-  const text =
+  const parts =
     plain.length === 1
-      ? plain[0]!.text
-      : plain
-          .map((m) => `${nameOf(m.user)}, ${formatSent(slackDate(m.ts))}:\n${m.text}`)
-          .join("\n\n");
+      ? [plain[0]!.text]
+      : plain.map((m) => `${nameOf(m.user)}, ${formatSent(slackDate(m.ts))}:\n${m.text}`);
   const seen = new Set<string>();
   const files = plain
     .flatMap((m) => m.files)
@@ -307,10 +321,13 @@ async function slackMessage(
   return {
     source: "slack",
     sender: { name: nameOf(requester), email: people.get(requester)?.email ?? null },
-    sentAt: slackDate(messages[0]!.ts),
+    // The mention's own time: "by Friday" counts from when MikeGC was asked,
+    // not from when the thread began.
+    sentAt: slackDate(payload.ts),
     subject: null,
     subjectHint: firstLine,
-    text: clip(text, MAX_MESSAGE_CHARS),
+    text: chatThreadText(parts, MAX_MESSAGE_CHARS),
+    parts,
     ...channelAttachments(files, "slack"),
   };
 }
@@ -331,14 +348,78 @@ async function inboundMessage(
   }
 }
 
+type ChatPayload = Extract<InboundPayload, { kind: "slack" | "teams" }>;
+type ChatThread = { source: "slack" | "teams"; key: string };
+type Thread = { source: ChannelSource; key: string; address: Record<string, unknown> };
+
+/**
+ * A Slack or Teams thread's key, as links and conversations key it, from the
+ * message alone: no call to the channel.
+ */
+function chatThreadKey(settings: AutomationRow | null, payload: ChatPayload): ChatThread {
+  if (payload.kind === "teams") return { source: "teams", key: teamsThread(payload).key };
+  const team = payload.team_id ?? settings?.slack_team_id ?? "";
+  return { source: "slack", key: `${team}:${payload.channel}:${payload.thread_ts ?? payload.ts}` };
+}
+
+/**
+ * A Slack or Teams message as the reply branch stores it, for when another
+ * request's thread turns out to hold it. Only what identifies the message:
+ * none of the new-message branch's progress, so it is planned as a reply.
+ */
+function replyFor(payload: ChatPayload): ReplyPayload {
+  if (payload.kind === "slack")
+    return {
+      kind: "slack_reply",
+      channel: payload.channel,
+      ts: payload.ts,
+      // A mention at the top level is its thread's root.
+      thread_ts: payload.thread_ts ?? payload.ts,
+      user: payload.user,
+    };
+  return {
+    kind: "teams_reply",
+    activity_id: payload.activity_id,
+    service_url: payload.service_url,
+    from: payload.from,
+    date: payload.date,
+    text: payload.text,
+    files: payload.files,
+  };
+}
+
+/**
+ * Hand a Slack or Teams message to the request whose thread it is in, when
+ * that thread is already linked: it becomes the request's reply. The request,
+ * or null when the thread is free.
+ */
+async function followThread(
+  db: Db,
+  row: InboundRow,
+  settings: AutomationRow | null,
+  payload: ChatPayload,
+): Promise<string | null> {
+  const thread = chatThreadKey(settings, payload);
+  const result = await intakeRpc<string | null>(db, "intake_follow_thread", {
+    p_org: row.org_id,
+    p_inbound: row.id,
+    p_source: thread.source,
+    p_thread_key: thread.key,
+    p_reply: replyFor(payload),
+  });
+  if (!result.ok) throw result.kind === "error" ? result.error : new Error(result.detail);
+  return result.data;
+}
+
+/** What runInbound returns for a message it handed to the reply branch. */
+export const REROUTED_TO_REPLY = { rerouted: "reply" } as const;
+
 /** The thread to link a request to: its key and what posting there needs. */
-async function threadOf(
-  settings: AutomationRow,
-  payload: InboundPayload,
-): Promise<{ source: ChannelSource; key: string; address: Record<string, unknown> } | null> {
+async function threadOf(settings: AutomationRow, payload: InboundPayload): Promise<Thread | null> {
   switch (payload.kind) {
     case "slack": {
       const token = requireSlackToken(settings);
+      const { key } = chatThreadKey(settings, payload);
       const root = payload.thread_ts ?? payload.ts;
       const team = payload.team_id ?? settings.slack_team_id ?? "";
       const [channelName, permalink] = await Promise.all([
@@ -347,7 +428,7 @@ async function threadOf(
       ]);
       return {
         source: "slack",
-        key: `${team}:${payload.channel}:${root}`,
+        key,
         address: {
           team_id: team || null,
           channel: payload.channel,
@@ -364,15 +445,19 @@ async function threadOf(
   }
 }
 
-/** Link a recorded request to the thread its message came from. */
+/**
+ * Link a recorded request to the thread its message came from. A Slack or
+ * Teams request was linked when it was recorded; this finds that link.
+ */
 async function linkRequestThread(
   db: Db,
   orgId: string,
   requestId: string,
   settings: AutomationRow,
   payload: InboundPayload,
+  known?: Thread | null,
 ) {
-  const thread = await threadOf(settings, payload);
+  const thread = known ?? (await threadOf(settings, payload));
   if (!thread) return;
   const linkId = await linkThread(db, {
     orgId,
@@ -388,24 +473,27 @@ async function linkRequestThread(
 /** Download a channel file for an attachment. */
 function downloader(settings: AutomationRow | null): CandidateDownloader {
   return async (candidate) => {
-    if (!candidate.url || !settings) return null;
+    if (!candidate.url || !settings) return "unreadable";
     if (candidate.via === "teams")
       return teamsDownloadFile(settings, candidate.url, MAX_ATTACHMENT_BYTES);
     const token = slackBotToken(settings);
-    return token ? downloadSlackFile(token, candidate.url, MAX_ATTACHMENT_BYTES) : null;
+    return token ? downloadSlackFile(token, candidate.url, MAX_ATTACHMENT_BYTES) : "unreadable";
   };
 }
 
 /**
  * Record the request. One the database refuses is recorded once more
  * without its date and requester email, which are the fields a model or a
- * sender could get wrong.
+ * sender could get wrong. A Slack or Teams request is linked to its thread
+ * in the same call; when another request linked that thread first, the
+ * message becomes its reply and that request's ID comes back instead.
  */
 async function submit(
   db: Db,
   row: InboundRow,
   record: NonNullable<AgentPlan["record"]>,
   assigneeId: string | null,
+  chat: { thread: Thread; reply: ReplyPayload } | null,
 ): Promise<string> {
   const args = (r: NonNullable<AgentPlan["record"]>) => ({
     p_org: row.org_id,
@@ -417,6 +505,14 @@ async function submit(
     p_requester_email: r.requester_email,
     p_date: r.requested_by_date,
     p_assignee: assigneeId,
+    ...(chat
+      ? {
+          p_source: chat.thread.source,
+          p_thread_key: chat.thread.key,
+          p_address: chat.thread.address,
+          p_reply: chat.reply,
+        }
+      : {}),
   });
   let result = await intakeRpc<string>(db, "intake_submit_automated", args(record));
   if (!result.ok && result.kind === "validation")
@@ -464,12 +560,7 @@ function conversationThread(
   settings: AutomationRow | null,
   payload: InboundPayload,
 ): { source: ConversationSource; key: string } | null {
-  if (payload.kind === "slack")
-    return {
-      source: "slack",
-      key: `${payload.team_id ?? settings?.slack_team_id ?? ""}:${payload.channel}:${payload.thread_ts ?? payload.ts}`,
-    };
-  if (payload.kind === "teams") return { source: "teams", key: teamsThread(payload).key };
+  if (payload.kind === "slack" || payload.kind === "teams") return chatThreadKey(settings, payload);
   if (payload.kind === "mail" && settings && !payload.related_request_id) {
     const thread = mailThread(settings, payload);
     return thread ? { source: thread.source as ConversationSource, key: thread.key } : null;
@@ -481,7 +572,9 @@ function conversationThread(
  * MikeGC's own answer in the chat or email thread a message came from, the
  * agent's `reply` when it found no request to record. Nothing is recorded,
  * so it goes out without a request or a link: an email replies to the
- * message itself.
+ * message itself. It is marked with the message's ID as an outbox row's
+ * would be, so with `attemptedAt` (an earlier attempt's start) the channel
+ * is first asked whether that attempt landed, and nothing is sent again.
  */
 export async function sendChatReply(
   db: Db,
@@ -489,12 +582,26 @@ export async function sendChatReply(
   settings: AutomationRow | null,
   payload: InboundPayload,
   text: string,
+  attemptedAt: string | null = null,
 ) {
   if (payload.kind === "slack") {
-    await slackPostMessage(requireSlackToken(settings), {
+    const token = requireSlackToken(settings);
+    const threadTs = payload.thread_ts ?? payload.ts;
+    if (
+      attemptedAt &&
+      (await slackFindByMetadata(token, {
+        channel: payload.channel,
+        threadTs,
+        outboundId: row.id,
+        oldest: slackTsBefore(attemptedAt),
+      }))
+    )
+      return;
+    await slackPostMessage(token, {
       channel: payload.channel,
-      threadTs: payload.thread_ts ?? payload.ts,
+      threadTs,
       text: slackEscape(text),
+      outboundId: row.id,
     });
     return;
   }
@@ -514,35 +621,34 @@ export async function sendChatReply(
       : payload.provider === "gmail"
         ? gmailAdapter
         : outlookAdapter;
+  const ctx: ChannelContext = {
+    db,
+    settings,
+    fromName: settings.email_from_name?.trim() || "Legal",
+    readDocument: () => Promise.reject(new Error("No documents to read.")),
+    saveProgress: () => Promise.resolve(),
+  };
+  const link: ChannelLink = {
+    // No request, so no link: Teams keys its post by the message, and
+    // email records no Message-IDs, which belong to a link.
+    id: payload.kind === "teams" ? row.id : "",
+    org_id: row.org_id,
+    request_id: "",
+    source: thread.source,
+    thread_key: thread.key,
+    address: thread.address,
+  };
+  const message: OutboundMessage = {
+    id: row.id,
+    kind: "answer",
+    author: { kind: "mikegc" },
+    text,
+    requestSubject: "",
+    documents: [],
+  };
   try {
-    await adapter.deliver(
-      {
-        db,
-        settings,
-        fromName: settings.email_from_name?.trim() || "Legal",
-        readDocument: () => Promise.reject(new Error("No documents to read.")),
-        saveProgress: () => Promise.resolve(),
-      },
-      {
-        // No request, so no link: Teams keys its post by the message, and
-        // email records no Message-IDs, which belong to a link.
-        id: payload.kind === "teams" ? row.id : "",
-        org_id: row.org_id,
-        request_id: "",
-        source: thread.source,
-        thread_key: thread.key,
-        address: thread.address,
-      },
-      {
-        id: row.id,
-        kind: "answer",
-        author: { kind: "mikegc" },
-        text,
-        requestSubject: "",
-        documents: [],
-      },
-      null,
-    );
+    if (attemptedAt && (await adapter.findDelivered(ctx, link, message, attemptedAt))) return;
+    await adapter.deliver(ctx, link, message, null);
   } catch (error) {
     if (error instanceof ChannelDeliveryError && error.permanent)
       throw new NonRetryableJobError(error.sentence);
@@ -600,18 +706,29 @@ async function processInbound(db: Db, row: InboundRow): Promise<Record<string, u
   // own. Mail in another request's thread is recorded apart, and the thread
   // stays that request's.
   const canAsk = !(payload.kind === "mail" && payload.related_request_id);
+  // A Slack or Teams thread holds one request. A mention stored as a new
+  // request before another in its thread was recorded is that request's
+  // reply: checked before the model plans it, and again as it is recorded.
+  const chat = payload.kind === "slack" || payload.kind === "teams" ? payload : null;
 
   if (!payload.agent) {
+    if (chat && (await followThread(db, row, settings, chat))) return { ...REROUTED_TO_REPLY };
     payload.agent = await planInbound(db, row, settings, payload);
     await save();
   }
   const plan = payload.agent;
   // Nothing to record: MikeGC answers in the thread, and no request is made.
   if (!plan.record && plan.reply && !row.request_id && !payload.recorded) {
-    // Saved straight after the send, and the round counted apart, so a
-    // retry neither answers twice nor counts the answer twice.
+    // Its first attempt is saved before the send and its success straight
+    // after, and the round is counted apart, so a retry neither answers
+    // twice (it first looks for an answer that landed) nor counts it twice.
     if (!payload.conversed) {
-      await sendChatReply(db, row, settings, payload, plan.reply);
+      const attemptedAt = payload.conversing ?? null;
+      if (!attemptedAt) {
+        payload.conversing = new Date().toISOString();
+        await save();
+      }
+      await sendChatReply(db, row, settings, payload, plan.reply, attemptedAt);
       payload.conversed = true;
       await save();
     }
@@ -638,14 +755,27 @@ async function processInbound(db: Db, row: InboundRow): Promise<Record<string, u
   if (!plan.record) throw new NonRetryableJobError(GENERIC_FAILURE);
   // With questions, the rule is undecided: recorded unassigned, waiting.
   const rule = plan.questions.length ? null : plan.rule;
-  const requestId =
-    row.request_id ?? (await submit(db, row, plan.record, rule?.assignee_id ?? null));
+  let thread: Thread | null = null;
+  let requestId = row.request_id;
+  if (!requestId) {
+    thread = chat && settings ? await threadOf(settings, chat) : null;
+    requestId = await submit(
+      db,
+      row,
+      plan.record,
+      rule?.assignee_id ?? null,
+      chat && thread ? { thread, reply: replyFor(chat) } : null,
+    );
+    // Another request linked the thread first: the message is its reply now,
+    // with the reply's payload, so nothing more is saved here.
+    if (requestId !== row.id) return { ...REROUTED_TO_REPLY };
+  }
   if (!payload.recorded) {
     payload.recorded = true;
     await save();
   }
   if (settings && !payload.linked) {
-    await linkRequestThread(db, row.org_id, requestId, settings, payload);
+    await linkRequestThread(db, row.org_id, requestId, settings, payload, thread);
     payload.linked = true;
     await save();
   }
@@ -664,6 +794,13 @@ async function processInbound(db: Db, row: InboundRow): Promise<Record<string, u
     await settleInbound(db, row.id, "done", null, payload);
     return { request_id: null, deleted: true };
   }
+  // Files that couldn't be fetched are named on the request, once.
+  await noteNotAttached(db, {
+    orgId: row.org_id,
+    requestId,
+    noteId: stableId(`intake.not-attached:${row.id}`),
+    dropped: attached,
+  });
   if (payload.kind === "mail" && payload.related_request_id && !payload.relatedNoted) {
     await noteRelated(db, row, payload.related_request_id, requestId, payload.from.email);
     payload.relatedNoted = true;
@@ -750,7 +887,7 @@ const FAILED_REPLY =
  * When a message's job has failed for good: mark it failed with the reason
  * already recorded, and drop its content and staged files. A request that
  * was recorded keeps its link, and its thread is acknowledged rather than
- * told nothing was logged; a Slack thread with no request is told so.
+ * told nothing was logged; a Slack or Teams thread with no request is told so.
  */
 export async function markInboundFailed(db: Db, row: InboundRow): Promise<void> {
   const parsed = inboundPayload.safeParse(row.payload);
@@ -764,15 +901,18 @@ export async function markInboundFailed(db: Db, row: InboundRow): Promise<void> 
         if (settings)
           await linkRequestThread(db, row.org_id, row.request_id, settings, payload);
         await acknowledgeRequest(db, row.org_id, row.request_id);
-      } else if (payload.kind === "slack") {
+      } else if (payload.kind === "slack" || payload.kind === "teams") {
+        // Email isn't told: a bounce of that answer could arrive as new
+        // mail, fail the same way, and be answered again.
         const settings = await loadAutomationRow(db, row.org_id);
-        const token = settings ? slackBotToken(settings) : null;
-        if (token)
-          await slackPostMessage(token, {
-            channel: payload.channel,
-            threadTs: payload.thread_ts ?? payload.ts,
-            text: FAILED_REPLY,
-          });
+        // Its attempt is saved before the send, as a chat answer's is, so a
+        // second call finds the one that landed instead of sending again.
+        const attemptedAt = payload.conversing ?? null;
+        if (!attemptedAt) {
+          payload.conversing = new Date().toISOString();
+          await saveInboundPayload(db, row.id, payload);
+        }
+        await sendChatReply(db, row, settings, payload, FAILED_REPLY, attemptedAt);
       }
     } catch (error) {
       console.warn("[intake-automation] failure reply not sent", safeError(error));

@@ -132,9 +132,14 @@ export function IntakeDetail({
   orgId: string;
   requestId: string;
 }) {
-  const { accountId, workspaceId } = useWorkspace();
+  const { accountId, workspaceId, organizations } = useWorkspace();
   // Personal is no organization to the workspace switcher.
   useItemWorkspace(requestId, orgId === PERSONAL_WORKSPACE ? null : orgId);
+  // The switch above only goes to an organization this account is in.
+  const notMember =
+    orgId !== PERSONAL_WORKSPACE &&
+    !!organizations &&
+    !organizations.some((org) => org.id === orgId);
   if (!accountId || workspaceId !== orgId)
     return (
       <div className="flex h-full min-h-0 flex-1 flex-col">
@@ -142,7 +147,11 @@ export function IntakeDetail({
           <EmptyState
             icon={<IntakeSkeuoIcon />}
             title="Intake"
-            description="Open this request in its workspace."
+            description={
+              notMember
+                ? "This request belongs to a workspace this account can’t open."
+                : "Open this request in its workspace."
+            }
           />
         </TableEmptyState>
       </div>
@@ -293,28 +302,40 @@ export function Detail({
   const [announcement, setAnnouncement] = useState("");
   const deliveryStates = useRef(new Map<string, IntakeDelivery["status"]>());
   const epoch = useRef(0);
-  const refresh = useCallback(async () => {
+  // Whether a loaded request is on screen, and how many loads are running.
+  const loaded = useRef(false);
+  const inFlight = useRef(0);
+  const refresh = useCallback(async (poll = false) => {
+    // A delivery check never overlaps a load: on a slow connection each
+    // would supersede the last before it landed, and nothing would update.
+    if (poll && inFlight.current) return;
     const generation = ++epoch.current;
+    inFlight.current++;
     try {
       const r = await getIntakeRequest(orgId, requestId);
       const [m, e, d, roster] = await Promise.all([
         allPages((offset) => getIntakeMessages(orgId, requestId, offset)),
         allPages((offset) => getIntakeEvents(orgId, requestId, offset)),
-        getIntakeDocuments(orgId, requestId),
+        // A delivery check reads only where a delivery's status is shown:
+        // sending a message changes neither the documents nor the members.
+        poll ? null : getIntakeDocuments(orgId, requestId),
         // Members are who an open request can be assigned to, and every
         // request's people take their photos from them. A closed request
         // falls back to initials if they cannot be read.
-        r.capabilities.assign
-          ? getIntakeMembers(orgId)
-          : getIntakeMembers(orgId).catch(() => []),
+        poll
+          ? null
+          : r.capabilities.assign
+            ? getIntakeMembers(orgId)
+            : getIntakeMembers(orgId).catch(() => []),
       ]);
       if (generation !== epoch.current) return;
       setRequest(r);
       setMessages(m);
       setEvents(e);
-      setDocuments(d);
-      setMembers(roster);
+      if (d) setDocuments(d);
+      if (roster) setMembers(roster);
       setError(null);
+      loaded.current = true;
       // A message to the requester that settled since the last load is said once.
       const said = settledDeliveryAnnouncement(deliveryStates.current, [
         ...m.flatMap((message) => (message.delivery ? [message.delivery] : [])),
@@ -322,14 +343,24 @@ export function Detail({
       ]);
       if (said) setAnnouncement(said);
     } catch (e) {
-      if (generation === epoch.current) {
-        setRequest(null);
-        setMessages([]);
-        setEvents([]);
-        setDocuments([]);
-        setMembers([]);
-        setError(intakeError(e, "load the request"));
+      if (generation !== epoch.current) return;
+      const status =
+        e && typeof e === "object" && "status" in e ? Number(e.status) : 0;
+      // A failed refresh keeps the request on screen, unless the account
+      // may no longer read it. A delivery check tries again by itself.
+      if (loaded.current && ![401, 403, 404].includes(status)) {
+        if (!poll) notifyError(e, { action: "refresh the request" });
+        return;
       }
+      loaded.current = false;
+      setRequest(null);
+      setMessages([]);
+      setEvents([]);
+      setDocuments([]);
+      setMembers([]);
+      setError(intakeError(e, "load the request"));
+    } finally {
+      inFlight.current--;
     }
   }, [orgId, requestId]);
   const invalidate = useCallback(() => {
@@ -349,7 +380,6 @@ export function Detail({
     });
   }, [messagesOpen, newReplyAt, orgId, requestId]);
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- refresh sets state only after its first request resolves
     void refresh();
     return invalidate;
   }, [refresh, invalidate]);
@@ -461,6 +491,7 @@ export function Detail({
       queuedDetails.current = null;
       setDetailsEpoch((epoch) => epoch + 1);
       if ([401, 403, 404].includes(status)) {
+        loaded.current = false;
         setRequest(null);
         setMessages([]);
         setEvents([]);
@@ -479,6 +510,7 @@ export function Detail({
       notePicked.length > 0 ||
       !!reason ||
       operation.locked,
+    operation.busy || operation.uncertain,
   );
   function openNoteForResolution() {
     // The comment box is always there; bring it into view.
@@ -615,7 +647,7 @@ export function Detail({
   const sending = deliveries.some((d) => d.status === "pending");
   useEffect(() => {
     if (!sending) return;
-    const timer = setInterval(() => void refresh(), DELIVERY_REFRESH_MS);
+    const timer = setInterval(() => void refresh(true), DELIVERY_REFRESH_MS);
     return () => clearInterval(timer);
   }, [sending, refresh]);
   function retryDelivery(outboundId: string) {

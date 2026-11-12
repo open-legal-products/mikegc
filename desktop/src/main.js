@@ -570,7 +570,7 @@ async function showConnectPage(error) {
 let localBootInFlight = null;
 async function startLocalAndLoad() {
   if (!win) return;
-  const { startLocalStack, localStackRunning } = require("./local/supervisor");
+  const { startLocalStack, localStackRunning, isLocalStackStopped } = require("./local/supervisor");
   if (localStackRunning()) return void (await win.loadURL(LOCAL_FRONTEND_URL));
   if (localBootInFlight) return;
   await win.loadFile(LOCAL_BOOT_PAGE);
@@ -581,6 +581,9 @@ async function startLocalAndLoad() {
       });
       await win.loadURL(LOCAL_FRONTEND_URL);
     } catch (err) {
+      // A quit during boot stops the stack on purpose; the app is closing,
+      // so there is no failure to show.
+      if (isLocalStackStopped(err)) return;
       console.error("[mike-desktop] local stack failed", err);
       await showConnectPage(
         `Local mode failed to start: ${String(err?.message ?? err).slice(0, 300)}`,
@@ -821,8 +824,15 @@ if (!app.requestSingleInstanceLock()) {
   // shutdown) before the process dies, or the next boot pays crash
   // recovery. Intercept the first quit, stop the stack, then quit for real.
   let stackStopped = false;
+  let stackStopping = false;
   app.on("before-quit", (event) => {
     if (stackStopped) return;
+    // A second quit while the stack is still stopping waits for it too:
+    // letting it through would end the app with its services still running.
+    if (stackStopping) {
+      event.preventDefault();
+      return;
+    }
     let supervisor;
     try {
       supervisor = require("./local/supervisor");
@@ -831,8 +841,11 @@ if (!app.requestSingleInstanceLock()) {
     }
     if (!supervisor.localStackActive()) return; // running OR still booting
     event.preventDefault();
-    stackStopped = true;
-    void supervisor.stopLocalStack().finally(() => app.quit());
+    stackStopping = true;
+    void supervisor.stopLocalStack().finally(() => {
+      stackStopped = true;
+      app.quit();
+    });
   });
 }
 

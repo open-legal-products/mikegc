@@ -2,9 +2,10 @@ import { z } from "zod";
 import { NonRetryableJobError } from "../../lib/dbq/runner";
 import type { DbJob } from "../../lib/dbq/types";
 import type { Db } from "../../lib/supabase";
-import { markInboundFailed, runInbound } from "./intake.automationJob";
+import { REROUTED_TO_REPLY, markInboundFailed, runInbound } from "./intake.automationJob";
 import { markReplyFailed, runReply } from "./intake.reply";
 import type { InboundRow } from "./intake.inboundStore";
+import { intakeOrgDeleted } from "./intake.settingsRow";
 import { dispatchIntakeJob } from "./intake.shared";
 
 /**
@@ -36,7 +37,8 @@ async function loadInbound(
 
 /**
  * The job body. A message no longer waiting (handled, or purged with the
- * organization's intake data) is skipped.
+ * organization's intake data) is skipped, as is one for an organization
+ * whose deletion has begun: it is not read by a model or answered.
  */
 export async function handleIntakeAgent(
   db: Db,
@@ -47,7 +49,14 @@ export async function handleIntakeAgent(
   const row = await loadInbound(db, ids.data);
   if (!row) return { skipped: "missing" };
   if (row.status !== "pending") return { skipped: row.status };
-  return row.kind === "reply" ? runReply(db, row) : runInbound(db, row);
+  if (await intakeOrgDeleted(db, row.org_id)) return { skipped: "organization_deleted" };
+  if (row.kind === "reply") return runReply(db, row);
+  const result = await runInbound(db, row);
+  if (result.rerouted !== REROUTED_TO_REPLY.rerouted) return result;
+  // A mention whose thread another request had linked became its reply.
+  const reply = await loadInbound(db, ids.data);
+  if (!reply || reply.status !== "pending" || reply.kind !== "reply") return result;
+  return runReply(db, reply);
 }
 
 /** When a message's job has failed for good. */

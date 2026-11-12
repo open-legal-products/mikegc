@@ -1,4 +1,5 @@
 import type { IntakeExternalAuthor } from "@mike/contracts";
+import { mapWithConcurrency } from "../../lib/concurrency";
 import { NonRetryableJobError } from "../../lib/dbq/runner";
 import { safeError } from "../../lib/safeError";
 import { loadOrgContext } from "../../lib/orgProfile";
@@ -6,6 +7,7 @@ import type { Db } from "../../lib/supabase";
 import {
   addDocuments,
   channelAttachments,
+  noteNotAttached,
   type CandidateDownloader,
 } from "./intake.attachments";
 import {
@@ -53,6 +55,7 @@ import {
   slackTextToPlain,
   slackThreadMessage,
   slackUserInfo,
+  SLACK_LOOKUPS_AT_ONCE,
 } from "./intake.slack";
 import {
   isPermanentTeamsError,
@@ -105,15 +108,19 @@ async function slackReply(
   const ids = [...new Set([payload.user, ...mentionedUsers(raw)])].slice(0, 20);
   const names = new Map<string, string>();
   let author: { name: string | null; email: string | null } = { name: null, email: null };
-  for (const id of ids) {
+  const found = await mapWithConcurrency(ids, SLACK_LOOKUPS_AT_ONCE, async (id) => {
     try {
-      const person = await slackUserInfo(token, id);
-      if (person?.name) names.set(id, person.name);
-      if (id === payload.user && person) author = person;
+      return await slackUserInfo(token, id);
     } catch (error) {
       if (isPermanentSlackError(error)) throw error;
+      return null;
     }
-  }
+  });
+  ids.forEach((id, i) => {
+    const person = found[i];
+    if (person?.name) names.set(id, person.name);
+    if (id === payload.user && person) author = person;
+  });
   return {
     text: slackTextToPlain(raw, names, settings.slack_bot_user_id),
     author: { ...author, source: "slack", user_id: payload.user },
@@ -201,17 +208,29 @@ type ReplyResult = {
   clarify_stopped: boolean;
 };
 
-/** The request as the agent reads it, or null once it is gone. */
+/**
+ * The request as the agent reads it now, with the version, clarifying stage
+ * and round it was read at, or null once it is gone. Read again for every
+ * plan, so a plan made again after a newer reply settled the rule doesn't
+ * still treat the rule as undecided.
+ */
 async function loadAgentRequest(
   db: Db,
   orgId: string,
-  reply: ReplyResult,
-): Promise<AgentRequest | null> {
+  requestId: string,
+): Promise<{
+  request: AgentRequest;
+  version: number | null;
+  stage: "rule" | null;
+  round: number;
+} | null> {
   const { data, error } = await db
     .from("intake_requests")
-    .select("subject, description, requested_by_date, state, member_edited_fields")
+    .select(
+      "subject, description, requested_by_date, state, member_edited_fields, version, clarify_stage, clarify_rounds, clarify_stopped",
+    )
     .eq("org_id", orgId)
-    .eq("id", reply.request_id)
+    .eq("id", requestId)
     .maybeSingle();
   if (error) throw error;
   if (!data) return null;
@@ -221,22 +240,33 @@ async function loadAgentRequest(
     requested_by_date: string | null;
     state: string;
     member_edited_fields?: AgentField[] | null;
+    version?: number | null;
+    clarify_stage?: "rule" | "readiness" | null;
+    clarify_rounds?: number | null;
+    clarify_stopped?: boolean | null;
   };
+  const round = request.clarify_rounds ?? 0;
   return {
-    subject: request.subject,
-    description: request.description,
-    requested_by_date: request.requested_by_date,
-    state: request.state,
-    member_edited_fields: request.member_edited_fields ?? [],
-    ruleUndecided: reply.clarify_stage === "rule",
-    canAsk: !reply.clarify_stopped && reply.clarify_rounds < MAX_CLARIFY_ROUNDS,
+    request: {
+      subject: request.subject,
+      description: request.description,
+      requested_by_date: request.requested_by_date,
+      state: request.state,
+      member_edited_fields: request.member_edited_fields ?? [],
+      ruleUndecided: request.clarify_stage === "rule",
+      canAsk: !request.clarify_stopped && round < MAX_CLARIFY_ROUNDS,
+    },
+    version: request.version ?? null,
+    stage: request.clarify_stage === "rule" ? "rule" : null,
+    round,
   };
 }
 
 /**
  * Change the request's details as the agent planned. A detail a member has
  * edited since is skipped by the database; details it refuses are dropped,
- * as the requester's words can't be trusted to fit.
+ * as the requester's words can't be trusted to fit. False when the request
+ * has changed since the plan was made from `version`: nothing is changed.
  */
 async function updateRequest(
   db: Db,
@@ -245,8 +275,9 @@ async function updateRequest(
     requestId: string;
     noteId: string;
     update: NonNullable<AgentPlan["update"]>;
+    version: number | null;
   },
-): Promise<void> {
+): Promise<boolean> {
   const updated = await intakeRpc<string[]>(db, "intake_update_automated", {
     p_org: args.orgId,
     p_request: args.requestId,
@@ -255,14 +286,22 @@ async function updateRequest(
     p_description: args.update.description,
     p_date: args.update.requested_by_date,
     p_lines: args.update.lines,
+    p_version: args.version,
   });
-  if (updated.ok || updated.kind === "not_found") return;
+  if (updated.ok || updated.kind === "not_found") return true;
+  if (updated.kind === "conflict" && updated.code === "intake_conflict") return false;
   if (updated.kind === "validation") {
     console.warn("[intake-reply] update refused by the database");
-    return;
+    return true;
   }
   throw updated.kind === "error" ? updated.error : new Error(updated.detail);
 }
+
+/**
+ * Plans made for one reply, across the job's attempts, before a stale update
+ * is dropped instead.
+ */
+const MAX_PLANS = 3;
 
 /**
  * The agent's turn on a reply: plan once, saving the plan with the stage it
@@ -283,36 +322,62 @@ async function runAgentOnReply(
   const { row, settings, link, reply, payload, save } = args;
   const orgId = link.org_id;
   const requestId = reply.request_id;
-  if (!payload.agent) {
-    const [request, thread, rules, model, organization] = await Promise.all([
-      loadAgentRequest(db, orgId, reply),
-      loadThreadEntries(db, orgId, requestId),
-      loadTriageRules(db, orgId),
-      resolveIntakeModel(db, orgId, settings.configured_by, settings.triage_model),
-      loadOrgContext(db, orgId),
-    ]);
-    if (!request) return;
-    payload.agent = await runIntakeAgent({
-      context: { kind: "reply", channel: link.source, request, thread, sentAt: new Date() },
-      rules,
-      model,
-      organization,
-    });
-    payload.agentStage = reply.clarify_stage === "rule" ? "rule" : null;
-    payload.agentRound = reply.clarify_rounds;
-    await save();
-  }
-  const plan = payload.agent;
-  if (plan.update && !payload.updated) {
-    await updateRequest(db, {
+  // A plan whose request has changed since it was made (a newer reply's
+  // update, a member's edit) is made again from the request as it is now,
+  // rather than overwriting the newer details with older ones.
+  for (;;) {
+    if (!payload.agent) {
+      const [loaded, thread, rules, model, organization] = await Promise.all([
+        loadAgentRequest(db, orgId, requestId),
+        loadThreadEntries(db, orgId, requestId),
+        loadTriageRules(db, orgId),
+        resolveIntakeModel(db, orgId, settings.configured_by, settings.triage_model),
+        loadOrgContext(db, orgId),
+      ]);
+      if (!loaded) return;
+      const plan = await runIntakeAgent({
+        context: { kind: "reply", channel: link.source, request: loaded.request, thread, sentAt: new Date() },
+        rules,
+        model,
+        organization,
+      });
+      // At the rule stage a model run decides: it chooses a rule (or none)
+      // or asks. One that ended with neither failed, as when its provider
+      // is down, so the job is retried rather than leave it unassigned.
+      if (loaded.stage === "rule" && model && !plan.rule && !plan.questions.length)
+        throw new Error("The intake agent didn't decide the request's rule.");
+      payload.agent = plan;
+      payload.agentStage = loaded.stage;
+      payload.agentRound = loaded.round;
+      payload.agentVersion = loaded.version ?? undefined;
+      payload.agentPlans = (payload.agentPlans ?? 0) + 1;
+      await save();
+    }
+    const update = payload.agent.update;
+    if (!update || payload.updated) break;
+    const applied = await updateRequest(db, {
       orgId,
       requestId,
       noteId: stableId(`intake.agent.update:${row.id}`),
-      update: plan.update,
+      update,
+      version: payload.agentVersion ?? null,
     });
+    if (!applied && (payload.agentPlans ?? 1) < MAX_PLANS) {
+      payload.agent = undefined;
+      continue;
+    }
+    if (!applied) {
+      // Still changing under every plan: the newer details stand, and the
+      // plan's answer, which says what it changed, isn't sent.
+      console.warn("[intake-reply] stale update dropped");
+      payload.agent = { ...payload.agent, answer: null };
+    }
     payload.updated = true;
     await save();
+    break;
   }
+  const plan = payload.agent;
+  if (!plan) return;
   if (payload.agentStage === "rule") {
     const asked = await settleRule(db, { orgId, requestId, plan, payload, save });
     if (asked) return;
@@ -439,6 +504,13 @@ async function processReply(db: Db, row: InboundRow): Promise<Record<string, unk
     messageId,
   });
   if (!attached) return done({ skipped: "request_gone" });
+  // A reply's files that couldn't be fetched are named on the request, once.
+  await noteNotAttached(db, {
+    orgId: row.org_id,
+    requestId: reply.request_id,
+    noteId: stableId(`intake.not-attached:${row.id}`),
+    dropped: attached,
+  });
   if (payload.kind === "mail_reply") {
     // Later replies thread on this one, the newest in the thread.
     await recordEmailMessageIds(db, row.org_id, link.id, [payload.message_id]);

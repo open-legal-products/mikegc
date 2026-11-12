@@ -12,6 +12,7 @@ import {
   builtInModelIds,
 } from "../../lib/llm/models";
 import { hasApiKeyForModel } from "../../lib/modelSelection";
+import { teamOrgIdOf } from "../../lib/personalOrgs";
 import type { Db } from "../../lib/supabase";
 import { envApiKeys, getEffectiveApiKeys } from "../../lib/providerCredentials/index";
 import type { IntakeChannel } from "@mike/contracts";
@@ -66,9 +67,38 @@ export type InboundMessage = {
   subjectHint: string | null;
   /** The message, or the Slack thread with each message's author and time. */
   text: string;
+  /**
+   * A chat thread's messages as they read in `text`, oldest first and ending
+   * with the one that mentioned MikeGC; one entry for a message on its own.
+   * Absent for email. Kept apart so a long thread is shortened by whole
+   * messages rather than by where its characters happen to fall.
+   */
+  parts?: string[];
   candidates: AttachmentCandidate[];
   skipped: SkippedAttachment[];
 };
+
+/**
+ * A chat thread within `max` characters: always the message being acted on
+ * (the last), from its start, then as many of the messages before it as fit,
+ * newest first. A message on its own therefore keeps its opening, where its
+ * instruction is, and a long thread keeps the mention at its end. Says what
+ * it left out.
+ */
+export function chatThreadText(parts: string[], max: number): string {
+  const last = parts[parts.length - 1] ?? "";
+  const kept = [last.length > max ? `${clip(last, max)}\n[Message shortened.]` : last];
+  let room = max - last.length;
+  let at = parts.length - 2;
+  for (; at >= 0; at--) {
+    const part = parts[at]!;
+    if (part.length + 2 > room) break;
+    kept.unshift(part);
+    room -= part.length + 2;
+  }
+  const text = kept.join("\n\n");
+  return at >= 0 ? `[Earlier messages left out.]\n${text}` : text;
+}
 
 /** How a channel is named in prompts and the request's description. */
 export const CHANNEL_NAMES: Record<InboundMessage["source"], string> = {
@@ -92,7 +122,8 @@ export type TriageModel = { model: string; apiKeys: UserApiKeys | undefined };
 /**
  * The keys intake's AI runs with: the organization's keys as the owner or
  * admin who last saved the settings, or only the deployment's own keys once
- * that person no longer administers the organization.
+ * that person no longer administers the organization. A Personal workspace
+ * is its owner's own work, so it runs on their own keys, as their chats do.
  */
 async function intakeApiKeys(
   db: Db,
@@ -101,7 +132,7 @@ async function intakeApiKeys(
 ): Promise<{ apiKeys: UserApiKeys | undefined; available: UserApiKeys }> {
   let apiKeys: UserApiKeys | undefined;
   if (configuredBy && isOrgAdmin(await getOrgRole(configuredBy, orgId, db)))
-    apiKeys = await getEffectiveApiKeys(configuredBy, orgId, db);
+    apiKeys = await getEffectiveApiKeys(configuredBy, await teamOrgIdOf(db, orgId), db);
   return { apiKeys, available: apiKeys ?? envApiKeys() };
 }
 

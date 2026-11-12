@@ -56,7 +56,7 @@ export async function resolveEdit(
         });
         const { data: doc } = await db
             .from("documents")
-            .select("current_version_id, user_id, project_id, org_id, workflow_id")
+            .select("current_version_id, user_id, project_id, org_id, workflow_id, library_kind")
             .eq("id", documentId)
             .single();
         if (!doc) {
@@ -92,7 +92,7 @@ export async function resolveEdit(
 
     const { data: doc, error: docErr } = await db
         .from("documents")
-        .select("id, current_version_id, user_id, project_id, org_id, workflow_id")
+        .select("id, current_version_id, user_id, project_id, org_id, workflow_id, library_kind")
         .eq("id", documentId)
         .single();
     devLog(`[edit-resolution] fetched doc`, { doc, docErr });

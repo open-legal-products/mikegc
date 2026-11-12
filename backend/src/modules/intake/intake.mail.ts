@@ -118,10 +118,69 @@ export function senderAuthenticated(
 /** Addresses in a header such as To or Cc, lowercased. */
 export function addressList(value: string | null): string[] {
   if (!value) return [];
-  return [...value.matchAll(/[^\s<>,;"']+@[^\s<>,;"']+/g)]
-    .map((m) => m[0]!.toLowerCase().replace(/[.)]+$/, ""))
-    .filter((a, i, all) => all.indexOf(a) === i)
-    .slice(0, 50);
+  // A header is whatever its sender wrote. Each token is a whole run of
+  // address characters, so the scan is linear however long a run is; an
+  // address is a run with an "@" that is neither its first nor last
+  // character. (Matching "…+@…+" directly rescans a long run without one
+  // from every position.)
+  const found = new Set<string>();
+  for (const [token] of value.matchAll(/[^\s<>,;"']+/g)) {
+    if (!token.slice(1, -1).includes("@")) continue;
+    found.add(token.toLowerCase().replace(/[.)]+$/, ""));
+    if (found.size === 50) break;
+  }
+  return [...found];
+}
+
+/**
+ * The first mailbox in a header such as From, read the way mail systems
+ * read it: an address inside a quoted display name or a comment is never
+ * the address, so "<ceo@acme.test>" <intern@acme.test> is the intern. It is
+ * the last <angle-addr> of the mailbox, or its bare address when there is
+ * none. One pass over the header, however it is written.
+ */
+function firstMailbox(value: string): { email: string; name: [number, number] | null } | null {
+  let start = 0;
+  let quoted = false;
+  let comment = 0;
+  let open = -1;
+  let angle: { email: string; at: number } | null = null;
+  let token = "";
+  let bare = "";
+  for (let i = 0; i <= value.length; i++) {
+    const c = value[i];
+    if (open >= 0) {
+      if (c === ">") {
+        angle = { email: value.slice(open + 1, i), at: open };
+        open = -1;
+      }
+      if (c !== undefined) continue;
+    }
+    if (quoted || comment > 0) {
+      if (c === "\\" && i + 1 < value.length) i++;
+      else if (quoted && c === '"') quoted = false;
+      else if (!quoted && c === "(") comment++;
+      else if (!quoted && c === ")") comment--;
+      if (c !== undefined) continue;
+    }
+    const end = c === undefined || c === ",";
+    if (end || c === '"' || c === "(" || c === "<" || c === ":" || c === ";" || /\s/.test(c)) {
+      if (token.includes("@")) bare = token;
+      token = "";
+    } else token += c;
+    if (end) {
+      const email = angle?.email ?? bare;
+      if (email.includes("@")) return { email, name: angle ? [start, angle.at] : null };
+      // An entry without an address, such as an empty group: the next one.
+      if (c === undefined) return null;
+      start = i + 1;
+      angle = null;
+      bare = "";
+    } else if (c === '"') quoted = true;
+    else if (c === "(") comment = 1;
+    else if (c === "<") open = i;
+  }
+  return null;
 }
 
 /** "Jane Business" <jane@acme.test> as a name and address. */
@@ -130,11 +189,11 @@ export function parseMailbox(value: string | null): {
   email: string | null;
 } {
   if (!value) return { name: null, email: null };
-  const email = value.match(/<([^<>\s]+@[^<>\s]+)>/)?.[1] ?? addressList(value)[0] ?? null;
+  const mailbox = firstMailbox(value);
+  const email = mailbox?.email ?? null;
   // The display name is what comes before the address; angle brackets left
   // in it are dropped one by one, so no markup survives.
-  const bracket = value.indexOf("<");
-  const name = (bracket >= 0 ? value.slice(0, bracket) : value)
+  const name = (mailbox?.name ? value.slice(...mailbox.name) : value)
     .replace(/[<>]/g, "")
     .replace(/^["'\s]+|["'\s]+$/g, "")
     .trim();
@@ -202,7 +261,12 @@ export function htmlToText(html: string): string {
     .replace(/&quot;/gi, '"')
     .replace(/&#39;/gi, "'")
     .replace(/&amp;/gi, "&")
-    .replace(/[ \t]+\n/g, "\n")
+    // Trailing spaces go. Each run is matched whole and then kept or
+    // dropped: /[ \t]+\n/ retries a long run with no line end after it from
+    // every position, which is quadratic in a message's length.
+    .replace(/[ \t]+/g, (run, at: number, all: string) =>
+      all[at + run.length] === "\n" ? "" : run,
+    )
     .replace(/\n{3,}/g, "\n\n")
     .trim();
 }
@@ -347,7 +411,12 @@ export type MailAddress = {
   references?: string[];
 };
 
-/** The thread a new email starts: replies go to its sender, cc the others accepted. */
+/**
+ * The thread a new email starts: replies go to its sender, cc the others
+ * accepted. Mail that reached the mailbox without naming it in To or Cc (an
+ * alias, a list, or a Bcc) is answered to its sender alone, so the others
+ * never learn the intake address was sent a copy.
+ */
 export function mailThread(
   settings: AutomationRow,
   payload: MailInboundPayload,
@@ -356,8 +425,8 @@ export function mailThread(
   if (!requester) return null;
   const mailbox = payload.mailbox.toLowerCase();
   const allowed = settings.email_allowed_domains ?? [];
-  const cc = [...payload.to, ...payload.cc]
-    .map((a) => a.toLowerCase())
+  const recipients = [...payload.to, ...payload.cc].map((a) => a.toLowerCase());
+  const cc = (recipients.includes(mailbox) ? recipients : [])
     .filter(
       (a, i, all) =>
         a !== mailbox &&

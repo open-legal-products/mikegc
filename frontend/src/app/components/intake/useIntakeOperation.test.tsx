@@ -122,12 +122,14 @@ describe("intake operation lifecycle", () => {
 
 function Draft({
   dirty = true,
+  saving = false,
   onDiscard = () => {},
 }: {
   dirty?: boolean;
+  saving?: boolean;
   onDiscard?: () => void;
 }) {
-  const guard = useIntakeDraftWarning(dirty);
+  const guard = useIntakeDraftWarning(dirty, saving);
   return (
     <>
       <button type="button" onClick={() => guard.requestDiscard(onDiscard)}>
@@ -175,6 +177,26 @@ describe("unsent draft guard", () => {
       new Event("mike:before-navigation", { cancelable: true }),
     );
     expect(mocks.notifyInfo).toHaveBeenCalledTimes(2);
+  });
+
+  it("holds navigation and workspace switches while a save is pending", () => {
+    const view = render(<Draft dirty={false} saving />);
+    for (const name of [
+      "mike:before-workspace-change",
+      "mike:before-navigation",
+    ])
+      expect(window.dispatchEvent(new Event(name, { cancelable: true }))).toBe(
+        false,
+      );
+    expect(mocks.notifyInfo).toHaveBeenCalledWith(
+      "Wait until this is saved before leaving.",
+    );
+    view.rerender(<Draft dirty={false} saving={false} />);
+    expect(
+      window.dispatchEvent(
+        new Event("mike:before-navigation", { cancelable: true }),
+      ),
+    ).toBe(true);
   });
 
   it("does not ask the browser to confirm unloading", () => {

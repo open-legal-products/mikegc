@@ -284,6 +284,11 @@ export const automatedIntakeRpc: Record<string, RpcHandler> = {
     if (!inbound) return { data: null, error: { code: "P0002" } };
     if (inbound.request_id) return { data: inbound.request_id, error: null };
     if (inbound.status !== "pending") return { data: null, error: { code: "P0001" } };
+    // A thread another request linked first: the message becomes its reply.
+    if (args.p_thread_key != null) {
+      const followed = followThread(args, memory, inbound);
+      if (followed) return { data: followed, error: null };
+    }
     const member = memory
       .rows("org_members")
       .some((m) => m.org_id === args.p_org && m.user_id === args.p_assignee);
@@ -302,6 +307,15 @@ export const automatedIntakeRpc: Record<string, RpcHandler> = {
       state: assignee ? "in_review" : "submitted",
     });
     inbound.request_id = args.p_request;
+    if (args.p_thread_key != null)
+      memory.rows("intake_channel_links").push({
+        id: randomUUID(),
+        org_id: args.p_org,
+        request_id: args.p_request,
+        source: args.p_source,
+        thread_key: args.p_thread_key,
+        address: copy(args.p_address ?? {}),
+      });
     return { data: args.p_request, error: null };
   },
   intake_attach_automated: (args, memory) => {
@@ -344,6 +358,21 @@ export const automatedIntakeRpc: Record<string, RpcHandler> = {
   },
 };
 
+/**
+ * intake_follow_thread's change: a new message still waiting, in a thread
+ * another request has linked, becomes that request's reply. The request, or
+ * null.
+ */
+function followThread(args: Record<string, unknown>, memory: MemoryDb, inbound: Row): string | null {
+  if (inbound.kind !== "request" || inbound.status !== "pending" || inbound.request_id) return null;
+  const link = memory
+    .rows("intake_channel_links")
+    .find((l) => l.org_id === args.p_org && l.source === args.p_source && l.thread_key === args.p_thread_key);
+  if (!link) return null;
+  Object.assign(inbound, { kind: "reply", request_id: link.request_id, payload: copy(args.p_reply), error: null });
+  return link.request_id as string;
+}
+
 const MAX_ROUNDS = 2;
 const findRequest = (memory: MemoryDb, org: unknown, id: unknown) =>
   memory.rows("intake_requests").find((r) => r.org_id === org && r.id === id);
@@ -358,6 +387,13 @@ const event = (memory: MemoryDb, row: Row) => memory.rows("intake_events").push(
  */
 export function requesterLoopRpc(): Record<string, RpcHandler> {
   return {
+    intake_follow_thread: (args, memory) => {
+      const inbound = memory
+        .rows("intake_inbound")
+        .find((r) => r.id === args.p_inbound && r.org_id === args.p_org);
+      if (!inbound) return { data: null, error: { code: "P0002" } };
+      return { data: followThread(args, memory, inbound), error: null };
+    },
     intake_link_thread: (args, memory) => {
       if (!findRequest(memory, args.p_org, args.p_request)) return { data: null, error: { code: "P0002" } };
       const own = linkOf(memory, args.p_request);
@@ -437,6 +473,10 @@ export function requesterLoopRpc(): Record<string, RpcHandler> {
       const link = linkOf(memory, args.p_request);
       const rounds = Number(request.clarify_rounds ?? 0);
       if (!link || request.clarify_stopped || rounds >= MAX_ROUNDS || ["resolved", "cancelled"].includes(String(request.state)))
+        return { data: false, error: null };
+      // A rule question follows only the first message or a round on the rule.
+      const stage = request.clarify_stage ?? null;
+      if (args.p_stage === "rule" && stage !== "rule" && (stage !== null || rounds > 0))
         return { data: false, error: null };
       const acknowledged = memory
         .rows("intake_outbound")
@@ -529,6 +569,8 @@ export function requesterLoopRpc(): Record<string, RpcHandler> {
       if (!request) return { data: null, error: { code: "P0002" } };
       if (memory.rows("intake_messages").some((m) => m.id === args.p_note)) return { data: [], error: null };
       if (["resolved", "cancelled"].includes(String(request.state))) return { data: [], error: null };
+      if (args.p_version != null && request.version !== args.p_version)
+        return { data: null, error: { code: "P0001" } };
       const locked = (request.member_edited_fields as string[] | undefined) ?? [];
       const values: Record<string, unknown> = {
         subject: args.p_subject,
@@ -551,6 +593,7 @@ export function requesterLoopRpc(): Record<string, RpcHandler> {
               ? `${lines[0]} and ${lines[1]}`
               : `${lines[0]}, ${lines[1]} and ${lines[2]}`;
       for (const field of applied) request[field] = values[field];
+      if (typeof request.version === "number") request.version += 1;
       memory.rows("intake_messages").push({
         id: args.p_note,
         org_id: args.p_org,

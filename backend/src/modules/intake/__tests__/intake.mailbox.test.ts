@@ -27,6 +27,9 @@ import { DbJobDeferredError } from "../../../lib/dbq/types";
 import { encryptString } from "../../../lib/mcp/client";
 import { handleIntakeDeliver } from "../intake.deliver";
 import { handleIntakeMailboxPoll, recordMail } from "../intake.mailbox";
+import { gmailAdapter } from "../intake.gmail";
+import type { MailInboundPayload } from "../intake.inboundPayload";
+import { mailThread } from "../intake.mail";
 import { clearMicrosoftTokens } from "../intake.microsoft";
 import type { ReadMail } from "../intake.outlook";
 import type { AutomationRow } from "../intake.settingsRow";
@@ -182,10 +185,18 @@ describe("recording email from the intake mailbox", () => {
       expect.objectContaining({ kind: "intake.agent", dedupeKey: "intake.agent:other-poll" }),
     );
   });
-  it("ignores automatic mail, mail not to the intake address, other domains and an unauthenticated sender", async () => {
+  it("records mail an alias, list or Bcc delivered, and answers only its sender", async () => {
+    // The To header names the alias, not the mailbox it delivers into.
+    const viaAlias = mail({ to: ["legal@firm.test"], cc: ["ben@acme.test"] });
+    expect(await recordMail(memory.db, settings(), viaAlias)).toBe("received");
+    const payload = inbound()[0]!.payload as MailInboundPayload;
+    expect(mailThread(settings(), payload)?.address).toMatchObject({ to: ["jane@acme.test"], cc: [] });
+    // Mail naming the intake address copies the others accepted, as before.
+    expect(mailThread(settings(), { ...payload, to: ["intake@firm.test"] })?.address.cc).toEqual(["ben@acme.test"]);
+  });
+  it("ignores automatic mail, other domains and an unauthenticated sender", async () => {
     const cases: [Partial<ReadMail>, RegExp][] = [
       [{ headers: [{ name: "Auto-Submitted", value: "auto-replied" }] }, /automatic reply/],
-      [{ to: ["someone@firm.test"], cc: [] }, /wasn't addressed to the intake address/],
       [{ from: { name: "Eve", email: "eve@elsewhere.test" } }, /elsewhere\.test, isn't one of the accepted domains/],
       [{ headers: [{ name: "Authentication-Results", value: "mx.google.com; spf=fail; dmarc=fail header.from=acme.test" }] }, /didn't authenticate/],
     ];
@@ -196,7 +207,7 @@ describe("recording email from the intake mailbox", () => {
     // Mail the mailbox sent itself, and drafts, are skipped without a row.
     expect(await recordMail(memory.db, settings(), mail({ from: { name: "Legal", email: "intake@firm.test" } }))).toBe("skipped");
     expect(await recordMail(memory.db, settings(), mail({ isDraft: true }))).toBe("skipped");
-    expect(inbound()).toHaveLength(4);
+    expect(inbound()).toHaveLength(3);
     expect(kinds()).toEqual([]);
   });
   it("records a reply in a request's thread, from someone on it, without the history it quotes", async () => {
@@ -272,6 +283,16 @@ describe("reading the mailbox", () => {
     dedupe_key: `intake.mailbox.poll:${org}`,
     result: null,
     created_at: "",
+  });
+  it("doesn't read the mailbox of an organization being deleted", async () => {
+    const fetch = vi.fn();
+    vi.stubGlobal("fetch", fetch);
+    memory.rows("organizations").push({ id: org, deleted_at: "2026-11-12T00:00:00Z" });
+    await expect(handleIntakeMailboxPoll(memory.db, poll())).resolves.toEqual({ stopped: true });
+    expect(fetch).not.toHaveBeenCalled();
+    // Restored, it is read again.
+    memory.rows("organizations")[0]!.deleted_at = null;
+    await expect(handleIntakeMailboxPoll(memory.db, poll())).rejects.toBeInstanceOf(DbJobDeferredError);
   });
   it("stops once email is switched off", async () => {
     memory.rows("intake_automation")[0]!.email_enabled = false;
@@ -404,7 +425,44 @@ describe("reading the mailbox", () => {
         client_email: "mikegc@project.iam.gserviceaccount.com",
         private_key: "-----BEGIN PRIVATE KEY-----\ntest\n-----END PRIVATE KEY-----\n",
       });
+      process.env.INTAKE_GMAIL_SHARED_MAILBOXES = `${org}=intake@firm.test`;
       Object.assign(memory.rows("intake_automation")[0]!, { email_provider: "gmail", gmail_history_id: "100" });
+    });
+    it("won't read or reply from a saved mailbox the operator hasn't granted the organization", async () => {
+      // Saved before the grant was required, or the grant since withdrawn.
+      process.env.INTAKE_GMAIL_SHARED_MAILBOXES = "00000000-0000-4000-8000-0000000000ff=intake@firm.test";
+      vi.stubGlobal("fetch", vi.fn(async () => Response.json({ history: [], historyId: "200" })));
+      await expect(handleIntakeMailboxPoll(memory.db, poll())).rejects.toBeInstanceOf(DbJobDeferredError);
+      expect(fetch).not.toHaveBeenCalled();
+      expect(settings().email_error).toMatch(/own service account/);
+      linkThread();
+      const reply = {
+        id: "m1", author: { kind: "mikegc" }, body: "Which entity is signing?", documents: [],
+      } as unknown as Parameters<typeof gmailAdapter.deliver>[2];
+      const ctx = { db: memory.db, settings: settings(), fromName: "Legal" } as unknown as Parameters<typeof gmailAdapter.deliver>[0];
+      const link = memory.rows("intake_channel_links")[0] as unknown as Parameters<typeof gmailAdapter.deliver>[1];
+      await expect(gmailAdapter.deliver(ctx, link, reply, null)).rejects.toThrow(/isn't connected/);
+      expect(fetch).not.toHaveBeenCalled();
+    });
+    it("reads the mailbox again by itself once its grant is restored, and looks for nothing sent while refused", async () => {
+      delete process.env.INTAKE_GMAIL_SHARED_MAILBOXES;
+      const fetched = vi.fn(async () => Response.json({ history: [], historyId: "200" }));
+      vi.stubGlobal("fetch", fetched);
+      await expect(handleIntakeMailboxPoll(memory.db, poll())).rejects.toBeInstanceOf(DbJobDeferredError);
+      expect(fetched).not.toHaveBeenCalled();
+      expect(settings().email_error).toMatch(/own service account/);
+      // A delivery being retried finds nothing to reconcile, without asking Google.
+      linkThread();
+      const ctx = { db: memory.db, settings: settings(), fromName: "Legal" } as unknown as Parameters<typeof gmailAdapter.findDelivered>[0];
+      const link = memory.rows("intake_channel_links")[0] as unknown as Parameters<typeof gmailAdapter.findDelivered>[1];
+      const message = { id: "m1", author: { kind: "mikegc" }, body: "x", documents: [] } as unknown as Parameters<typeof gmailAdapter.findDelivered>[2];
+      await expect(gmailAdapter.findDelivered(ctx, link, message, new Date().toISOString())).resolves.toBeNull();
+      expect(fetched).not.toHaveBeenCalled();
+      // The operator lists the organization: the same job reads on its next run.
+      process.env.INTAKE_GMAIL_SHARED_MAILBOXES = `${org}=@firm.test`;
+      await expect(handleIntakeMailboxPoll(memory.db, poll())).rejects.toBeInstanceOf(DbJobDeferredError);
+      expect(fetched).toHaveBeenCalled();
+      expect(settings().email_error).toBeNull();
     });
     it("starts the next read after the last record when the history is too long for one", async () => {
       let page = 0;

@@ -10,7 +10,7 @@ vi.mock("google-auth-library", () => ({
 
 import type { Db } from "../../../lib/supabase";
 import type { AutomationRow } from "../intake.settingsRow";
-import { gmailAdapter } from "../intake.gmail";
+import { gmailAdapter, gmailMarkRecorded } from "../intake.gmail";
 import { mailHtml } from "../intake.mail";
 
 /** A database the reply must never touch: it records no request or link. */
@@ -20,7 +20,9 @@ const untouchedDb = new Proxy({} as Db, {
   },
 });
 
+const org = "00000000-0000-4000-8000-000000000001";
 const settings = {
+  org_id: org,
   email_enabled: true,
   email_provider: "gmail",
   email_mailbox: "intake@firm.test",
@@ -35,6 +37,7 @@ describe("Gmail: MikeGC's answer to an email that isn't a request", () => {
       private_key: "-----BEGIN PRIVATE KEY-----\nkey\n-----END PRIVATE KEY-----\n",
       client_id: "1234567890",
     });
+    process.env.INTAKE_GMAIL_SHARED_MAILBOXES = `${org}=intake@firm.test`;
     sent = null;
     vi.stubGlobal(
       "fetch",
@@ -52,6 +55,7 @@ describe("Gmail: MikeGC's answer to an email that isn't a request", () => {
   });
   afterEach(() => {
     delete process.env.INTAKE_GMAIL_SERVICE_ACCOUNT_KEY;
+    delete process.env.INTAKE_GMAIL_SHARED_MAILBOXES;
     vi.unstubAllGlobals();
   });
 
@@ -115,5 +119,40 @@ describe("the HTML version of MikeGC's emails", () => {
     expect(html).toContain('<p style="margin:0 0 1em">Hi &lt;Pat&gt; &amp; co,<br>line two</p>');
     expect(html).toContain('<p style="margin:0 0 1em">Next paragraph.</p>');
     expect(html).not.toContain("<Pat>");
+  });
+});
+
+describe("Gmail: labelling a recorded email", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("looks the label up again after its remembered id stops working", async () => {
+    const mailbox = {
+      address: "labels@firm.test",
+      account: { client_email: "mikegc@project.iam.gserviceaccount.com", private_key: "key", client_id: "1" },
+    } as Parameters<typeof gmailMarkRecorded>[0];
+    // The label is deleted and made again in Gmail between two emails.
+    let current = "Label_1";
+    const applied: string[] = [];
+    let lists = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string | URL, init?: RequestInit) => {
+        if (String(url).endsWith("/labels")) {
+          lists += 1;
+          return Response.json({ labels: [{ id: current, name: "MikeGC" }] });
+        }
+        const [label] = (JSON.parse(String(init?.body)) as { addLabelIds: string[] }).addLabelIds;
+        if (label !== current) return Response.json({}, { status: 400 });
+        applied.push(label!);
+        return Response.json({});
+      }),
+    );
+    await gmailMarkRecorded(mailbox, "m1");
+    await gmailMarkRecorded(mailbox, "m2");
+    expect(lists).toBe(1);
+    current = "Label_2";
+    await gmailMarkRecorded(mailbox, "m3"); // Fails quietly, and forgets Label_1.
+    await gmailMarkRecorded(mailbox, "m4");
+    expect(applied).toEqual(["Label_1", "Label_1", "Label_2"]);
   });
 });

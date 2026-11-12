@@ -316,6 +316,16 @@ describe("reading a Teams thread for a new request", () => {
     const message = await teamsInboundMessage(settings(), { ...payload, completed: [] } as never);
     expect(message.text).toMatch(/Can someone check the Acme NDA\?[\s\S]*Jane Business, .*:\nplease review it$/);
   });
+  it("counts dates from the mention, not from when a days-old thread began", async () => {
+    setup(false, (url) => {
+      if (url === graph) return Response.json({ ...root, createdDateTime: "2026-10-24T10:00:00Z" });
+      if (url.startsWith(`${graph}/replies`)) return Response.json({ value: [] });
+      return undefined;
+    });
+    const message = await teamsInboundMessage(settings(), { ...payload, completed: [] } as never);
+    expect(message.sender.name).toBe("Ana Sales");
+    expect(message.sentAt.toISOString()).toBe("2026-11-03T10:05:00.000Z");
+  });
 });
 
 describe("reading Teams activities", () => {

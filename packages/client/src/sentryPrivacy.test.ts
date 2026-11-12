@@ -347,6 +347,9 @@ it('groups a pinned unreachable-dependency condition as one issue per cause', ()
   expect(diagnosticEvent({ tags: { error_code: 'upstream_unavailable', failure_code: 'EHOSTUNREACH' } }).tags).toEqual({ error_code: 'upstream_unavailable', failure_code: 'EHOSTUNREACH' });
   // Migrations not applied: the backend answers 503 schema_out_of_date.
   expect(diagnosticEvent({ tags: { error_code: 'schema_out_of_date' } }).tags).toEqual({ error_code: 'schema_out_of_date' });
+  // Intake's conflict codes are in CODE_KINDS, so a failure carrying one keeps it.
+  for (const error_code of ['intake_conflict', 'intake_command_reused', 'intake_purged'])
+    expect(diagnosticEvent({ tags: { error_code } }).tags).toEqual({ error_code });
 });
 
 it('keeps a bounded folded network-failure count and drops anything else', () => {

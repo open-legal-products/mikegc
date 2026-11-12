@@ -428,6 +428,51 @@ describe("checking what preprocessing needs first", () => {
     ]);
     expect(note()!.body).toContain("Fine.");
   });
+  it("acknowledges, runs and writes nothing on a request cancelled since it was queued", async () => {
+    threaded({ state: "cancelled" });
+    readiness({ ready: true, questions: [] });
+    await expect(run()).resolves.toMatchObject({ skipped: "closed" });
+    expect(mocks.completeText).not.toHaveBeenCalled();
+    expect(mocks.applyOrgTrackedEdits).not.toHaveBeenCalled();
+    expect(memory.rows("intake_outbound")).toEqual([]);
+    expect(memory.rows("intake_messages")).toEqual([]);
+  });
+  it("reads an answer that arrives while it checks, instead of asking for it again", async () => {
+    threaded({ state: "needs_information", clarify_stage: "readiness", clarify_rounds: 1 });
+    const reply = (id: string, at: string, body: string) =>
+      memory.rows("intake_messages").push({
+        id,
+        org_id: org,
+        request_id: requestId,
+        kind: "reply",
+        body,
+        created_at: at,
+        automated: false,
+        external_author: { name: "Jane" },
+      });
+    reply("reply-1", "2026-11-12T09:00:00.000Z", "We are Acme Ltd.");
+    let checks = 0;
+    mocks.completeText.mockImplementation(async ({ systemPrompt }: { systemPrompt: string }) => {
+      if (!systemPrompt.includes("check whether an in-house legal team's intake request has what its preprocessing needs"))
+        return JSON.stringify({ answer: "The NDA looks standard.", edits: [] });
+      checks++;
+      // The schedule arrives in a second answer while the first check runs;
+      // its own job was deduplicated against this one.
+      if (checks === 1) {
+        reply("reply-2", "2026-11-12T09:01:00.000Z", "Schedule attached.");
+        return JSON.stringify({ ready: false, questions: ["Please attach the schedule."] });
+      }
+      return JSON.stringify({ ready: true, questions: [] });
+    });
+    await run({ round: 1, acknowledge: false });
+    expect(checks).toBe(2);
+    expect(mocks.completeText.mock.calls[1]![0].user).toContain("Schedule attached.");
+    expect(memory.rows("intake_messages").filter((m) => m.kind === "question")).toEqual([]);
+    expect(memory.rows("intake_requests")[0]).toMatchObject({ clarify_rounds: 1, clarify_stage: null });
+    expect(memory.rows("intake_messages").find((m) => m.id === noteId)?.body).toContain(
+      "The NDA looks standard.",
+    );
+  });
   it("doesn't ask without a thread, or once a lawyer has taken over", async () => {
     readiness({ ready: false, questions: ["Which entity is signing?"] });
     await run();

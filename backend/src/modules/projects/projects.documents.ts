@@ -210,6 +210,11 @@ export async function assignOrCopyDocument(
   }
 
   if (doc.project_id === null && !doc.workflow_id && doc.library_kind !== "template") {
+    // An intake attachment belongs to its request, not to its uploader.
+    // Moved, it would take the project's audience while the request still
+    // owns it, and deleting the request would delete the project's file.
+    if (doc.library_kind === "intake_attachment")
+      return { ok: false, kind: "doc_not_found" };
     // Standalone → assign project_id (and inherit the project's org).
     const targetOrg = await resolveContentOrgId(db, { projectId });
     if (!targetOrg.ok) return { ok: false, kind: "db_error", error: targetOrg.detail };

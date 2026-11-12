@@ -360,11 +360,10 @@ export function IntakeRules({ orgId }: { orgId: string }) {
     setRules(
       rules.map((rule) => (rule.key === key ? { ...rule, ...patch } : rule)),
     );
-  const move = (index: number, by: -1 | 1) => {
-    const next = [...rules];
-    [next[index], next[index + by]] = [next[index + by], next[index]];
-    setRules(next);
-  };
+  // Past the next rule shown, so a filtered table never moves a rule past
+  // one it hides; the rules in between keep their order.
+  const move = (key: string, past: string, by: -1 | 1) =>
+    setRules(moveIntakeRule(rules, key, past, by < 0 ? "before" : "after"));
   const remove = (keys: string[]) => {
     setRules(rules.filter((rule) => !keys.includes(rule.key)));
     setSelected((current) => {
@@ -690,7 +689,7 @@ export function IntakeRules({ orgId }: { orgId: string }) {
           </TableEmptyState>
         ) : (
           <TableBody className={TABLE_MIN_WIDTH}>
-            {shown.map(({ rule, index }) => (
+            {shown.map(({ rule, index }, at) => (
               <RuleRow
                 key={rule.key}
                 rule={rule}
@@ -709,11 +708,17 @@ export function IntakeRules({ orgId }: { orgId: string }) {
                 autoFocus={rule.key === added}
                 onFocused={() => setAdded(null)}
                 onChange={(patch) => update(rule.key, patch)}
-                onMoveUp={index > 0 ? () => move(index, -1) : undefined}
-                onMoveDown={
-                  index < rules.length - 1 ? () => move(index, 1) : undefined
+                onMoveUp={
+                  at > 0
+                    ? () => move(rule.key, shown[at - 1].rule.key, -1)
+                    : undefined
                 }
-                onDelete={() => remove([rule.key])}
+                onMoveDown={
+                  at < shown.length - 1
+                    ? () => move(rule.key, shown[at + 1].rule.key, 1)
+                    : undefined
+                }
+                onDelete={() => setDeleting([rule.key])}
                 dragging={dragged === rule.key}
                 dropPosition={
                   dropTarget?.key === rule.key && dragged !== rule.key

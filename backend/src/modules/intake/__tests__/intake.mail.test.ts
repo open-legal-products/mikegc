@@ -96,6 +96,30 @@ describe("reading email", () => {
     expect(parseMailbox('"Jane Business" <Jane@Acme.test>')).toEqual({ name: "Jane Business", email: "jane@acme.test" });
     expect(parseMailbox("jane@acme.test")).toEqual({ name: null, email: "jane@acme.test" });
   });
+  it("never takes an address from a From header's display name or comment", () => {
+    const email = (value: string) => parseMailbox(value).email;
+    expect(email('"<ceo@acme.test>" <intern@acme.test>')).toBe("intern@acme.test");
+    expect(email('"ceo@acme.test \\" <ceo@acme.test>" <intern@acme.test>')).toBe("intern@acme.test");
+    expect(email("(<ceo@acme.test>) intern@acme.test")).toBe("intern@acme.test");
+    expect(email("intern@acme.test (CEO <ceo@acme.test>)")).toBe("intern@acme.test");
+    expect(email('"Doe, Jane" <jane@acme.test>, ben@acme.test')).toBe("jane@acme.test");
+    expect(email('"only <ceo@acme.test>"')).toBeNull();
+    // A long hostile header is read in one pass.
+    const started = performance.now();
+    expect(email(`${'"('.repeat(30_000)}<${"a".repeat(60_000)}`)).toBeNull();
+    expect(email(`${"<a@b.test> ".repeat(20_000)}x`)).toBe("a@b.test");
+    expect(performance.now() - started).toBeLessThan(1_000);
+  });
+  it("reads a hostile header in linear time", () => {
+    // Either of these took seconds: a long run with no "@" was rescanned
+    // from every position, and duplicates were found by indexOf.
+    const started = performance.now();
+    expect(addressList("a".repeat(60_000))).toEqual([]);
+    const many = Array.from({ length: 30_000 }, (_, i) => `u${i % 60}@x.test`).join(", ");
+    expect(addressList(many)).toHaveLength(50);
+    expect(performance.now() - started).toBeLessThan(1_000);
+    expect(addressList("@a.test, a@, <@>, x@y.test.), b@c@d.test")).toEqual(["x@y.test", "b@c@d.test"]);
+  });
   it("knows automatic mail", () => {
     expect(isAutomaticMail(headers([["Auto-Submitted", "auto-replied"]]))).toBe(true);
     expect(isAutomaticMail(headers([["X-Auto-Submitted", "auto-generated"]]))).toBe(true);
