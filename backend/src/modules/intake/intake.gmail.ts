@@ -387,7 +387,9 @@ export async function gmailMarkRecorded(mailbox: GmailMailbox, id: string) {
       json: { addLabelIds: [label] },
     });
   } catch {
-    // A missing label never stops recording.
+    // A missing label never stops recording. The remembered id may be of a
+    // label since deleted in Gmail: look it up afresh next time.
+    labelIds.delete(mailbox.address.toLowerCase());
   }
 }
 
