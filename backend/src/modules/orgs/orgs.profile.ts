@@ -25,24 +25,28 @@ export type OrgProfileSettings = OrgProfile & {
     updated_at: string | null;
 };
 
+const SETTINGS_COLUMNS = `${ORG_PROFILE_COLUMNS}, updated_at`;
+
+/** A stored row, or none, as the settings page reads it. */
+function settingsFromRow(row: unknown): OrgProfileSettings {
+    const updatedAt = (row as { updated_at?: unknown } | null)?.updated_at;
+    return {
+        ...orgProfileFromRow(row),
+        updated_at: typeof updatedAt === "string" ? updatedAt : null,
+    };
+}
+
 async function readProfile(
     db: Db,
     orgId: string,
 ): Promise<{ ok: true; profile: OrgProfileSettings } | { ok: false; detail: string }> {
     const { data, error } = await db
         .from("org_profiles")
-        .select(`${ORG_PROFILE_COLUMNS}, updated_at`)
+        .select(SETTINGS_COLUMNS)
         .eq("org_id", orgId)
         .maybeSingle();
     if (error) return { ok: false, detail: error.message };
-    const updatedAt = (data as { updated_at?: unknown } | null)?.updated_at;
-    return {
-        ok: true,
-        profile: {
-            ...orgProfileFromRow(data),
-            updated_at: typeof updatedAt === "string" ? updatedAt : null,
-        },
-    };
+    return { ok: true, profile: settingsFromRow(data) };
 }
 
 /** The organization's profile, for any of its members. Empty until set. */
@@ -99,9 +103,13 @@ export async function saveOrgProfile(
         updated_at: updatedAt,
     };
     for (const key of changed) write[key] = parsed.changes[key];
-    const { error } = await db
+    // The row as stored, so the answer also carries any field another admin
+    // saved since the read above.
+    const { data: stored, error } = await db
         .from("org_profiles")
-        .upsert(write, { onConflict: "org_id" });
+        .upsert(write, { onConflict: "org_id" })
+        .select(SETTINGS_COLUMNS)
+        .single();
     if (error) return { ok: false, kind: "db_error", detail: error.message };
 
     await recordAudit(db, {
@@ -112,13 +120,5 @@ export async function saveOrgProfile(
         detail: { org_id: params.orgId, fields: changed },
     });
 
-    const profile: OrgProfileSettings = {
-        ...current.profile,
-        updated_at: updatedAt,
-    };
-    Object.assign(
-        profile,
-        Object.fromEntries(changed.map((key) => [key, parsed.changes[key]])),
-    );
-    return { ok: true, profile };
+    return { ok: true, profile: settingsFromRow(stored) };
 }

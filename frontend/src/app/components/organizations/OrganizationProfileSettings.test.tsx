@@ -13,11 +13,13 @@ import { OrganizationProfileSettings } from "./OrganizationProfileSettings";
 //   - text over a field's limit is named inline and cannot be saved
 //   - a failed save keeps the draft and offers a retry that saves again
 //   - a failed load is a whole-screen error with "Try again"
+//   - unsaved changes hold back in-app navigation, with a notice
 
 const mocks = vi.hoisted(() => ({
   getOrgProfile: vi.fn(),
   updateOrgProfile: vi.fn(),
   notifyError: vi.fn(),
+  notifyInfo: vi.fn(),
 }));
 
 vi.mock("@/app/lib/mikeApi", async (importOriginal) => ({
@@ -28,6 +30,7 @@ vi.mock("@/app/lib/mikeApi", async (importOriginal) => ({
 vi.mock("@/app/lib/userFacingError", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/app/lib/userFacingError")>()),
   notifyError: mocks.notifyError,
+  notifyInfo: mocks.notifyInfo,
 }));
 
 const EMPTY: OrgProfile = {
@@ -242,6 +245,55 @@ describe("OrganizationProfileSettings", () => {
       industry: "Fintech",
     });
     expect(await screen.findByText("Saved")).toBeInTheDocument();
+  });
+
+  it("counts length as the server does, without invisible control characters", async () => {
+    const user = userEvent.setup();
+    render(<OrganizationProfileSettings orgId="org-1" />);
+
+    const industry = await screen.findByLabelText("Industry");
+    await user.clear(industry);
+    await user.click(industry);
+    await user.paste(`${"x".repeat(200)}\u0001`);
+
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(screen.getByText("200 / 200")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Save" })).toBeEnabled();
+  });
+
+  it("holds back in-app navigation and workspace switches while changes are unsaved", async () => {
+    const user = userEvent.setup();
+    const leave = (name: string) =>
+      window.dispatchEvent(new Event(name, { cancelable: true }));
+    render(<OrganizationProfileSettings orgId="org-1" />);
+
+    const industry = await screen.findByLabelText("Industry");
+    expect(leave("mike:before-navigation")).toBe(true);
+
+    await user.type(industry, " and services");
+    expect(leave("mike:before-navigation")).toBe(false);
+    expect(leave("mike:before-workspace-change")).toBe(false);
+    expect(mocks.notifyInfo).toHaveBeenCalledWith(
+      "Save or discard your profile changes first.",
+    );
+
+    await user.click(screen.getByRole("button", { name: "Discard changes" }));
+    expect(leave("mike:before-navigation")).toBe(true);
+  });
+
+  it("stops saying Saved as soon as something is changed again", async () => {
+    const user = userEvent.setup();
+    mocks.updateOrgProfile.mockResolvedValue({ ...EMPTY, industry: "Fintech" });
+    render(<OrganizationProfileSettings orgId="org-1" />);
+
+    const industry = await screen.findByLabelText("Industry");
+    await user.clear(industry);
+    await user.type(industry, "Fintech");
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    expect(await screen.findByText("Saved")).toBeInTheDocument();
+
+    await user.type(industry, "!");
+    expect(screen.queryByText("Saved")).not.toBeInTheDocument();
   });
 
   it("offers to try again when the profile cannot be loaded", async () => {

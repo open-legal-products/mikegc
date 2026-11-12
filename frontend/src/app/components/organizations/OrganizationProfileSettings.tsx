@@ -24,7 +24,11 @@ import {
   type OrgProfileFields,
   type OrgProfileTextField,
 } from "@/app/lib/mikeApi";
-import { notifyError, userFacingApiError } from "@/app/lib/userFacingError";
+import {
+  notifyError,
+  notifyInfo,
+  userFacingApiError,
+} from "@/app/lib/userFacingError";
 import { cn } from "@/app/lib/utils";
 import { COUNTRY_OPTIONS } from "@/app/onboarding/options";
 import {
@@ -134,9 +138,16 @@ type Draft = Record<OrgProfileTextField, string> & { jurisdictions: string[] };
 
 const TEXT_KEYS = Object.keys(ORG_PROFILE_LIMITS) as OrgProfileTextField[];
 
-/** As the server stores it: plain line endings, no outer whitespace. */
+/**
+ * As the server stores it (normalizeOrgProfileText): plain line endings, no
+ * control characters but newlines and tabs, no outer whitespace. Lengths are
+ * counted on this, so the form never refuses what the server would keep.
+ */
 function normalize(value: string): string {
-  return value.replace(/\r\n?/g, "\n").trim();
+  return value
+    .replace(/\r\n?/g, "\n")
+    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, "")
+    .trim();
 }
 
 function draftOf(profile: OrgProfile): Draft {
@@ -205,14 +216,26 @@ export function OrganizationProfileSettings({ orgId }: { orgId: string }) {
     ? TEXT_KEYS.filter((key) => normalize(draft[key]).length > ORG_PROFILE_LIMITS[key])
     : [];
 
-  // Leaving the page, or closing the tab, drops what was typed.
+  // Leaving the page drops what was typed. The browser asks before a reload
+  // or a closed tab; the app's own navigation and workspace switch are held
+  // back, with a word on why, until the changes are saved or discarded.
   useEffect(() => {
     if (!dirty) return;
     const guard = (event: BeforeUnloadEvent) => {
       event.preventDefault();
     };
+    const hold = (event: Event) => {
+      event.preventDefault();
+      notifyInfo("Save or discard your profile changes first.");
+    };
     window.addEventListener("beforeunload", guard);
-    return () => window.removeEventListener("beforeunload", guard);
+    window.addEventListener("mike:before-navigation", hold);
+    window.addEventListener("mike:before-workspace-change", hold);
+    return () => {
+      window.removeEventListener("beforeunload", guard);
+      window.removeEventListener("mike:before-navigation", hold);
+      window.removeEventListener("mike:before-workspace-change", hold);
+    };
   }, [dirty]);
 
   const save = useCallback(async () => {
@@ -291,7 +314,7 @@ export function OrganizationProfileSettings({ orgId }: { orgId: string }) {
       <div className="flex flex-col gap-1 sm:flex-row sm:items-baseline sm:justify-between sm:gap-3">
         <SettingsHeading id="org-profile-heading">Profile</SettingsHeading>
         <span className="text-xs text-gray-400" aria-live="polite">
-          {saving ? "Saving..." : justSaved ? "Saved" : ""}
+          {saving ? "Saving..." : justSaved && !dirty ? "Saved" : ""}
         </span>
       </div>
       <SettingsDescription>
