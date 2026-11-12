@@ -621,8 +621,18 @@ export function base64Url(buffer: Buffer) {
         .replace(/=+$/g, "");
 }
 
+/**
+ * The key an OAuth state is stored and looked up by, so the state itself is
+ * never at rest. The state is a 192-bit random nonce that lives ten minutes,
+ * so any one-way function would do; scrypt is used because a key-derivation
+ * function is what code scanning expects for a value it takes for a secret,
+ * at a low cost setting since the input cannot be guessed. Deterministic:
+ * the same state always gives the same key.
+ */
 export function stateHash(state: string) {
-    return crypto.createHash("sha256").update(state).digest("hex");
+    return crypto
+        .scryptSync(state, "mike.oauth.state.v1", 32, { N: 1024, r: 8, p: 1 })
+        .toString("hex");
 }
 
 export async function loadConnector(
