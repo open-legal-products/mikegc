@@ -109,6 +109,24 @@ describe("the readiness check's prompt", () => {
     expect(user).toContain("--- Thread ---\nMikeGC, 2 Nov 2026, 09:00 UTC:\nWhich entity signs?");
     expect(user).toContain("Couldn't read: scan.pdf");
   });
+  it("reads only the newest part of a very long thread", () => {
+    const { user } = buildReadinessPrompt({
+      model,
+      request: { subject: "Q", description: "D" },
+      thread: [
+        ...Array.from({ length: 49 }, () => ({ author: "Jane (requester)", at: "earlier", text: "y".repeat(20_000) })),
+        { author: "Jane (requester)", at: "now", text: "The signing entity is Acme Ltd." },
+      ],
+      documents: [],
+      unread: [],
+      condition: null,
+      workflow: null,
+      playbook: null,
+    });
+    expect(user.length).toBeLessThan(40_000);
+    expect(user).toContain("--- Thread ---\n[Earlier messages left out.]");
+    expect(user).toContain("The signing entity is Acme Ltd.");
+  });
   it("reads a workflow's instructions", () => {
     const { user } = buildReadinessPrompt({
       model,

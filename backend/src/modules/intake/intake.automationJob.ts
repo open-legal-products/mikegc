@@ -32,6 +32,7 @@ import {
   MAX_MESSAGE_CHARS,
   cleanText,
   clip,
+  clipStart,
   inboundPayload,
   stagedKeys,
   type InboundPayload,
@@ -318,7 +319,7 @@ async function slackMessage(
     sentAt: slackDate(messages[0]!.ts),
     subject: null,
     subjectHint: firstLine,
-    text: clip(text, MAX_MESSAGE_CHARS),
+    text: clipStart(text, MAX_MESSAGE_CHARS),
     ...channelAttachments(files, "slack"),
   };
 }

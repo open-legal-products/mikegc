@@ -325,6 +325,17 @@ export function cleanText(value: string): string {
     .replace(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g, "");
 }
 
+/**
+ * The last `max` UTF-16 units at most, never splitting a surrogate pair. A
+ * chat thread is written oldest first, so its end is the message being acted
+ * on: shorten one from the front.
+ */
+export function clipStart(value: string, max: number): string {
+  if (value.length <= max) return value;
+  const start = value.length - max;
+  return value.slice(/[\uDC00-\uDFFF]/.test(value.charAt(start)) ? start + 1 : start);
+}
+
 /** At most `max` UTF-16 units, never splitting a surrogate pair. */
 export function clip(value: string, max: number): string {
   if (value.length <= max) return value;

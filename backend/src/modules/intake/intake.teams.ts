@@ -15,6 +15,7 @@ import {
   MAX_MESSAGE_CHARS,
   cleanText,
   clip,
+  clipStart,
   type TeamsFileRef,
   type TeamsInboundPayload,
 } from "./intake.inboundPayload";
@@ -403,7 +404,7 @@ export async function teamsInboundMessage(
     sentAt: entries[0]!.at,
     subject: null,
     subjectHint: firstLine,
-    text: clip(text, MAX_MESSAGE_CHARS),
+    text: clipStart(text, MAX_MESSAGE_CHARS),
     ...channelAttachments(files, "teams"),
   };
 }

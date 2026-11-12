@@ -245,7 +245,16 @@ export function buildAgentPrompt(args: {
       type: c.file_type,
       ...(c.size !== null ? { size_kb: Math.ceil(c.size / 1024) } : {}),
     }));
-    const body = clip(message.text, PROMPT_MESSAGE_CHARS);
+    // A Slack or Teams thread reads oldest first and ends with the message
+    // that mentions MikeGC, so a long one keeps its end; an email keeps its
+    // start, where its newest text is.
+    const threaded = message.source === "slack" || message.source === "teams";
+    const head = clip(message.text, PROMPT_MESSAGE_CHARS);
+    const body = threaded
+      ? tail(message.text, PROMPT_MESSAGE_CHARS)
+      : head.length < message.text.length
+        ? `${head}\n[Message shortened.]`
+        : head;
     const replies = context.earlierReplies.map((r) => ({ author: "MikeGC", at: r.at, text: r.text }));
     const user = [
       `TODAY: ${today(message.sentAt, args.now)} (UTC)`,
@@ -259,7 +268,7 @@ export function buildAgentPrompt(args: {
       `Sent: ${formatSent(message.sentAt)}`,
       ...(message.subject !== null ? [`Subject: ${message.subject}`] : []),
       "",
-      body.length < message.text.length ? `${body}\n[Message shortened.]` : body,
+      body,
       ...(replies.length ? ["", "--- MikeGC's earlier replies in this thread ---", threadText(replies)] : []),
       `DATA ${boundary} END`,
     ].join("\n");

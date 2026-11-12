@@ -414,6 +414,20 @@ describe("the prompt", () => {
       'ORGANIZATION: {"name":"Acme Ltd","industry":"Software"}',
     );
   });
+  it("keeps the newest end of a long Slack thread, and the start of a long email", () => {
+    const thread = `Jane, 2 Nov 2026, 09:00 UTC:\n${"x".repeat(40_000)}\n\nBob, 2 Nov 2026, 10:00 UTC:\n@MikeGC please log this: review the Acme NDA by Friday`;
+    const slack = buildAgentPrompt({ context: inThread({ message: message({ text: thread }) }), rules, now: new Date() }).user;
+    expect(slack).toContain("[Earlier messages left out.]");
+    expect(slack).toContain("please log this: review the Acme NDA by Friday");
+    const email = buildAgentPrompt({
+      context: inThread({ message: message({ source: "gmail", text: `The newest words. ${"x".repeat(40_000)} old quoted text` }) }),
+      rules,
+      now: new Date(),
+    }).user;
+    expect(email).toContain("The newest words.");
+    expect(email).toContain("[Message shortened.]");
+    expect(email).not.toContain("old quoted text");
+  });
   it("shows a reply's request and the newest end of a long thread", () => {
     const context = onRequest({ ruleUndecided: true, member_edited_fields: ["subject"] });
     if (context.kind !== "reply") throw new Error("unreachable");

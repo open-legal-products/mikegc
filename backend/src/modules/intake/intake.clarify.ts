@@ -1,7 +1,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import { completeText } from "../../lib/llm";
 import { safeError } from "../../lib/safeError";
-import { clip } from "./intake.inboundPayload";
+import { clip, clipStart } from "./intake.inboundPayload";
 import { parseModelJson } from "./intake.shared";
 import type { TriageModel } from "./intake.triage";
 
@@ -115,9 +115,22 @@ export function threadText(entries: ThreadEntry[]): string {
   return entries.map((e) => `${e.author}, ${e.at}:\n${e.text}`).join("\n\n");
 }
 
+/**
+ * The thread as the readiness check reads it. Fifty replies of 20,000
+ * characters are a million: unbounded, the provider refuses the prompt and the
+ * request counts as ready with its questions never asked.
+ */
+function newestThread(entries: ThreadEntry[]): string {
+  const whole = threadText(entries);
+  const newest = clipStart(whole, THREAD_CHARS);
+  return newest.length < whole.length ? `[Earlier messages left out.]\n${newest}` : newest;
+}
+
 const READINESS_TIMEOUT_MS = 90_000;
 const DOCUMENT_CHARS = 20_000;
 const PROMPT_CHARS = 150_000;
+/** How much of the requester thread the check reads: its newest part. */
+const THREAD_CHARS = 30_000;
 
 const READINESS_PROMPT = `You check whether an in-house legal team's intake request has what its preprocessing needs before it runs. You are given the request, its documents, the condition of the triage rule that matched it, and the workflow or playbook preprocessing will follow. Answer with one JSON object and nothing else:
 {"ready": boolean, "questions": string[]}
@@ -194,7 +207,7 @@ export function buildReadinessPrompt(input: ReadinessInput): {
     `Subject: ${input.request.subject}`,
     "",
     input.request.description,
-    ...(input.thread.length ? ["", "--- Thread ---", threadText(input.thread)] : []),
+    ...(input.thread.length ? ["", "--- Thread ---", newestThread(input.thread)] : []),
     "",
     input.documents.length ? documents.join("\n\n") : "(The request has no readable documents.)",
     ...(input.unread.length ? [`Couldn't read: ${input.unread.join(", ")}`] : []),
