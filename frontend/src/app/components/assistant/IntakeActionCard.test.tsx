@@ -204,6 +204,35 @@ describe("IntakeActionCard", () => {
         expect(screen.queryByRole("button", { name: "Resolve" })).toBeNull();
     });
 
+    it("still shows the first load when a recheck sent before it answers fails", async () => {
+        let answerLoad!: (value: unknown) => void;
+        getIntakeRequest
+            .mockReturnValueOnce(new Promise((resolve) => (answerLoad = resolve)))
+            .mockRejectedValueOnce(new Error("offline"));
+        render(<IntakeActionCard event={event("resolve")} />);
+        window.dispatchEvent(new Event("focus"));
+        await waitFor(() => expect(getIntakeRequest).toHaveBeenCalledTimes(2));
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        answerLoad(request("in_review", { resolve: true }));
+        expect(
+            await screen.findByRole("button", { name: "Resolve" }),
+        ).toBeEnabled();
+    });
+
+    it("says the change was made even when the read after it fails", async () => {
+        getIntakeRequest
+            .mockResolvedValueOnce(request("in_review", { resolve: true }))
+            .mockRejectedValueOnce(new Error("offline"));
+        commandIntakeRequest.mockResolvedValue({ request_id: "request-1" });
+        render(<IntakeActionCard event={event("resolve")} />);
+        await userEvent.click(await screen.findByRole("button", { name: "Resolve" }));
+        await waitFor(() => expect(getIntakeRequest).toHaveBeenCalledTimes(2));
+        expect(await screen.findByRole("status")).toHaveTextContent(
+            "Done. Request resolved.",
+        );
+        expect(screen.queryByText(/This request can’t be opened/)).toBeNull();
+    });
+
     it("shows a failure without claiming the change was made", async () => {
         getIntakeRequest.mockResolvedValue(request("in_review", { resolve: true }));
         commandIntakeRequest.mockRejectedValue(new Error("conflict"));

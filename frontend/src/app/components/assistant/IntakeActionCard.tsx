@@ -120,29 +120,32 @@ export function IntakeActionCard({
     const [busy, setBusy] = useState(false);
     const [confirmed, setConfirmed] = useState(false);
 
-    // Only the latest read answers. A recheck sent just before Confirm could
-    // land after the read that follows it and put the request's old version
-    // back, so the next Confirm was refused as out of date.
-    const latestRead = useRef(0);
+    // An answer older than the one shown is dropped. A recheck sent just
+    // before Confirm could land after the read that follows it and put the
+    // request's old version back, so the next Confirm was refused as out of
+    // date. A failed recheck shows nothing, so it must not drop the answer
+    // to an earlier read still on its way, such as the first load.
+    const sentRead = useRef(0);
+    const shownRead = useRef(0);
     const read = useCallback(
-        (failed: () => void) => {
-            const mine = ++latestRead.current;
+        (failure: "unavailable" | "keep") => {
+            const mine = ++sentRead.current;
             return getIntakeRequest(event.org_id, event.request_id).then(
                 (request) => {
-                    if (mine === latestRead.current)
-                        setLoaded({ status: "ready", request });
+                    if (mine <= shownRead.current) return;
+                    shownRead.current = mine;
+                    setLoaded({ status: "ready", request });
                 },
                 () => {
-                    if (mine === latestRead.current) failed();
+                    if (failure === "keep" || mine <= shownRead.current) return;
+                    shownRead.current = mine;
+                    setLoaded({ status: "unavailable" });
                 },
             );
         },
         [event.org_id, event.request_id],
     );
-    const load = useCallback(
-        () => read(() => setLoaded({ status: "unavailable" })),
-        [read],
-    );
+    const load = useCallback(() => read("unavailable"), [read]);
     useEffect(() => {
         void load();
     }, [load]);
@@ -152,7 +155,7 @@ export function IntakeActionCard({
     useEffect(() => {
         const recheck = () => {
             if (document.visibilityState !== "visible") return;
-            void read(() => {});
+            void read("keep");
         };
         window.addEventListener("focus", recheck);
         document.addEventListener("visibilitychange", recheck);
@@ -222,7 +225,9 @@ export function IntakeActionCard({
                         aria-hidden="true"
                         className="h-7 w-24 animate-pulse rounded-full bg-gray-200"
                     />
-                ) : loaded.status === "unavailable" ? (
+                ) : loaded.status === "unavailable" && !confirmed ? (
+                    // A change confirmed here was made even if the read
+                    // after it failed.
                     <p className="text-xs text-gray-600">
                         This request can’t be opened, so this change can’t be
                         made here.
