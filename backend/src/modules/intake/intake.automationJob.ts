@@ -321,7 +321,9 @@ async function slackMessage(
   return {
     source: "slack",
     sender: { name: nameOf(requester), email: people.get(requester)?.email ?? null },
-    sentAt: slackDate(messages[0]!.ts),
+    // The mention's own time: "by Friday" counts from when MikeGC was asked,
+    // not from when the thread began.
+    sentAt: slackDate(payload.ts),
     subject: null,
     subjectHint: firstLine,
     text: clipStart(text, MAX_MESSAGE_CHARS),

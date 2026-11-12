@@ -581,6 +581,21 @@ describe("recording a Slack thread", () => {
     expect(slackReplies.username).toBeUndefined();
     expect(memory.rows("intake_outbound")[0]).toMatchObject({ status: "sent", external_id: "1793610999.000900" });
   });
+  it("counts dates from the mention, not from when a days-old thread began", async () => {
+    // The thread began ten days before MikeGC was mentioned in it.
+    setup({ payload: slackPayload({ thread_ts: "1792746840.000100" }), source: "slack" });
+    stubSlack({
+      "conversations.replies": () => ({
+        ok: true,
+        messages: [
+          { ts: "1792746840.000100", user: "U1", text: "Need the Supplier Co NDA signed off by Friday" },
+          { ts: "1793610900.000300", user: "U2", text: "<@UBOT> can Legal look at this?" },
+        ],
+      }),
+    });
+    await handleIntakeAgent(memory.db, job());
+    expect(model.requests[0]!.messages[0]!.content).toContain("TODAY: 2026-11-02 (UTC)");
+  });
   it("names the reviewer who will pick the request up", async () => {
     setup({ payload: slackPayload({ thread_ts: null, ts: "1793610840.000100", user: "U1", text: "<@UBOT> NDA please" }), source: "slack", kind: "personal" });
     await handleIntakeAgent(memory.db, job());

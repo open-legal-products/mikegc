@@ -97,7 +97,8 @@ it applies and tells the agent why when it doesn't:
   original message, its sender and time (in UTC, since members read it from
   anywhere) kept below the summary; the requester's name and email; a target
   date if the message asks for one, working out dates such as "by Friday"
-  from the day it was sent, in UTC; and the attachments that matter,
+  from the day it was sent (in a chat thread, the day MikeGC was mentioned),
+  in UTC; and the attachments that matter,
   leaving out the rest, such as signature logos.
 - **update_request** changes a recorded request's subject, summary or target
   date from what the requester writes later ("we now need it by the 14th").

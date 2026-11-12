@@ -401,7 +401,9 @@ export async function teamsInboundMessage(
   return {
     source: "teams",
     sender: { name: entries[0]!.author, email: null },
-    sentAt: entries[0]!.at,
+    // The mention's own time: "by Friday" counts from when MikeGC was asked,
+    // not from when the thread began.
+    sentAt: new Date(payload.date),
     subject: null,
     subjectHint: firstLine,
     text: clipStart(text, MAX_MESSAGE_CHARS),
