@@ -385,16 +385,18 @@ jobs:
       # Onboarding and dynamic routes are warmed too: with parallel workers on
       # a throttled CPU, a route's first `next dev` compile overran a 15 s
       # navigation wait (/projects/[id] in one run; /onboarding/profile while
-      # three workers signed in at once in another), and stress runs have zero
-      # retries. A placeholder id is enough to compile a dynamic route; its
+      # three workers signed in at once in another; /intake/new, which failed
+      # every nightly, did not finish inside a 10 s wait), and stress runs have
+      # zero retries. A placeholder id is enough to compile a dynamic route; its
       # status code doesn't matter here.
       - name: Warm development routes
         if: matrix.renderer == 'development'
         run: |
-          for route in login onboarding/profile onboarding/practice assistant projects tabular-reviews workflows settings; do
+          for route in login onboarding/profile onboarding/practice assistant projects tabular-reviews workflows settings \
+            intake/requests intake/new intake/dashboard intake/rules intake/settings; do
             curl --fail --silent --max-time 120 "http://localhost:3000/$route" > /dev/null
           done
-          for route in assistant/chat/warm projects/warm projects/warm/assistant/chat/warm \
+          for route in intake/warm assistant/chat/warm projects/warm projects/warm/assistant/chat/warm \
             projects/warm/folders/warm projects/warm/tabular-reviews/warm tabular-reviews/warm \
             workflows/assistant/warm workflows/tabular-review/warm; do
             curl --silent --max-time 180 --output /dev/null "http://localhost:3000/$route" &
