@@ -9,7 +9,7 @@ import { MemorySaveStatus } from "@/app/components/memory/MemoryEditorState";
 import { useMemoryAutosave } from "@/app/components/memory/useMemoryAutosave";
 import { updateIntakeAutomation } from "@/app/lib/mikeApi";
 import { describeError } from "@/app/lib/userFacingError";
-import { TextButtonUI } from "@/shared/ui/TextButtonUI";
+import { TextButtonUI } from "@mike/ui";
 import {
   intakeAutomationChanges,
   intakeAutosaveDraft,

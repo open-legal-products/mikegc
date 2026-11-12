@@ -20,7 +20,7 @@ vi.mock("../../../lib/llm", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../../lib/llm")>()),
   streamChatWithTools: mocks.stream,
 }));
-vi.mock("../../user/user.service", () => ({
+vi.mock("../../../lib/providerCredentials/index", () => ({
   getEffectiveApiKeys: mocks.getEffectiveApiKeys,
   envApiKeys: mocks.envApiKeys,
 }));

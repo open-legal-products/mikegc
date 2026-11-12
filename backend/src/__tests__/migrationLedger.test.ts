@@ -157,19 +157,26 @@ describe("migrate.sh transaction detection", () => {
 
 describe("docker-compose db-init", () => {
     const compose = read("docker-compose.yml");
+    const dockerfile = read("backend/Dockerfile");
 
-    it("mounts the whole migrations directory and the runner", () => {
-        expect(compose).toContain("- ./backend/migrations:/migrations:ro");
-        expect(compose).toContain(
-            "- ./backend/scripts/migrate.sh:/migrate.sh:ro",
-        );
-        expect(compose).toContain("MIGRATIONS_DIR: /migrations");
+    it("runs from the backend image so migrations and code share one release", () => {
+        // The image carries schema.sql, migrations/ and scripts/ (COPY backend/),
+        // the ledger-adoption script, and psql for migrate.sh. No bind mounts:
+        // a pulled image can never be paired with another checkout's migrations.
+        const dbInit = compose.slice(compose.indexOf("\n  db-init:"), compose.indexOf("\n  mailpit:"));
+        expect(dbInit).toContain("build: &backend-build");
+        expect(dbInit).toContain("image: &backend-image");
+        expect(dbInit).not.toContain("volumes:");
+        expect(dbInit).toContain("MIGRATIONS_DIR: /app/migrations");
+        expect(dockerfile).toContain("COPY backend/ ./");
+        expect(dockerfile).toContain("COPY docker/db-init/adopt-ledger.sh ./docker/db-init/adopt-ledger.sh");
+        expect(dockerfile).toMatch(/apt-get install[^\n]*postgresql-client/);
     });
 
     it("fails closed when schema.sql, adoption or a migration fails", () => {
-        expect(compose).toContain("-f /schema.sql || exit 1;");
-        expect(compose).toContain("bash /adopt-ledger.sh || exit 1;");
-        expect(compose).toContain("bash /migrate.sh up || exit 1;");
+        expect(compose).toContain("-f /app/schema.sql || exit 1;");
+        expect(compose).toContain("bash /app/docker/db-init/adopt-ledger.sh || exit 1;");
+        expect(compose).toContain("bash /app/scripts/migrate.sh up || exit 1;");
     });
 
     it("adopts pre-ledger volumes up to a migration that exists", () => {
@@ -178,14 +185,41 @@ describe("docker-compose db-init", () => {
         expect(migrations).toContain(lastReplayed);
     });
 
+    it("tells the adoption script where migrate.sh lives inside the image", () => {
+        // The script's default was the bind-mount path; a wrong path here
+        // fails every upgrade from a pre-ledger volume at db-init.
+        const adopt = read("docker/db-init/adopt-ledger.sh");
+        expect(compose).toContain("MIGRATE_SH: /app/scripts/migrate.sh");
+        expect(adopt).toContain('"${MIGRATE_SH:-/app/scripts/migrate.sh}"');
+        expect(dockerfile).toContain("COPY backend/ ./");
+    });
+
     // Older history has a duplicate slot (two 20260822_01 files); the
     // convention is enforced from the first migration after it.
+    //
+    // MikeGC and upstream Mike numbered their migrations independently
+    // between 2026-10-29 and 2026-11-01, so the 2026-11-11 upstream merge
+    // brought in these slots twice: once for an intake migration and once
+    // for an upstream one. Both sets have shipped and cannot be renamed
+    // (a database that ran one would run it again under the new name), and
+    // migrate.sh orders by whole filename, so the pairs are tolerated here
+    // by name. 20261112_01_intake_after_upstream_sync.sql makes the result
+    // the same in either order. Nothing may be added to this list.
+    const UPSTREAM_MERGE_SHARED_SLOTS = new Set([
+        "20261029_01_", "20261030_01_", "20261030_02_", "20261030_03_",
+        "20261030_04_", "20261030_05_", "20261101_01_", "20261101_02_",
+        "20261101_03_", "20261101_04_", "20261101_05_", "20261101_06_",
+        "20261101_07_", "20261101_08_",
+    ]);
     it("uses a unique date and sequence for every dated migration", () => {
         const slots = migrations
             .filter((file) => file >= "20260823_01")
             .map((file) => file.match(/^\d{8}_\d{2}_/)?.[0])
-            .filter(Boolean);
-        expect(new Set(slots).size).toBe(slots.length);
+            .filter((slot): slot is string => Boolean(slot));
+        const repeated = slots.filter((slot, i) => slots.indexOf(slot) !== i);
+        expect(repeated.filter((slot) => !UPSTREAM_MERGE_SHARED_SLOTS.has(slot))).toEqual([]);
+        // Each tolerated slot holds exactly the two files the merge brought.
+        expect([...repeated].sort()).toEqual([...UPSTREAM_MERGE_SHARED_SLOTS].sort());
     });
 });
 

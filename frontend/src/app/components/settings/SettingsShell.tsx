@@ -28,19 +28,29 @@ export const SETTINGS_SIDE_CLASS = "@min-[52rem]/settings:flex-col";
 export function SettingsFrame({
     title,
     side,
+    search,
     children,
 }: {
     title?: ReactNode;
     side?: ReactNode;
+    /** A search box drawn at the right end of the title row, when the area has one. */
+    search?: ReactNode;
     children: ReactNode;
 }) {
     return (
         <div className="flex h-full flex-col overflow-y-auto">
             {title ? (
-                <header className="mx-auto flex h-16 w-full max-w-5xl shrink-0 items-end px-6 pb-2 md:h-24 md:pb-4">
-                    <h1 className="text-3xl font-medium font-eb-garamond">
+                <header className="mx-auto flex h-16 w-full max-w-5xl shrink-0 items-end justify-between gap-4 px-6 pb-2 md:h-24 md:pb-4">
+                    <h1 className="shrink-0 text-3xl font-medium font-eb-garamond">
                         {title}
                     </h1>
+                    {/* The search sits at the right end of the heading's row, so the
+                        sections and the open page keep their places. */}
+                    {search ? (
+                        <div className="relative z-20 w-full min-w-0 max-w-[18rem]">
+                            {search}
+                        </div>
+                    ) : null}
                 </header>
             ) : null}
 
@@ -78,6 +88,7 @@ export function SettingsShell({
     navLabel,
     tabs,
     rootHref,
+    search,
     children,
 }: {
     title: ReactNode;
@@ -85,6 +96,8 @@ export function SettingsShell({
     navLabel: string;
     tabs: SettingsShellTab[];
     rootHref: string;
+    /** A search box drawn at the right end of the title row, when the area has one. */
+    search?: ReactNode;
     children: ReactNode;
 }) {
     const router = useRouter();
@@ -93,6 +106,7 @@ export function SettingsShell({
     return (
         <SettingsFrame
             title={title}
+            search={search}
             side={
                 <nav aria-label={navLabel} className="min-w-0">
                     <div className="-m-1 min-w-0 p-1">

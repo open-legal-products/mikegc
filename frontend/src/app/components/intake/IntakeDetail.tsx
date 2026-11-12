@@ -41,7 +41,7 @@ import {
   retryIntakeDelivery,
 } from "@/app/lib/mikeApi";
 import { notifyError, notifyPartialFailure } from "@/app/lib/userFacingError";
-import { notifySuccess } from "@/shared/lib/errorNotifier";
+import { notifySuccess } from "@mike/client";
 import {
   formatUnsupportedDocumentWarning,
   partitionSupportedDocumentFiles,
@@ -53,18 +53,18 @@ import {
 } from "@/app/components/shared/TablePrimitive";
 import { EmptyState } from "@/app/components/ui/empty-state";
 import { IntakeSkeuoIcon } from "@/app/components/shared/AppSidebarSkeuoIcons";
-import { GlassCardUI } from "@/shared/ui/GlassCardUI";
-import { HeaderButtonUI } from "@/shared/ui/HeaderButtonsUI";
+import { GlassCardUI } from "@mike/ui";
+import { HeaderButtonUI } from "@mike/ui";
 import { ConfirmPopup } from "@/app/components/popups/ConfirmPopup";
 import {
   Dropdown,
   DropdownContent,
   DropdownItem,
   DropdownTrigger,
-} from "@/shared/ui/dropdown";
+} from "@mike/ui";
 import { discardIntakeDraft } from "@/app/lib/intakeMemory";
 import { LIQUID_GLASS_FLAT_CLASS } from "@/app/components/ui/liquid-surface";
-import { PillButtonUI } from "@/shared/ui/PillButtonUI";
+import { PillButtonUI } from "@mike/ui";
 import {
   intakeError,
   useIntakeDraftWarning,

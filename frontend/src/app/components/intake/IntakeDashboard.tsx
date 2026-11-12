@@ -20,7 +20,7 @@ import {
   DropdownRadioGroup,
   DropdownRadioItem,
   DropdownTrigger,
-} from "@/shared/ui/dropdown";
+} from "@mike/ui";
 import {
   PERSONAL_WORKSPACE,
   useWorkspace,
@@ -30,13 +30,13 @@ import { cn } from "@/app/lib/utils";
 import { SkeletonLine } from "@/app/components/shared/TablePrimitive";
 import { EmptyState } from "@/app/components/ui/empty-state";
 import { UserAvatar } from "@/app/components/ui/user-avatar";
-import { GlassCardUI } from "@/shared/ui/GlassCardUI";
+import { GlassCardUI } from "@mike/ui";
 import {
   LIQUID_GLASS_FLOAT_CLASS,
   LIQUID_GLASS_GROUP_HOVER_CLASS,
   LIQUID_GLASS_HOVER_CLASS,
-} from "@/shared/ui/LiquidGlassUI";
-import { PillButtonUI } from "@/shared/ui/PillButtonUI";
+} from "@mike/ui";
+import { PillButtonUI } from "@mike/ui";
 import { intakeError } from "./useIntakeOperation";
 import { INTAKE_STATE_LABELS } from "./intakeLabels";
 import { IntakePageHeader } from "./IntakePageHeader";

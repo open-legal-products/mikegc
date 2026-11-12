@@ -5,7 +5,6 @@ import {
     ClipboardCheck,
     Cloud,
     Inbox,
-    Loader2,
     PlusIcon,
     Upload,
     Waypoints,
@@ -16,7 +15,7 @@ import {
     DropdownItem,
     DropdownSeparator,
     DropdownTrigger,
-} from "@/shared/ui/dropdown";
+} from "@mike/ui";
 
 interface Props {
     onBrowseAll: () => void;
@@ -26,7 +25,6 @@ interface Props {
     onPlaybooks?: () => void;
     /** Adds the intake request picker; the general Assistant only. */
     onIntakeRequests?: () => void;
-    uploading?: boolean;
 }
 
 /** The composer's + menu: documents, then workflows, playbooks and intake requests. */
@@ -36,7 +34,6 @@ export function AddDocButton({
     onWorkflows,
     onPlaybooks,
     onIntakeRequests,
-    uploading = false,
 }: Props) {
     const openingDialog = useRef(false);
     return (
@@ -44,16 +41,11 @@ export function AddDocButton({
             <DropdownTrigger asChild>
                 <button
                     type="button"
-                    disabled={uploading}
-                    className="flex h-7.5 items-center gap-1 rounded-lg px-2 text-sm text-gray-400 transition-colors hover:text-gray-700 cursor-pointer disabled:cursor-default focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40"
+                    className="flex h-7.5 items-center gap-1 rounded-lg px-2 text-sm text-gray-400 transition-colors hover:text-gray-700 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40"
                     title="Add to message"
                     aria-label="Add to message"
                 >
-                    {uploading ? (
-                        <Loader2 aria-hidden="true" className="h-4 w-4 shrink-0 animate-spin" />
-                    ) : (
-                        <PlusIcon aria-hidden="true" className="h-4 w-4 shrink-0" />
-                    )}
+                    <PlusIcon aria-hidden="true" className="h-4 w-4 shrink-0" />
                 </button>
             </DropdownTrigger>
             <DropdownContent

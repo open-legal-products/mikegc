@@ -11,8 +11,8 @@ import type {
 } from "@mike/contracts";
 import { commandIntakeRequest, getIntakeRequest } from "@/app/lib/mikeApi";
 import { notifyError } from "@/app/lib/userFacingError";
-import { LIQUID_GLASS_FLAT_CLASS } from "@/shared/ui/LiquidGlassUI";
-import { PillButtonUI } from "@/shared/ui/PillButtonUI";
+import { LIQUID_GLASS_FLAT_CLASS } from "@mike/ui";
+import { PillButtonUI } from "@mike/ui";
 import { SETTINGS_CONTROL_CLASS } from "@/app/components/settings/SettingsTextInput";
 import {
     intakeStateLabel,

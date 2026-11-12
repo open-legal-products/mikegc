@@ -12,14 +12,16 @@
 // its ordering is delicate. Only the NON-streaming logic and the pre-stream
 // DB preparation live here. `prepareChatStream` returns the prepared data the
 // route needs to run the stream; it does not stream.
+import { AppError } from "../../lib/appError";
 import { getActiveAssistantTurn } from "../../lib/assistantTurnRuns";
+import { reportError } from "../../lib/observability/sentry";
 import { type Db } from "../../lib/supabase";
 import {
     webSearchPlanFor,
     type WebSearchPlan,
 } from "../../lib/webSearch";
 import { resolveRequestTimeZone } from "../../lib/userTime";
-import { attachPriorReasoning, buildDocContext, buildMessages, buildUserPersonalisationPrompt, devLog, enrichWithPriorEvents, loadUserMessageSentTimes, buildWorkflowStore, appendAskInputsResponseToAssistantMessage, runApprovedConnectorActions, generateSpotlightNonce, spotlight, type AskInputsResponseRequest, type ChatMessage, type SubagentDefaults } from "./engine/index";
+import { createAssistantHistoryLoader, attachPriorReasoning, buildDocContext, buildMessages, buildUserPersonalisationPrompt, devLog, enrichWithPriorEvents, loadUserMessageSentTimes, buildWorkflowStore, appendAskInputsResponseToAssistantMessage, runApprovedConnectorActions, generateSpotlightNonce, spotlight, type AskInputsResponseRequest, type ChatMessage, type SubagentDefaults } from "./engine/index";
 import type { McpToolEvent } from "@mike/contracts";
 import { getUserModelSettings, resolveUserChatSelection } from "../user/user.service";
 import {
@@ -386,7 +388,16 @@ export async function prepareChatStream(
             .select("id, title")
             .single();
         if (error || !newChat) {
-            console.error("[chat/stream] failed to create chat", error);
+            // The route answers 500 without throwing, so this is the one
+            // report; the PostgREST error is the cause (its code reaches
+            // Sentry), the same wrapper is logged so the bridge skips it.
+            const failure = new AppError(
+                "db.query_failed",
+                "Failed to create chat",
+                { cause: error ?? { result: newChat } },
+            );
+            reportError(failure, { tags: { component: "chat-stream" } });
+            console.error("[chat/stream] failed to create chat", failure);
             return { ok: false, status: 500, detail: "Failed to create chat" };
         }
         chatId = newChat.id as string;
@@ -509,6 +520,7 @@ export async function prepareChatStream(
             // Thrown, so the turn opened above is released below.
             else if (brief.kind === "error") throw brief.error;
         }
+        const history = createAssistantHistoryLoader(db, chatId);
         const { docIndex, docStore } = await buildDocContext(
             messages,
             userId,
@@ -516,6 +528,7 @@ export async function prepareChatStream(
             chatId,
             "chat_messages",
             userEmail,
+            history,
             intakeBrief?.documentIds ?? [],
         );
         const docAvailability = Object.entries(docIndex).map(([doc_id, info]) => ({
@@ -526,7 +539,7 @@ export async function prepareChatStream(
         // and workflow titles replayed from earlier turns are fenced as well.
         const nonce = generateSpotlightNonce(chatId);
         const historyMessages = replaysReasoning(selectedModel)
-            ? await attachPriorReasoning(messages, chatId, db)
+            ? await attachPriorReasoning(messages, chatId, db, "chat_messages", history)
             : messages;
         const timeZone = resolveRequestTimeZone(args.requestedTimeZone);
         const enrichedMessages = await enrichWithPriorEvents(

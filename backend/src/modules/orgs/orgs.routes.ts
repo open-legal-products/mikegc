@@ -29,8 +29,6 @@ import {
     getOrg,
     updateOrg,
     deleteOrg,
-    deleteOrgData,
-    isOrgDataKind,
     listOrgResources,
     listMembers,
     updateMember,
@@ -43,7 +41,7 @@ import {
     getOrgApiKeySettings,
     saveOrgApiKey,
     setOrgApiKeyEnabled,
-    setOrgPersonalApiKeysAllowed,
+    setOrgMemberDataPolicy,
     getOrgLogo,
     saveOrgLogo,
     removeOrgLogo,
@@ -54,7 +52,8 @@ import {
     resolveDepartureArchive,
     resolveDepartureArchives,
 } from "./orgs.service";
-import { normalizeApiKeyProvider } from "../user/user.service";
+import { deleteOrgData, isOrgDataKind } from "../../application/organizations/purgeContent";
+import { normalizeApiKeyProvider } from "../../lib/providerCredentials/index";
 
 export const orgsRouter = Router();
 
@@ -446,7 +445,7 @@ orgsRouter.post(
 );
 
 // ---------------------------------------------------------------------------
-// Provider keys and the personal-key setting
+// Provider keys
 // ---------------------------------------------------------------------------
 //
 // Writes carry requireMfaIfEnrolled, as the personal key routes do: saving a
@@ -464,23 +463,23 @@ orgsRouter.get("/:orgId/api-keys", requireOrgAuth, asyncRoute(async (req, res) =
     res.json(result.settings);
 }));
 
-// PUT /orgs/:orgId/api-keys/policy — whether members' own keys may be used
-// for a provider the organization has no key for (owner or admin).
-// Declared before /:provider so "policy" is never read as a provider name.
+// PUT /orgs/:orgId/member-data-policy — whether members may export, and
+// bulk-delete, their own work in the organization (owners only).
 orgsRouter.put(
-    "/:orgId/api-keys/policy",
+    "/:orgId/member-data-policy",
     requireOrgAuth,
     requireMfaIfEnrolled,
     asyncRoute(async (req, res) => {
         const db = createServerSupabase();
-        const result = await setOrgPersonalApiKeysAllowed(db, {
+        const result = await setOrgMemberDataPolicy(db, {
             actorId: res.locals.userId as string,
             actorEmail: res.locals.userEmail as string | undefined,
             orgId: req.params.orgId,
-            allowed: req.body?.allow_personal_api_keys,
+            allowExports: req.body?.allow_member_exports,
+            allowDeletes: req.body?.allow_member_deletes,
         });
         if (!result.ok) return sendOrgFailure(res, result);
-        res.json(result.settings);
+        res.json(result.policy);
     }),
 );
 

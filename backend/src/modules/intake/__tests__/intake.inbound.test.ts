@@ -27,7 +27,7 @@ vi.mock("../intake.inboundPayload", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../intake.inboundPayload")>()),
   MAX_ATTACHMENT_BYTES: 64,
 }));
-vi.mock("../../user/user.service", () => ({
+vi.mock("../../../lib/providerCredentials/index", () => ({
   getEffectiveApiKeys: vi.fn(),
   envApiKeys: vi.fn(() => ({})),
 }));

@@ -6,7 +6,7 @@ import { Modal, type ModalAction } from "@/app/components/modals/Modal";
 import { ModalTextarea } from "@/app/components/modals/ModalTextarea";
 import { TABLE_CHECKBOX_CLASS } from "@/app/components/shared/TablePrimitive";
 import { FieldLabel } from "@/app/components/ui/form-field";
-import { ToggleSwitchUI } from "@/shared/ui/ToggleSwitchUI";
+import { ToggleSwitchUI } from "@mike/ui";
 import {
   intakeAudience,
   intakeDocumentsUnavailable,

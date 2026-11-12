@@ -1,3 +1,6 @@
+/** Boundary that has taken responsibility for reporting or handling a failure. */
+export type ReportingOwner = "backend";
+
 // Authored wire contracts. No server, browser, UI or storage dependencies.
 
 export type TabularReviewHistoryStatus = {
@@ -540,6 +543,14 @@ export type AssistantEvent =
        * "invalid_api_key": the provider rejected the caller's key.
        */
       code?: AssistantErrorCode;
+      /**
+       * The server's request id for the turn that failed (also the
+       * X-Request-ID header), so a user can quote it to support. Only on the
+       * terminal error frame a route writes; never on a persisted event.
+       */
+      request_id?: string;
+      /** Reporting responsibility, not confirmation of telemetry delivery. Absent on older servers. */
+      reporting_owner?: ReportingOwner;
     };
 
 export type AssistantErrorCode = "invalid_api_key";
@@ -570,6 +581,13 @@ export type WordEditResolutionStatus = "accepted" | "rejected";
 export type GoogleWorkspaceProvider = 'gmail' | 'google-calendar';
 export interface GoogleDriveStatus {
     configured: boolean;
+    /**
+     * False when the operator switched Drive off for the deployment
+     * (GOOGLE_WORKSPACE_DISABLED_PROVIDERS): Discover does not offer it, new
+     * connections and Picker sessions are refused, and the assistant has none
+     * of its tools.
+     */
+    available: boolean;
     schemaReady?: boolean;
     connected: boolean;
     scope: string | null;
@@ -623,6 +641,23 @@ export interface GoogleWorkspaceStatus {
     grantId?: string;
     accountEmail?: string;
     redirectUri: string | null;
+}
+/** The CourtListener connector in one workspace (GET /user/integrations/courtlistener). */
+export interface CourtListenerConnectorStatus {
+    /** The workspace's on/off switch for US case law research. */
+    enabled: boolean;
+    /**
+     * Listed under Installed: switched on with a usable token here (the
+     * user's or the organization's) or the deployment's bulk index, or the
+     * user has saved their own token here. Otherwise it is offered in Discover.
+     */
+    installed: boolean;
+    /** The user saved their own token for this workspace. */
+    ownToken: boolean;
+    /** Whose token lookups run on: the user's own or their organization's. */
+    tokenSource: "user" | "org" | null;
+    /** The deployment answers lookups from its bulk index. */
+    bulkData: boolean;
 }
 /** A built-in connector tool and whether the user has switched it on. */
 export interface NativeConnectorTool {

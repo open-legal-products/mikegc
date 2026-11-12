@@ -52,8 +52,8 @@ vi.mock("@/app/lib/userFacingError", async (importOriginal) => ({
   notifyError: mocks.notify,
   notifySuccess: mocks.success,
 }));
-vi.mock("@/shared/lib/errorNotifier", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("@/shared/lib/errorNotifier")>()),
+vi.mock("@mike/client", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@mike/client")>()),
   notifySuccess: mocks.success,
 }));
 vi.mock("next/navigation", () => ({

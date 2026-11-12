@@ -7,9 +7,9 @@ import { SettingsRow } from "@/app/components/settings/SettingsRow";
 import { SettingsTextInput } from "@/app/components/settings/SettingsTextInput";
 import { notifyError } from "@/app/lib/userFacingError";
 import { cn } from "@/app/lib/utils";
-import { TextButtonUI } from "@/shared/ui/TextButtonUI";
-import { TextSlabUI } from "@/shared/ui/TextSlabUI";
-import { ToggleSwitchUI } from "@/shared/ui/ToggleSwitchUI";
+import { TextButtonUI } from "@mike/ui";
+import { TextSlabUI } from "@mike/ui";
+import { ToggleSwitchUI } from "@mike/ui";
 
 /**
  * The fields intake's settings are built from, on the page's cards and in

@@ -6,14 +6,10 @@ import quickActionsIcon from "../../../../public/icons/features/quick-actions.sv
 import { MoreHorizontal } from "lucide-react";
 import { useAuth } from "@/app/contexts/AuthContext";
 import { useUserProfile } from "@/app/contexts/UserProfileContext";
-import { MikeIcon } from "@/shared/ui/MikeIconUI";
+import { MikeIcon, LIQUID_GLASS_HOVER_CLASS, LIQUID_GLASS_SUBTLE_CLASS } from "@mike/ui";
 import { ChatInput, type ChatInputHandle } from "./ChatInput";
 import type { PickedIntakeRequest } from "../intake/IntakeRequestPickerModal";
 import type { Document, Message, QuickAction } from "../shared/types";
-import {
-    LIQUID_GLASS_HOVER_CLASS,
-    LIQUID_GLASS_SUBTLE_CLASS,
-} from "@/shared/ui/LiquidGlassUI";
 
 interface InitialViewProps {
     onSubmit: (message: Message) => void;

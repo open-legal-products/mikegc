@@ -15,3 +15,12 @@ Used to identify their respective optional integrations and intake channels.
 Served locally so viewing Settings does not send a request to Google or
 Microsoft. Google and Microsoft product marks remain the property of their
 owners; they are not Mike artwork.
+Used to identify their respective optional integrations. Served locally so
+viewing Settings does not send a request to Google. Google product marks
+remain the property of Google; they are not Mike artwork.
+
+`courtlistener.svg` is CourtListener's favicon, unmodified, from Free Law
+Project's CourtListener repository
+(`cl/assets/static-global/svg/favicon.svg` at
+https://github.com/freelawproject/courtlistener). The CourtListener mark
+belongs to Free Law Project.

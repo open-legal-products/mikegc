@@ -20,8 +20,8 @@ import { PageHeader } from "@/app/components/shared/PageHeader";
 import { EmptyState } from "@/app/components/ui/empty-state";
 import { FormTextInput } from "@/app/components/ui/form-field";
 import { cn } from "@/app/lib/utils";
-import { GlassCardUI } from "@/shared/ui/GlassCardUI";
-import { PillButtonUI } from "@/shared/ui/PillButtonUI";
+import { GlassCardUI } from "@mike/ui";
+import { PillButtonUI } from "@mike/ui";
 import { DetailColumns } from "./IntakeDetail";
 import {
   AssigneeField,

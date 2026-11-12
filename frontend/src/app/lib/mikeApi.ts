@@ -1,3 +1,6 @@
+import { BACKEND_REPORTING_OWNER } from "@mike/client";
+import type { Operation } from "@mike/client";
+import { settleWithConcurrency } from "@mike/client";
 import type {
     TabularReviewHistoryStatus,
     AuditActor,
@@ -44,10 +47,11 @@ export type {
 import { isPanelDocument } from "@/app/components/shared/types";
 import { authenticatedFetch } from "@/app/lib/authEvents";
 import { notifyTabularReviewsChanged } from "@/app/lib/tabularReviewChanges";
-import type { RouterProfileLists } from "@/shared/lib/modelCatalog";
+import type { RouterProfileLists } from "@mike/client";
+import { reportedUpstreamMessage } from "@mike/client";
 import {
-    markErrorHandled,
     reportApiFailure,
+    reportError,
     reportNetworkFailure,
     trackPendingRequest,
 } from "@/app/lib/errorReporting";
@@ -55,6 +59,7 @@ import {
     UploadBatchError,
     createControlRequestRetryPolicy,
     failedUploadMessage,
+    uploadOutcomeNeedsRetry,
     firstUploadResult,
     uploadFilesWithSessionCore,
     type UploadOutcome,
@@ -62,7 +67,7 @@ import {
     type UploadProgressStatus,
     type UploadSessionInput,
     type UploadSessionPurpose,
-} from "@/shared/api/uploadSessionClient";
+} from "@mike/client";
 // The role vocabulary is defined once, next to the capability matrix that
 // gives it meaning, and re-exported here so API consumers do not need two
 // imports to describe one row.
@@ -102,7 +107,7 @@ import type {
 } from "@/app/components/shared/types";
 
 export { UploadBatchError };
-export { failedUploadMessage };
+export { failedUploadMessage, uploadOutcomeNeedsRetry };
 export type {
     UploadOutcome,
     UploadProgress,
@@ -144,25 +149,20 @@ export const API_BASE = "/api";
  * never got an HTTP response) is reported once, tagged with the endpoint,
  * before it propagates as the bare TypeError the browser throws.
  */
-const apiFetch: typeof fetch = async (input, init) => {
+const apiFetch = async (input: RequestInfo | URL, init?: RequestInit, operation?: Operation): Promise<Response> => {
     const release = trackPendingRequest();
     try {
         return await authenticatedFetch(input, init);
     } catch (error) {
         // Stopping a stream or leaving a screen is expected. Abort reasons
         // may be arbitrary values, so the signal also covers custom reasons.
-        if (
-            init?.signal?.aborted ||
-            (typeof error === "object" &&
-                error !== null &&
-                "name" in error &&
-                error.name === "AbortError")
-        ) {
+        if (init?.signal?.aborted) {
             throw error;
         }
         reportNetworkFailure(error, {
             method: init?.method ?? "GET",
             url: String(input),
+            operation,
         });
         throw error;
     } finally {
@@ -178,57 +178,37 @@ export class MikeApiError extends Error {
     status: number;
     code: string | null;
     requestId: string | null;
+    reportingOwner?: typeof BACKEND_REPORTING_OWNER;
 
     constructor(args: {
         message: string;
         status: number;
         code?: string | null;
         requestId?: string | null;
+        reportingOwner?: typeof BACKEND_REPORTING_OWNER;
     }) {
         super(args.message);
         this.name = "MikeApiError";
         this.status = args.status;
         this.code = args.code ?? null;
         this.requestId = args.requestId ?? null;
+        this.reportingOwner = args.reportingOwner;
     }
 }
 
 export const INTERNAL_ERROR_MESSAGE = "Something went wrong. Please try again.";
 export const MALFORMED_ERROR_RESPONSE_MESSAGE =
     "The request could not be completed. Please try again.";
-/**
- * The backend's answer when its database is missing a migration (PGRST202/
- * 204/205, 42P01). Unlike other 5xx it tells the user something actionable
- * — contact whoever runs the server — so it is shown instead of the generic
- * fallback (see userFacingApiError).
- */
-export const SCHEMA_OUT_OF_DATE_CODE = "schema_out_of_date";
-export const SCHEMA_OUT_OF_DATE_MESSAGE =
-    "The server's database needs an update before this can load. Please contact your administrator.";
-/**
- * The Next gateway's answer (503, Retry-After) when it cannot reach the
- * backend at all (ECONNREFUSED and friends). The gateway reports it once
- * per outage; the user can only wait and retry.
- */
-export const UPSTREAM_UNAVAILABLE_CODE = "upstream_unavailable";
-export const UPSTREAM_UNAVAILABLE_MESSAGE =
-    "The server is temporarily unreachable. Please try again shortly.";
-/**
- * 5xx codes that the server side (backend or gateway) has already reported
- * to Sentry, and that carry a message worth showing instead of the generic
- * fallback. The browser shows the message and does not report them again.
- */
-const REPORTED_UPSTREAM_MESSAGES: Readonly<Record<string, string>> = {
-    [SCHEMA_OUT_OF_DATE_CODE]: SCHEMA_OUT_OF_DATE_MESSAGE,
-    [UPSTREAM_UNAVAILABLE_CODE]: UPSTREAM_UNAVAILABLE_MESSAGE,
-};
-
-/** The fixed user-facing message for a server-reported code, or null. */
-export function reportedUpstreamMessage(code: string): string | null {
-    return Object.hasOwn(REPORTED_UPSTREAM_MESSAGES, code)
-        ? REPORTED_UPSTREAM_MESSAGES[code]
-        : null;
-}
+// The 5xx codes the server side already reported, and their fixed messages,
+// are shared with the Word add-in (packages/client); they are re-exported
+// here because API consumers know them as mikeApi's answers.
+export {
+    SCHEMA_OUT_OF_DATE_CODE,
+    SCHEMA_OUT_OF_DATE_MESSAGE,
+    UPSTREAM_UNAVAILABLE_CODE,
+    UPSTREAM_UNAVAILABLE_MESSAGE,
+    reportedUpstreamMessage,
+} from "@mike/client";
 
 export function isMfaRequiredError(error: unknown) {
     return (
@@ -238,7 +218,7 @@ export function isMfaRequiredError(error: unknown) {
     );
 }
 
-async function apiRequest<T>(path: string, init?: RequestInit): Promise<T> {
+async function apiRequest<T>(operation: Operation, path: string, init?: RequestInit): Promise<T> {
     const { headers: initHeaders, ...restInit } = init ?? {};
     const response = await apiFetch(`${API_BASE}${path}`, {
         cache: "no-store",
@@ -247,10 +227,10 @@ async function apiRequest<T>(path: string, init?: RequestInit): Promise<T> {
             Accept: "application/json",
             ...(initHeaders as Record<string, string> | undefined),
         },
-    });
+    }, operation);
 
     if (!response.ok) {
-        throw await toApiError(response, path, restInit.method ?? "GET");
+        throw await toApiError(response, path, restInit.method ?? "GET", operation);
     }
 
     if (
@@ -283,8 +263,9 @@ export async function uploadFilesWithSession<T>(args: {
     return uploadFilesWithSessionCore<T>({
         ...args,
         transport: {
-            apiRequest,
+            apiRequest: <R>(path: string, init?: RequestInit) => apiRequest<R>("upload_session.control", path, init),
             fetchStorage: (...fetchArgs) => fetch(...fetchArgs),
+            reportStorageFailure: reportError,
             shouldRetryControlRequest: createControlRequestRetryPolicy(
                 (error) =>
                     error instanceof MikeApiError
@@ -295,7 +276,7 @@ export async function uploadFilesWithSession<T>(args: {
     });
 }
 
-async function apiBlobRequest(path: string): Promise<{
+async function apiBlobRequest(operation: Operation, path: string): Promise<{
     blob: Blob;
     filename: string | null;
 }> {
@@ -304,10 +285,10 @@ async function apiBlobRequest(path: string): Promise<{
         headers: {
             Accept: "application/json",
         },
-    });
+    }, operation);
 
     if (!response.ok) {
-        throw await toApiError(response, path);
+        throw await toApiError(response, path, "GET", operation);
     }
 
     const disposition = response.headers.get("content-disposition") ?? "";
@@ -322,10 +303,12 @@ async function toApiError(
     response: Response,
     path: string,
     method = "GET",
+    operation?: Operation,
 ) {
     const text = await response.text();
     try {
         const parsed = JSON.parse(text) as {
+            reporting_owner?: unknown;
             detail?: unknown;
             code?: unknown;
             request_id?: unknown;
@@ -341,28 +324,15 @@ async function toApiError(
             requestId,
         });
         const code = typeof parsed.code === "string" ? parsed.code : null;
+        // A code the backend or gateway already reported carries our fixed
+        // sentence for it (never the body's `detail`); reportApiFailure
+        // below only marks it, so no screen files it a second time.
         const upstreamMessage = code ? reportedUpstreamMessage(code) : null;
-        if (upstreamMessage) {
-            // The backend (schema_out_of_date) or the gateway
-            // (upstream_unavailable) has already reported this failure once,
-            // with detail the browser cannot see. A browser copy would be one
-            // more event per endpoint per page view for the same incident —
-            // the per-route fan-out again — so it is only marked: a screen's
-            // console.error of it is not bridged either. The message is
-            // ours, not the body's `detail`.
-            const upstreamError = new MikeApiError({
-                status: response.status,
-                code,
-                requestId,
-                message: upstreamMessage,
-            });
-            markErrorHandled(upstreamError);
-            return upstreamError;
-        }
         const apiError = new MikeApiError({
             status: response.status,
             code,
             requestId,
+            ...(parsed.reporting_owner === BACKEND_REPORTING_OWNER ? { reportingOwner: BACKEND_REPORTING_OWNER } : {}),
             // A 4xx whose body carries no usable `detail` is a malformed
             // error response, and it is treated as one. `API error: 409` used
             // to be produced here instead — and because a 4xx message is the
@@ -372,23 +342,26 @@ async function toApiError(
             // already has the right sentence for "the server did not tell us
             // what went wrong"; this arm now uses it too.
             message:
-                response.status >= 500
+                upstreamMessage ??
+                (response.status >= 500
                     ? INTERNAL_ERROR_MESSAGE
                     : typeof parsed.detail === "string" && parsed.detail
                       ? parsed.detail
-                      : MALFORMED_ERROR_RESPONSE_MESSAGE,
+                      : MALFORMED_ERROR_RESPONSE_MESSAGE),
         });
         // 4xx are intentional answers (validation, permissions) and are
         // shown to the user; 5xx are failures worth an alert, correlated to
         // the backend's own event by request id.
         if (response.status >= 500) {
             reportApiFailure({
+                operation,
                 path,
                 method,
                 status: response.status,
                 code: apiError.code,
                 requestId,
                 error: apiError,
+                reportingOwner: apiError.reportingOwner,
             });
         }
         return apiError;
@@ -413,6 +386,7 @@ async function toApiError(
                 status: response.status,
                 requestId: apiError.requestId,
                 error: apiError,
+                reportingOwner: apiError.reportingOwner,
             });
         }
         return apiError;
@@ -434,19 +408,19 @@ export async function listProjects(options?: {
     if (options?.workspace) params.set("workspace", options.workspace);
     // Workspace filters select the paginated backend overload. Pickers still
     // need the full list, including projects beyond its default first page.
-    if (options?.workspace && !options.participatingOnly) {
+    if (options?.includeDocuments || (options?.workspace && !options.participatingOnly)) {
         const projects: Project[] = [];
         const pageSize = 100;
         params.set("limit", String(pageSize));
         for (;;) {
             params.set("offset", String(projects.length));
-            const page = await apiRequest<Project[]>(`/projects?${params.toString()}`);
+            const page = await apiRequest<Project[]>("projects.manage", `/projects?${params.toString()}`);
             projects.push(...page);
             if (page.length < pageSize) return projects;
         }
     }
     const query = params.size ? `?${params.toString()}` : "";
-    return apiRequest<Project[]>(`/projects${query}`);
+    return apiRequest<Project[]>("projects.manage", `/projects${query}`);
 }
 
 // Paginated overview sibling of listProjects(), used by ProjectsOverview.tsx.
@@ -488,7 +462,7 @@ export async function listProjectsPage(pagination?: {
     if (pagination?.workspace) params.set("workspace", pagination.workspace);
 
     const qs = params.toString() ? `?${params.toString()}` : "";
-    return apiRequest<Project[]>(`/projects${qs}`, {
+    return apiRequest<Project[]>("projects.manage", `/projects${qs}`, {
         signal: pagination?.signal,
     });
 }
@@ -506,7 +480,7 @@ export async function listProjectSummaries(pagination?: {
         params.set("offset", String(pagination.offset));
     params.set("view", "summary");
     if (pagination?.workspace) params.set("workspace", pagination.workspace);
-    return apiRequest<Project[]>(`/projects?${params.toString()}`, {
+    return apiRequest<Project[]>("projects.manage", `/projects?${params.toString()}`, {
         signal: pagination?.signal,
     });
 }
@@ -533,7 +507,7 @@ export async function getProjectDirectoryLevel(
     if (options?.offset != null) params.set("offset", String(options.offset));
     const query = params.toString();
     return apiRequest<ProjectDirectoryLevel>(
-        `/projects/${projectId}/directory${query ? `?${query}` : ""}`,
+        "projects.manage", `/projects/${projectId}/directory${query ? `?${query}` : ""}`,
         {
             signal: options?.signal,
         },
@@ -555,7 +529,7 @@ export async function searchProjectDirectory(options: {
     if (options.limit != null) params.set("limit", String(options.limit));
     if (options.offset != null) params.set("offset", String(options.offset));
     if (options.workspace) params.set("workspace", options.workspace);
-    return apiRequest<Project[]>(`/projects?${params}`, {
+    return apiRequest<Project[]>("projects.manage", `/projects?${params}`, {
         signal: options.signal,
     });
 }
@@ -584,7 +558,7 @@ export async function listProjectIds(options?: {
     if (options?.workspace) params.set("workspace", options.workspace);
 
     const qs = params.toString() ? `?${params.toString()}` : "";
-    return apiRequest<{ id: string; user_id: string }[]>(`/projects/ids${qs}`, {
+    return apiRequest<{ id: string; user_id: string }[]>("projects.manage", `/projects/ids${qs}`, {
         signal: options?.signal,
     });
 }
@@ -607,7 +581,7 @@ export async function getProjectFilterOptions(
     const qs = workspace
         ? `?${new URLSearchParams({ workspace }).toString()}`
         : "";
-    return apiRequest<ProjectFilterOptions>(`/projects/filter-options${qs}`, {
+    return apiRequest<ProjectFilterOptions>("projects.manage", `/projects/filter-options${qs}`, {
         signal,
     });
 }
@@ -620,7 +594,7 @@ export async function createProject(
     memory_enabled?: boolean,
     visibility?: ContentVisibility,
 ): Promise<Project> {
-    return apiRequest<Project>("/projects", {
+    return apiRequest<Project>("projects.manage", "/projects", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -635,23 +609,36 @@ export async function createProject(
 }
 
 export async function deleteAccount(): Promise<void> {
-    return apiRequest<void>("/user/account", { method: "DELETE" });
+    return apiRequest<void>("account.delete", "/user/account", { method: "DELETE" });
 }
 
-export async function deleteAllChats(): Promise<void> {
-    return apiRequest<void>("/user/chats", { method: "DELETE" });
+// Settings' "Delete all" actions clear one workspace: `workspace` is
+// "personal" or an organization id; omitted, the server deletes in Personal.
+
+export async function deleteAllChats(workspace?: string): Promise<void> {
+    return apiRequest<void>("chat.turn", workspacePath("/user/chats", workspace), {
+        method: "DELETE",
+    });
 }
 
-export async function deleteAllProjects(): Promise<void> {
-    return apiRequest<void>("/user/projects", { method: "DELETE" });
+export async function deleteAllProjects(workspace?: string): Promise<void> {
+    return apiRequest<void>("projects.manage", workspacePath("/user/projects", workspace), {
+        method: "DELETE",
+    });
 }
 
-export async function deleteAllTabularReviews(): Promise<void> {
-    return apiRequest<void>("/user/tabular-reviews", { method: "DELETE" });
+export async function deleteAllTabularReviews(
+    workspace?: string,
+): Promise<void> {
+    return apiRequest<void>("tabular.run", workspacePath("/user/tabular-reviews", workspace), {
+        method: "DELETE",
+    });
 }
 
-export async function deleteAllMemories(): Promise<void> {
-    return apiRequest<void>("/user/memories", { method: "DELETE" });
+export async function deleteAllMemories(workspace?: string): Promise<void> {
+    return apiRequest<void>("memory.update", workspacePath("/user/memories", workspace), {
+        method: "DELETE",
+    });
 }
 
 export type MemoryStatus = "idle" | "scheduled" | "processing" | "failed";
@@ -672,11 +659,12 @@ export interface MemoryCurrent {
 }
 
 /**
- * The caller's own memory. They have one per workspace — Personal, and one
- * for each organization they belong to — each private to them. `workspace`
- * names which ("personal" or an organization id); omitted, it is Personal.
+ * `path` for one of the caller's workspaces: "personal" or an organization
+ * id. Omitted, the endpoint takes Personal. The caller's own memory is one
+ * per workspace — Personal, and one for each organization they belong to —
+ * each private to them.
  */
-function userMemoryPath(path: string, workspace?: string): string {
+function workspacePath(path: string, workspace?: string): string {
     return workspace
         ? `${path}?${new URLSearchParams({ workspace }).toString()}`
         : path;
@@ -686,7 +674,7 @@ export async function getUserMemory(
     signal?: AbortSignal,
     workspace?: string,
 ): Promise<MemoryCurrent> {
-    return apiRequest<MemoryCurrent>(userMemoryPath("/user/memory", workspace), {
+    return apiRequest<MemoryCurrent>("memory.read", workspacePath("/user/memory", workspace), {
         signal,
     });
 }
@@ -696,7 +684,7 @@ export async function updateUserMemory(
     expectedRevision: number,
     workspace?: string,
 ): Promise<MemoryCurrent> {
-    return apiRequest<MemoryCurrent>(userMemoryPath("/user/memory", workspace), {
+    return apiRequest<MemoryCurrent>("memory.update", workspacePath("/user/memory", workspace), {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -711,7 +699,7 @@ export async function setUserMemoryEnabled(
     workspace?: string,
 ): Promise<MemoryCurrent> {
     return apiRequest<MemoryCurrent>(
-        userMemoryPath("/user/memory/settings", workspace),
+        "memory.update", workspacePath("/user/memory/settings", workspace),
         {
             method: "PATCH",
             headers: { "Content-Type": "application/json" },
@@ -725,7 +713,7 @@ export async function getProjectMemory(
     signal?: AbortSignal,
 ): Promise<MemoryCurrent> {
     return apiRequest<MemoryCurrent>(
-        `/projects/${encodeURIComponent(projectId)}/memory`,
+        "memory.read", `/projects/${encodeURIComponent(projectId)}/memory`,
         { signal },
     );
 }
@@ -736,7 +724,7 @@ export async function updateProjectMemory(
     expectedRevision: number,
 ): Promise<MemoryCurrent> {
     return apiRequest<MemoryCurrent>(
-        `/projects/${encodeURIComponent(projectId)}/memory`,
+        "memory.update", `/projects/${encodeURIComponent(projectId)}/memory`,
         {
             method: "PUT",
             headers: { "Content-Type": "application/json" },
@@ -753,7 +741,7 @@ export async function setProjectMemoryEnabled(
     enabled: boolean,
 ): Promise<MemoryCurrent> {
     return apiRequest<MemoryCurrent>(
-        `/projects/${encodeURIComponent(projectId)}/memory/settings`,
+        "memory.update", `/projects/${encodeURIComponent(projectId)}/memory/settings`,
         {
             method: "PATCH",
             headers: { "Content-Type": "application/json" },
@@ -792,7 +780,7 @@ export async function startUserExport(
     type: UserExportType,
     params?: Record<string, unknown>,
 ): Promise<{ export_id: string }> {
-    return apiRequest<{ export_id: string }>("/user/exports", {
+    return apiRequest<{ export_id: string }>("export.build", "/user/exports", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(params ? { type, params } : { type }),
@@ -803,7 +791,7 @@ export async function getUserExportStatus(
     exportId: string,
 ): Promise<UserExportStatus> {
     return apiRequest<UserExportStatus>(
-        `/user/exports/${encodeURIComponent(exportId)}`,
+        "export.build", `/user/exports/${encodeURIComponent(exportId)}`,
     );
 }
 
@@ -812,7 +800,7 @@ export async function downloadUserExport(exportId: string): Promise<{
     filename: string | null;
 }> {
     return apiBlobRequest(
-        `/user/exports/${encodeURIComponent(exportId)}/download`,
+        "export.build", `/user/exports/${encodeURIComponent(exportId)}/download`,
     );
 }
 
@@ -858,18 +846,23 @@ export interface UserProfile extends RouterProfileLists {
     lastSelectedChatModel: string | null;
     lastSelectedReasoningLevel: NonNullable<Message["reasoning"]>;
     mfaOnLogin: boolean;
-    legalResearchUs: boolean;
+    /**
+     * The deployment answers CourtListener lookups from its bulk index, so
+     * the connector is installed for everyone without a token.
+     */
+    courtlistenerBulkData?: boolean;
     quickActionsVisible: boolean;
     /** Whether responses and subagents show the model, effort and tokens they used. */
     responseDetailsVisible?: boolean;
     darkMode: boolean;
     projectMemoryDefault: boolean;
-    apiKeyStatus: ApiKeyStatus;
+    /** Absent only when a forked server or a proxy/misroute answers; see `hasApiKeyStatus`. */
+    apiKeyStatus?: ApiKeyStatus;
 }
 
 /** Uploads a cropped profile-photo data URL, or removes the current photo when passed null. */
 export async function setUserProfilePhoto(photo: string | null): Promise<{ profilePhoto: string | null }> {
-    return apiRequest("/user/profile/photo", photo === null
+    return apiRequest("settings.profile", "/user/profile/photo", photo === null
         ? { method: "DELETE" }
         : {
             method: "PUT",
@@ -945,7 +938,7 @@ export async function getAuditHistory(
     if (params.sortBy) qs.set("sort_by", params.sortBy);
     if (params.sortDirection) qs.set("sort_dir", params.sortDirection);
     if (params.page) qs.set("page", String(params.page));
-    return apiRequest(`/audit?${qs.toString()}`, { signal });
+    return apiRequest("audit.read", `/audit?${qs.toString()}`, { signal });
 }
 
 /** Search the people represented in an organization's audit log, one page at a time. */
@@ -956,18 +949,18 @@ export async function getAuditActors(
     const qs = new URLSearchParams({ org_id: params.orgId });
     if (params.search) qs.set("q", params.search);
     if (params.offset) qs.set("offset", String(params.offset));
-    return apiRequest(`/audit/actors?${qs.toString()}`, { signal });
+    return apiRequest("audit.read", `/audit/actors?${qs.toString()}`, { signal });
 }
 
 export async function getUserProfile(): Promise<UserProfile> {
-    return apiRequest<UserProfile>("/user/profile");
+    return apiRequest<UserProfile>("settings.profile", "/user/profile");
 }
 
 export async function lookupUserByEmail(
     email: string,
 ): Promise<UserLookupResult> {
     return apiRequest<UserLookupResult>(
-        `/user/lookup?email=${encodeURIComponent(email)}`,
+        "settings.profile", `/user/lookup?email=${encodeURIComponent(email)}`,
     );
 }
 
@@ -985,13 +978,12 @@ export async function updateUserProfile(payload: {
     subagentReasoning?: NonNullable<Message["reasoning"]> | null;
     lastSelectedChatModel?: string | null;
     lastSelectedReasoningLevel?: NonNullable<Message["reasoning"]>;
-    legalResearchUs?: boolean;
     quickActionsVisible?: boolean;
     responseDetailsVisible?: boolean;
     darkMode?: boolean;
     projectMemoryDefault?: boolean;
 } & Partial<RouterProfileLists>): Promise<UserProfile> {
-    return apiRequest<UserProfile>("/user/profile", {
+    return apiRequest<UserProfile>("settings.profile", "/user/profile", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
@@ -1005,7 +997,7 @@ export interface CustomInstructions {
 export async function getCustomInstructions(
     signal?: AbortSignal,
 ): Promise<CustomInstructions> {
-    return apiRequest<CustomInstructions>("/user/custom-instructions", {
+    return apiRequest<CustomInstructions>("settings.profile", "/user/custom-instructions", {
         signal,
     });
 }
@@ -1013,7 +1005,7 @@ export async function getCustomInstructions(
 export async function updateCustomInstructions(
     content: string,
 ): Promise<CustomInstructions> {
-    return apiRequest<CustomInstructions>("/user/custom-instructions", {
+    return apiRequest<CustomInstructions>("settings.profile", "/user/custom-instructions", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ content }),
@@ -1073,14 +1065,14 @@ export type ResponseStyle = {
 export async function getResponseStyle(
     signal?: AbortSignal,
 ): Promise<ResponseStyle> {
-    return apiRequest<ResponseStyle>("/user/response-style", { signal });
+    return apiRequest<ResponseStyle>("settings.profile", "/user/response-style", { signal });
 }
 
 /** Sends only the changed fields; the response is the full saved style. */
 export async function updateResponseStyle(
     update: Partial<ResponseStyle>,
 ): Promise<ResponseStyle> {
-    return apiRequest<ResponseStyle>("/user/response-style", {
+    return apiRequest<ResponseStyle>("settings.profile", "/user/response-style", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(update),
@@ -1106,13 +1098,13 @@ export type WebSearchSettings = {
 export async function getWebSearchSettings(
     signal?: AbortSignal,
 ): Promise<WebSearchSettings> {
-    return apiRequest<WebSearchSettings>("/user/web-search", { signal });
+    return apiRequest<WebSearchSettings>("settings.profile", "/user/web-search", { signal });
 }
 
 export async function updateWebSearchSettings(
     update: Partial<WebSearchSettings>,
 ): Promise<WebSearchSettings> {
-    return apiRequest<WebSearchSettings>("/user/web-search", {
+    return apiRequest<WebSearchSettings>("settings.profile", "/user/web-search", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(update),
@@ -1122,7 +1114,7 @@ export async function updateWebSearchSettings(
 export async function completeUserOnboarding(
     payload: PersonalisationDetails = {},
 ): Promise<UserProfile> {
-    return apiRequest<UserProfile>("/user/onboarding", {
+    return apiRequest<UserProfile>("settings.profile", "/user/onboarding", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
@@ -1130,7 +1122,7 @@ export async function completeUserOnboarding(
 }
 
 export async function syncUserPasswordSet(): Promise<UserProfile> {
-    return apiRequest<UserProfile>("/user/security/password-set", {
+    return apiRequest<UserProfile>("settings.profile", "/user/security/password-set", {
         method: "POST",
     });
 }
@@ -1138,7 +1130,7 @@ export async function syncUserPasswordSet(): Promise<UserProfile> {
 export async function updateUserMfaOnLogin(
     enabled: boolean,
 ): Promise<UserProfile> {
-    return apiRequest<UserProfile>("/user/security/mfa-login", {
+    return apiRequest<UserProfile>("settings.profile", "/user/security/mfa-login", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ enabled }),
@@ -1222,14 +1214,14 @@ export interface RouterCatalogModel {
 
 export async function getOllamaModels(): Promise<OllamaModelOption[]> {
     const { models } = await apiRequest<{ models: OllamaModelOption[] }>(
-        "/models/ollama",
+        "settings.keys", "/models/ollama",
     );
     return models;
 }
 
 export async function getConfiguredModels(): Promise<ConfiguredModelOption[]> {
     const { models } = await apiRequest<{ models: ConfiguredModelOption[] }>(
-        "/models/configured",
+        "settings.keys", "/models/configured",
     );
     return models;
 }
@@ -1247,7 +1239,7 @@ async function getProviderCatalog(
         ? `?workspace=${encodeURIComponent(workspace)}`
         : "";
     const { models } = await apiRequest<{ models: RouterCatalogModel[] }>(
-        `/models/${provider}${query}`,
+        "settings.keys", `/models/${provider}${query}`,
     );
     return models;
 }
@@ -1298,7 +1290,7 @@ export async function saveApiKey(
     apiKey: string | null,
     settings?: ApiKeySettings[keyof ApiKeySettings],
 ): Promise<ApiKeyStatus> {
-    return apiRequest<ApiKeyStatus>(`/user/api-keys/${provider}`, {
+    return apiRequest<ApiKeyStatus>("settings.keys", `/user/api-keys/${provider}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(
@@ -1311,7 +1303,7 @@ export async function setApiKeyEnabled(
     provider: ApiKeyProvider,
     enabled: boolean,
 ): Promise<ApiKeyStatus> {
-    return apiRequest<ApiKeyStatus>(`/user/api-keys/${provider}`, {
+    return apiRequest<ApiKeyStatus>("settings.keys", `/user/api-keys/${provider}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ enabled }),
@@ -1357,29 +1349,52 @@ export interface McpConnectorCreateResult {
     oauthRequired: boolean;
 }
 
-export async function listMcpConnectors(): Promise<McpConnectorSummary[]> {
-    return apiRequest<McpConnectorSummary[]>("/user/mcp-connectors");
+/**
+ * A connector route in one workspace. A person keeps a separate set of
+ * connections for Personal and for each organization they belong to;
+ * `workspace` names which ("personal" or an organization id). Omitted, the
+ * server reads it as Personal. A workspace the caller has left answers 404
+ * `workspace_not_found`.
+ */
+function connectorPath(path: string, workspace?: string): string {
+    return workspace
+        ? `${path}?${new URLSearchParams({ workspace }).toString()}`
+        : path;
+}
+
+export async function listMcpConnectors(
+    workspace?: string,
+): Promise<McpConnectorSummary[]> {
+    return apiRequest<McpConnectorSummary[]>(
+        "settings.connectors", connectorPath("/user/mcp-connectors", workspace),
+    );
 }
 
 export async function getMcpConnector(
     connectorId: string,
 ): Promise<McpConnectorSummary> {
     return apiRequest<McpConnectorSummary>(
-        `/user/mcp-connectors/${connectorId}`,
+        "settings.connectors", `/user/mcp-connectors/${connectorId}`,
     );
 }
 
-export async function createMcpConnector(payload: {
-    name: string;
-    serverUrl: string;
-    bearerToken?: string | null;
-    headers?: Record<string, string>;
-}): Promise<McpConnectorCreateResult> {
-    return apiRequest<McpConnectorCreateResult>("/user/mcp-connectors", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-    });
+export async function createMcpConnector(
+    payload: {
+        name: string;
+        serverUrl: string;
+        bearerToken?: string | null;
+        headers?: Record<string, string>;
+    },
+    workspace?: string,
+): Promise<McpConnectorCreateResult> {
+    return apiRequest<McpConnectorCreateResult>(
+        "settings.connectors", connectorPath("/user/mcp-connectors", workspace),
+        {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+        },
+    );
 }
 
 export async function updateMcpConnector(
@@ -1395,7 +1410,7 @@ export async function updateMcpConnector(
     },
 ): Promise<McpConnectorSummary> {
     return apiRequest<McpConnectorSummary>(
-        `/user/mcp-connectors/${connectorId}`,
+        "settings.connectors", `/user/mcp-connectors/${connectorId}`,
         {
             method: "PATCH",
             headers: { "Content-Type": "application/json" },
@@ -1405,7 +1420,7 @@ export async function updateMcpConnector(
 }
 
 export async function deleteMcpConnector(connectorId: string): Promise<void> {
-    return apiRequest<void>(`/user/mcp-connectors/${connectorId}`, {
+    return apiRequest<void>("settings.connectors", `/user/mcp-connectors/${connectorId}`, {
         method: "DELETE",
     });
 }
@@ -1414,7 +1429,7 @@ export async function refreshMcpConnectorTools(
     connectorId: string,
 ): Promise<McpConnectorSummary> {
     return apiRequest<McpConnectorSummary>(
-        `/user/mcp-connectors/${connectorId}/refresh-tools`,
+        "settings.connectors", `/user/mcp-connectors/${connectorId}/refresh-tools`,
         { method: "POST" },
     );
 }
@@ -1428,7 +1443,7 @@ export async function startMcpConnectorOAuth(connectorId: string): Promise<{
         authorizationUrl: string | null;
         alreadyAuthorized: boolean;
         callbackOrigin: string;
-    }>(`/user/mcp-connectors/${connectorId}/oauth/start`, { method: "POST" });
+    }>("settings.connectors", `/user/mcp-connectors/${connectorId}/oauth/start`, { method: "POST" });
 }
 
 export async function setMcpToolEnabled(
@@ -1437,7 +1452,7 @@ export async function setMcpToolEnabled(
     enabled: boolean,
 ): Promise<McpConnectorSummary> {
     return apiRequest<McpConnectorSummary>(
-        `/user/mcp-connectors/${connectorId}/tools/${toolId}`,
+        "settings.connectors", `/user/mcp-connectors/${connectorId}/tools/${toolId}`,
         {
             method: "PATCH",
             headers: { "Content-Type": "application/json" },
@@ -1468,51 +1483,72 @@ export function isConnectorSetupError(error: unknown): error is MikeApiError {
     );
 }
 
-export async function getGoogleDriveStatus(): Promise<GoogleDriveStatus> {
-    return apiRequest<GoogleDriveStatus>("/user/integrations/google-drive");
+export async function getGoogleDriveStatus(
+    workspace?: string,
+): Promise<GoogleDriveStatus> {
+    return apiRequest<GoogleDriveStatus>(
+        "google.drive", connectorPath("/user/integrations/google-drive", workspace),
+    );
 }
 
-export async function startGoogleDriveOAuth(): Promise<{
+export async function startGoogleDriveOAuth(workspace?: string): Promise<{
     authorizationUrl: string;
 }> {
     return apiRequest<{ authorizationUrl: string }>(
-        "/user/integrations/google-drive/oauth/start",
+        "google.drive", connectorPath("/user/integrations/google-drive/oauth/start", workspace),
         { method: "POST" },
     );
 }
 
-export async function cancelGoogleDriveOAuth(state: string): Promise<void> {
-    await apiRequest("/user/integrations/google-drive/oauth/cancel", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ state }),
-    });
+export async function cancelGoogleDriveOAuth(
+    state: string,
+    workspace?: string,
+): Promise<void> {
+    await apiRequest(
+        "google.drive", connectorPath("/user/integrations/google-drive/oauth/cancel", workspace),
+        {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ state }),
+        },
+    );
 }
 
-export async function disconnectGoogleDrive(): Promise<void> {
-    return apiRequest<void>("/user/integrations/google-drive", {
-        method: "DELETE",
-    });
+export async function disconnectGoogleDrive(workspace?: string): Promise<void> {
+    return apiRequest<void>(
+        "google.drive", connectorPath("/user/integrations/google-drive", workspace),
+        { method: "DELETE" },
+    );
 }
 
-export async function updateGoogleDriveSettings(settings: {
-    enabled?: boolean;
-    requireWriteApproval?: boolean;
-    readOnly?: boolean;
-}): Promise<GoogleDriveStatus> {
-    return apiRequest<GoogleDriveStatus>("/user/integrations/google-drive", {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(settings),
-    });
+export async function updateGoogleDriveSettings(
+    settings: {
+        enabled?: boolean;
+        requireWriteApproval?: boolean;
+        readOnly?: boolean;
+    },
+    workspace?: string,
+): Promise<GoogleDriveStatus> {
+    return apiRequest<GoogleDriveStatus>(
+        "google.drive", connectorPath("/user/integrations/google-drive", workspace),
+        {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(settings),
+        },
+    );
 }
 
 export async function setGoogleDriveToolEnabled(
     toolName: string,
     enabled: boolean,
+    workspace?: string,
 ): Promise<GoogleDriveStatus> {
     return apiRequest<GoogleDriveStatus>(
-        `/user/integrations/google-drive/tools/${encodeURIComponent(toolName)}`,
+        "google.drive", connectorPath(
+            `/user/integrations/google-drive/tools/${encodeURIComponent(toolName)}`,
+            workspace,
+        ),
         {
             method: "PATCH",
             headers: { "Content-Type": "application/json" },
@@ -1524,16 +1560,78 @@ export async function setGoogleDriveToolEnabled(
 export type GoogleDrivePickerSession =
     import("@mike/contracts").GoogleDrivePickerSession;
 
-/** A short-lived Drive token plus the keys the Google Picker needs. */
-export async function createGoogleDrivePickerSession(): Promise<GoogleDrivePickerSession> {
+/**
+ * A short-lived Drive token plus the keys the Google Picker needs, for the
+ * Drive connection of `workspace`.
+ */
+export async function createGoogleDrivePickerSession(
+    workspace?: string,
+): Promise<GoogleDrivePickerSession> {
     return apiRequest<GoogleDrivePickerSession>(
-        "/user/integrations/google-drive/picker-session",
+        "google.drive", connectorPath(
+            "/user/integrations/google-drive/picker-session",
+            workspace,
+        ),
         { method: "POST" },
     );
 }
 
+// ---------------------------------------------------------------------------
+// CourtListener connector: an on/off switch and an optional own token, both
+// per workspace.
+// ---------------------------------------------------------------------------
+
+export type CourtListenerConnectorStatus =
+    import("@mike/contracts").CourtListenerConnectorStatus;
+
+export async function getCourtListenerConnector(
+    workspace?: string,
+): Promise<CourtListenerConnectorStatus> {
+    return apiRequest<CourtListenerConnectorStatus>(
+        "settings.connectors", connectorPath("/user/integrations/courtlistener", workspace),
+    );
+}
+
+export async function setCourtListenerConnectorEnabled(
+    enabled: boolean,
+    workspace?: string,
+): Promise<CourtListenerConnectorStatus> {
+    return apiRequest<CourtListenerConnectorStatus>(
+        "settings.connectors", connectorPath("/user/integrations/courtlistener", workspace),
+        {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ enabled }),
+        },
+    );
+}
+
+/** Saves the caller's own token; the server also turns the switch on. */
+export async function saveCourtListenerConnectorToken(
+    token: string,
+    workspace?: string,
+): Promise<CourtListenerConnectorStatus> {
+    return apiRequest<CourtListenerConnectorStatus>(
+        "settings.connectors", connectorPath("/user/integrations/courtlistener/token", workspace),
+        {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ token }),
+        },
+    );
+}
+
+export async function deleteCourtListenerConnectorToken(
+    workspace?: string,
+): Promise<CourtListenerConnectorStatus> {
+    return apiRequest<CourtListenerConnectorStatus>(
+        "settings.connectors", connectorPath("/user/integrations/courtlistener/token", workspace),
+        { method: "DELETE" },
+    );
+}
+
 export async function getProject(projectId: string): Promise<Project> {
-    return apiRequest<Project>(`/projects/${projectId}`);
+    return apiRequest<Project>("projects.manage", `/projects/${projectId}`);
 }
 
 export async function updateProject(
@@ -1545,7 +1643,7 @@ export async function updateProject(
         visibility?: ContentVisibility;
     },
 ): Promise<Project> {
-    return apiRequest<Project>(`/projects/${projectId}`, {
+    return apiRequest<Project>("projects.manage", `/projects/${projectId}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
@@ -1553,7 +1651,7 @@ export async function updateProject(
 }
 
 export async function deleteProject(projectId: string): Promise<void> {
-    await apiRequest(`/projects/${projectId}`, { method: "DELETE" });
+    await apiRequest("projects.manage", `/projects/${projectId}`, { method: "DELETE" });
 }
 
 /**
@@ -1596,7 +1694,7 @@ export interface ProjectPeople {
 export async function getProjectPeople(
     projectId: string,
 ): Promise<ProjectPeople> {
-    return apiRequest<ProjectPeople>(`/projects/${projectId}/people`);
+    return apiRequest<ProjectPeople>("projects.manage", `/projects/${projectId}/people`);
 }
 
 // ---------------------------------------------------------------------------
@@ -1649,7 +1747,7 @@ export interface ProjectAccess {
 export async function getProjectAccess(
     projectId: string,
 ): Promise<ProjectAccess> {
-    return apiRequest<ProjectAccess>(`/projects/${projectId}/access`);
+    return apiRequest<ProjectAccess>("projects.manage", `/projects/${projectId}/access`);
 }
 
 /** Create or re-role one recipient (the endpoint upserts, so both are POST). */
@@ -1658,7 +1756,7 @@ export async function grantProjectAccess(
     email: string,
     role: AccessAssignmentRole,
 ): Promise<ProjectGrant> {
-    return apiRequest<ProjectGrant>(`/projects/${projectId}/access`, {
+    return apiRequest<ProjectGrant>("projects.manage", `/projects/${projectId}/access`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ email, role }),
@@ -1670,7 +1768,7 @@ export async function revokeProjectAccess(
     email: string,
 ): Promise<void> {
     await apiRequest(
-        `/projects/${projectId}/access/${encodeURIComponent(email)}`,
+        "projects.manage", `/projects/${projectId}/access/${encodeURIComponent(email)}`,
         { method: "DELETE" },
     );
 }
@@ -1695,6 +1793,13 @@ export interface Org {
     logo_updated_at?: string | null;
     /** Accepted roster size, so a card can say "N members" without a fetch. */
     member_count?: number;
+    /**
+     * Whether members other than owners may export, and bulk-delete, their
+     * own work in this organization from Settings > Privacy & Data. Absent
+     * from a server that predates them, which reads as not allowed.
+     */
+    allow_member_exports?: boolean;
+    allow_member_deletes?: boolean;
 }
 
 /**
@@ -1751,21 +1856,21 @@ export interface OrgInvitation {
 }
 
 export async function listOrgs(): Promise<Org[]> {
-    return apiRequest<Org[]>("/orgs");
+    return apiRequest<Org[]>("organizations.manage", "/orgs");
 }
 
 export type { DeletedOrganization } from "@mike/contracts";
 
 export async function listDeletedOrganizations(): Promise<import("@mike/contracts").DeletedOrganization[]> {
-    return apiRequest("/orgs/deleted");
+    return apiRequest("organizations.manage", "/orgs/deleted");
 }
 
 export async function restoreOrganization(orgId: string): Promise<void> {
-    await apiRequest(`/orgs/${orgId}/restore`, { method: "POST" });
+    await apiRequest("organizations.manage", `/orgs/${orgId}/restore`, { method: "POST" });
 }
 
 export async function createOrg(name: string): Promise<Org> {
-    return apiRequest<Org>("/orgs", {
+    return apiRequest<Org>("organizations.manage", "/orgs", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ name }),
@@ -1773,11 +1878,11 @@ export async function createOrg(name: string): Promise<Org> {
 }
 
 export async function getOrg(orgId: string): Promise<Org> {
-    return apiRequest<Org>(`/orgs/${orgId}`);
+    return apiRequest<Org>("organizations.manage", `/orgs/${orgId}`);
 }
 
 export async function updateOrg(orgId: string, name: string): Promise<Org> {
-    return apiRequest<Org>(`/orgs/${orgId}`, {
+    return apiRequest<Org>("organizations.manage", `/orgs/${orgId}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ name }),
@@ -1786,7 +1891,7 @@ export async function updateOrg(orgId: string, name: string): Promise<Org> {
 
 /** Soft-delete an organization for 30 days. Owner only. */
 export async function deleteOrg(orgId: string): Promise<void> {
-    await apiRequest(`/orgs/${orgId}`, { method: "DELETE" });
+    await apiRequest("organizations.manage", `/orgs/${orgId}`, { method: "DELETE" });
 }
 
 export type OrgDataKind =
@@ -1802,7 +1907,7 @@ export async function deleteOrgData(
     orgId: string,
     kind: OrgDataKind,
 ): Promise<void> {
-    await apiRequest(`/orgs/${orgId}/data/${kind}`, { method: "DELETE" });
+    await apiRequest("organizations.manage", `/orgs/${orgId}/data/${kind}`, { method: "DELETE" });
 }
 
 /**
@@ -1812,7 +1917,7 @@ export async function deleteOrgData(
 export async function getOrgLogo(orgId: string): Promise<string | null> {
     try {
         const logo = await apiRequest<{ data_url: string }>(
-            `/orgs/${orgId}/logo`,
+            "organizations.manage", `/orgs/${orgId}/logo`,
         );
         return logo.data_url || null;
     } catch (error) {
@@ -1826,7 +1931,7 @@ export async function saveOrgLogo(
     orgId: string,
     dataUrl: string,
 ): Promise<{ logo_updated_at: string }> {
-    return apiRequest<{ logo_updated_at: string }>(`/orgs/${orgId}/logo`, {
+    return apiRequest<{ logo_updated_at: string }>("organizations.manage", `/orgs/${orgId}/logo`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ data_url: dataUrl }),
@@ -1834,7 +1939,7 @@ export async function saveOrgLogo(
 }
 
 export async function deleteOrgLogo(orgId: string): Promise<void> {
-    await apiRequest(`/orgs/${orgId}/logo`, { method: "DELETE" });
+    await apiRequest("organizations.manage", `/orgs/${orgId}/logo`, { method: "DELETE" });
 }
 
 /**
@@ -1859,14 +1964,12 @@ export interface OrgApiKeySettings {
      * each provider whose key it holds, their own for the rest.
      */
     effective_router_models: Record<string, string[]>;
-    /** Whether a member's own key is used where the organization has none. */
-    allow_personal_api_keys: boolean;
     /** Whether the caller may change any of this (owners and admins). */
     can_manage: boolean;
 }
 
 export async function getOrgApiKeys(orgId: string): Promise<OrgApiKeySettings> {
-    return apiRequest<OrgApiKeySettings>(`/orgs/${orgId}/api-keys`);
+    return apiRequest<OrgApiKeySettings>("settings.keys", `/orgs/${orgId}/api-keys`);
 }
 
 export async function saveOrgApiKey(
@@ -1876,7 +1979,7 @@ export async function saveOrgApiKey(
     settings?: ApiKeySettings[keyof ApiKeySettings],
 ): Promise<OrgApiKeySettings> {
     return apiRequest<OrgApiKeySettings>(
-        `/orgs/${orgId}/api-keys/${provider}`,
+        "settings.keys", `/orgs/${orgId}/api-keys/${provider}`,
         {
             method: "PUT",
             headers: { "Content-Type": "application/json" },
@@ -1894,7 +1997,7 @@ export async function saveOrgRouterModels(
     modelIds: string[],
 ): Promise<OrgApiKeySettings> {
     return apiRequest<OrgApiKeySettings>(
-        `/orgs/${orgId}/api-keys/${provider}/models`,
+        "organizations.manage", `/orgs/${orgId}/api-keys/${provider}/models`,
         {
             method: "PUT",
             headers: { "Content-Type": "application/json" },
@@ -1909,7 +2012,7 @@ export async function setOrgApiKeyEnabled(
     enabled: boolean,
 ): Promise<OrgApiKeySettings> {
     return apiRequest<OrgApiKeySettings>(
-        `/orgs/${orgId}/api-keys/${provider}`,
+        "settings.keys", `/orgs/${orgId}/api-keys/${provider}`,
         {
             method: "PATCH",
             headers: { "Content-Type": "application/json" },
@@ -1918,40 +2021,46 @@ export async function setOrgApiKeyEnabled(
     );
 }
 
-export async function setOrgPersonalApiKeysAllowed(
+export interface OrgMemberDataPolicy {
+    allow_member_exports: boolean;
+    allow_member_deletes: boolean;
+}
+
+/** Whether members may export and bulk-delete their work here (owners only). */
+export async function setOrgMemberDataPolicy(
     orgId: string,
-    allowed: boolean,
-): Promise<OrgApiKeySettings> {
-    return apiRequest<OrgApiKeySettings>(`/orgs/${orgId}/api-keys/policy`, {
+    policy: OrgMemberDataPolicy,
+): Promise<OrgMemberDataPolicy> {
+    return apiRequest<OrgMemberDataPolicy>("organizations.manage", `/orgs/${orgId}/member-data-policy`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ allow_personal_api_keys: allowed }),
+        body: JSON.stringify(policy),
     });
 }
 
 export async function listOrgMembers(orgId: string): Promise<OrgMember[]> {
-    return apiRequest<OrgMember[]>(`/orgs/${orgId}/members`);
+    return apiRequest<OrgMember[]>("organizations.manage", `/orgs/${orgId}/members`);
 }
 
 export type { OrgPrivateContentItem, OrgPrivateContentKind, OrgPrivateContentPage } from "@mike/contracts";
 
 export async function listOrgPrivateContent(orgId: string, offset = 0, search = "") {
     const query = new URLSearchParams({ limit: "50", offset: String(offset), search });
-    return apiRequest<import("@mike/contracts").OrgPrivateContentPage>(`/orgs/${orgId}/private-content?${query}`);
+    return apiRequest<import("@mike/contracts").OrgPrivateContentPage>("organizations.manage", `/orgs/${orgId}/private-content?${query}`);
 }
 
 export async function setOrgPrivateContentPermission(orgId: string, userId: string, enabled: boolean): Promise<void> {
-    await apiRequest(`/orgs/${orgId}/members/${userId}/private-content-permission`, {
+    await apiRequest("organizations.manage", `/orgs/${orgId}/members/${userId}/private-content-permission`, {
         method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ enabled }),
     });
 }
 
 export async function openOrgPrivateContent(orgId: string, kind: import("@mike/contracts").OrgPrivateContentKind, itemId: string): Promise<void> {
-    await apiRequest(`/orgs/${orgId}/private-content/${kind}/${itemId}/open`, { method: "POST" });
+    await apiRequest("organizations.manage", `/orgs/${orgId}/private-content/${kind}/${itemId}/open`, { method: "POST" });
 }
 
 export async function closeOrgPrivateContent(orgId: string, kind: import("@mike/contracts").OrgPrivateContentKind, itemId: string): Promise<void> {
-    await apiRequest(`/orgs/${orgId}/private-content/${kind}/${itemId}`, { method: "DELETE" });
+    await apiRequest("organizations.manage", `/orgs/${orgId}/private-content/${kind}/${itemId}`, { method: "DELETE" });
 }
 
 export async function updateOrgMember(
@@ -1959,7 +2068,7 @@ export async function updateOrgMember(
     userId: string,
     role: OrgRole,
 ): Promise<OrgMemberRow> {
-    return apiRequest<OrgMemberRow>(`/orgs/${orgId}/members/${userId}`, {
+    return apiRequest<OrgMemberRow>("organizations.manage", `/orgs/${orgId}/members/${userId}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ role }),
@@ -1976,7 +2085,7 @@ export async function getOrgMemberHandover(
         ? `?${new URLSearchParams({ departing_user_ids: departingUserIds.join(",") })}`
         : "";
     return apiRequest<OrgMemberHandover>(
-        `/orgs/${orgId}/members/${userId}/handover${query}`,
+        "organizations.manage", `/orgs/${orgId}/members/${userId}/handover${query}`,
     );
 }
 
@@ -1993,14 +2102,14 @@ export async function removeOrgMember(
     const query = assignTo
         ? `?${new URLSearchParams({ assign_to: assignTo }).toString()}`
         : "";
-    await apiRequest(`/orgs/${orgId}/members/${userId}${query}`, {
+    await apiRequest("organizations.manage", `/orgs/${orgId}/members/${userId}${query}`, {
         method: "DELETE",
     });
 }
 
 /** Owner-only: private work left by departed members, by departure. */
 export function listOrgDepartures(orgId: string): Promise<OrgDepartureList> {
-    return apiRequest(`/orgs/${orgId}/departures`);
+    return apiRequest("organizations.manage", `/orgs/${orgId}/departures`);
 }
 
 /** Hands archived items to a member, who becomes their owner. */
@@ -2009,7 +2118,7 @@ export function reassignOrgDepartureArchives(
     archiveIds: string[],
     assignTo: string,
 ): Promise<OrgDepartureResolution> {
-    return apiRequest(`/orgs/${orgId}/archives/recover`, {
+    return apiRequest("organizations.manage", `/orgs/${orgId}/archives/recover`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ archive_ids: archiveIds, assign_to: assignTo }),
@@ -2021,7 +2130,7 @@ export function deleteOrgDepartureArchives(
     orgId: string,
     archiveIds: string[],
 ): Promise<OrgDepartureResolution> {
-    return apiRequest(`/orgs/${orgId}/archives/delete`, {
+    return apiRequest("organizations.manage", `/orgs/${orgId}/archives/delete`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ archive_ids: archiveIds }),
@@ -2033,7 +2142,7 @@ export function deleteOrgDepartureArchives(
 export async function listOrgInvitations(
     orgId: string,
 ): Promise<OrgInvitation[]> {
-    return apiRequest<OrgInvitation[]>(`/orgs/${orgId}/invitations`);
+    return apiRequest<OrgInvitation[]>("organizations.manage", `/orgs/${orgId}/invitations`);
 }
 
 export async function createOrgInvitation(
@@ -2041,7 +2150,7 @@ export async function createOrgInvitation(
     email: string,
     role: InvitableOrgRole,
 ): Promise<OrgInvitation> {
-    return apiRequest<OrgInvitation>(`/orgs/${orgId}/invitations`, {
+    return apiRequest<OrgInvitation>("organizations.manage", `/orgs/${orgId}/invitations`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ email, role }),
@@ -2052,7 +2161,7 @@ export async function cancelOrgInvitation(
     orgId: string,
     invitationId: string,
 ): Promise<void> {
-    await apiRequest(`/orgs/${orgId}/invitations/${invitationId}`, {
+    await apiRequest("organizations.manage", `/orgs/${orgId}/invitations/${invitationId}`, {
         method: "DELETE",
     });
 }
@@ -2062,7 +2171,7 @@ export async function resendOrgInvitation(
     invitationId: string,
 ): Promise<OrgInvitation> {
     return apiRequest<OrgInvitation>(
-        `/orgs/${orgId}/invitations/${invitationId}/resend`,
+        "organizations.manage", `/orgs/${orgId}/invitations/${invitationId}/resend`,
         { method: "POST" },
     );
 }
@@ -2076,14 +2185,14 @@ export async function resendOrgInvitation(
 // exists.
 
 export async function listMyOrgInvitations(): Promise<OrgInvitation[]> {
-    return apiRequest<OrgInvitation[]>("/user/invitations");
+    return apiRequest<OrgInvitation[]>("organizations.manage", "/user/invitations");
 }
 
 export async function acceptOrgInvitation(
     invitationId: string,
 ): Promise<{ org_id: string; role: OrgRole }> {
     return apiRequest<{ org_id: string; role: OrgRole }>(
-        `/user/invitations/${invitationId}/accept`,
+        "organizations.manage", `/user/invitations/${invitationId}/accept`,
         { method: "POST" },
     );
 }
@@ -2091,7 +2200,7 @@ export async function acceptOrgInvitation(
 export async function declineOrgInvitation(
     invitationId: string,
 ): Promise<void> {
-    await apiRequest(`/user/invitations/${invitationId}/decline`, {
+    await apiRequest("organizations.manage", `/user/invitations/${invitationId}/decline`, {
         method: "POST",
     });
 }
@@ -2127,7 +2236,7 @@ export async function resolveProjectFolderPath(
     conflictResolution: FolderConflictResolution = "error",
 ): Promise<FolderPathResolution<Folder>> {
     return apiRequest<FolderPathResolution<Folder>>(
-        `/projects/${projectId}/folder-paths/resolve`,
+        "documents.directory", `/projects/${projectId}/folder-paths/resolve`,
         {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -2145,7 +2254,7 @@ export async function createProjectFolder(
     name: string,
     parentFolderId?: string | null,
 ): Promise<Folder> {
-    return apiRequest<Folder>(`/projects/${projectId}/folders`, {
+    return apiRequest<Folder>("documents.directory", `/projects/${projectId}/folders`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -2160,7 +2269,7 @@ export async function renameProjectFolder(
     folderId: string,
     name: string,
 ): Promise<Folder> {
-    return apiRequest<Folder>(`/projects/${projectId}/folders/${folderId}`, {
+    return apiRequest<Folder>("documents.directory", `/projects/${projectId}/folders/${folderId}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ name }),
@@ -2171,7 +2280,7 @@ export async function deleteProjectFolder(
     projectId: string,
     folderId: string,
 ): Promise<void> {
-    await apiRequest(`/projects/${projectId}/folders/${folderId}`, {
+    await apiRequest("documents.directory", `/projects/${projectId}/folders/${folderId}`, {
         method: "DELETE",
     });
 }
@@ -2181,7 +2290,7 @@ export async function moveSubfolderToFolder(
     folderId: string,
     parentFolderId: string | null,
 ): Promise<Folder> {
-    return apiRequest<Folder>(`/projects/${projectId}/folders/${folderId}`, {
+    return apiRequest<Folder>("documents.directory", `/projects/${projectId}/folders/${folderId}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ parent_folder_id: parentFolderId }),
@@ -2194,7 +2303,7 @@ export async function moveDocumentToFolder(
     folderId: string | null,
 ): Promise<Document> {
     return apiRequest<Document>(
-        `/projects/${projectId}/documents/${documentId}/folder`,
+        "documents.directory", `/projects/${projectId}/documents/${documentId}/folder`,
         {
             method: "PATCH",
             headers: { "Content-Type": "application/json" },
@@ -2209,7 +2318,7 @@ export async function renameProjectDocument(
     filename: string,
 ): Promise<Document> {
     return apiRequest<Document>(
-        `/projects/${projectId}/documents/${documentId}`,
+        "documents.directory", `/projects/${projectId}/documents/${documentId}`,
         {
             method: "PATCH",
             headers: { "Content-Type": "application/json" },
@@ -2296,7 +2405,7 @@ export async function getLibrary(
     pagination?: LibraryPagination,
 ): Promise<LibraryCollection> {
     return apiRequest<LibraryCollection>(
-        libraryUrl(kind, "", libraryPaginationParams(pagination)),
+        "documents.directory", libraryUrl(kind, "", libraryPaginationParams(pagination)),
     );
 }
 
@@ -2310,7 +2419,7 @@ export async function getLibraryFolderChildren(
         params.set("limit", String(pagination.limit));
     if (pagination?.offset != null)
         params.set("offset", String(pagination.offset));
-    return apiRequest<LibraryCollection>(libraryUrl(kind, "", params));
+    return apiRequest<LibraryCollection>("documents.directory", libraryUrl(kind, "", params));
 }
 
 export async function getLibraryFolderPath(
@@ -2318,7 +2427,7 @@ export async function getLibraryFolderPath(
     folderId: string,
 ): Promise<{ folders: LibraryFolder[] }> {
     return apiRequest<{ folders: LibraryFolder[] }>(
-        libraryUrl(kind, `/folders/${folderId}`),
+        "documents.directory", libraryUrl(kind, `/folders/${folderId}`),
     );
 }
 
@@ -2328,7 +2437,7 @@ export async function getLibraryLevels(
 ): Promise<{
     levels: Array<LibraryCollection & { parentId: string | null }>;
 }> {
-    return apiRequest(libraryUrl(kind, "/levels"), {
+    return apiRequest("documents.directory", libraryUrl(kind, "/levels"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ levels }),
@@ -2347,7 +2456,7 @@ export async function searchLibraryDocuments(
     if (options.sortKey) params.set("sort_key", options.sortKey);
     if (options.sortDirection)
         params.set("sort_direction", options.sortDirection);
-    return apiRequest<LibrarySearchResults>(libraryUrl(kind, "", params), {
+    return apiRequest<LibrarySearchResults>("documents.directory", libraryUrl(kind, "", params), {
         signal: options.signal,
     });
 }
@@ -2356,7 +2465,7 @@ export async function getLibraryFilterOptions(
     kind: LibraryScope,
 ): Promise<{ fileTypes: string[] }> {
     return apiRequest<{ fileTypes: string[] }>(
-        libraryUrl(kind, "/filter-options"),
+        "documents.directory", libraryUrl(kind, "/filter-options"),
     );
 }
 
@@ -2367,7 +2476,7 @@ export async function listLibraryDocumentIds(
     const params = new URLSearchParams();
     if (options?.search) params.set("search", options.search);
     if (options?.fileType) params.set("file_type", options.fileType);
-    return apiRequest<string[]>(libraryUrl(kind, "/ids", params), {
+    return apiRequest<string[]>("documents.directory", libraryUrl(kind, "/ids", params), {
         signal: options?.signal,
     });
 }
@@ -2377,7 +2486,7 @@ export async function bulkDeleteLibraryDocuments(
     ids: string[],
 ): Promise<{ deletedIds: string[] }> {
     return apiRequest<{ deletedIds: string[] }>(
-        libraryUrl(kind, "/documents/bulk-delete"),
+        "documents.directory", libraryUrl(kind, "/documents/bulk-delete"),
         {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -2423,7 +2532,7 @@ export async function createLibraryFolder(
     name: string,
     parentFolderId?: string | null,
 ): Promise<LibraryFolder> {
-    return apiRequest<LibraryFolder>(libraryUrl(kind, "/folders"), {
+    return apiRequest<LibraryFolder>("documents.directory", libraryUrl(kind, "/folders"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -2440,7 +2549,7 @@ export async function resolveLibraryFolderPath(
     conflictResolution: FolderConflictResolution = "error",
 ): Promise<FolderPathResolution<LibraryFolder>> {
     return apiRequest<FolderPathResolution<LibraryFolder>>(
-        libraryUrl(kind, "/folder-paths/resolve"),
+        "documents.directory", libraryUrl(kind, "/folder-paths/resolve"),
         {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -2459,7 +2568,7 @@ export async function renameLibraryFolder(
     name: string,
 ): Promise<LibraryFolder> {
     return apiRequest<LibraryFolder>(
-        libraryUrl(kind, `/folders/${folderId}`),
+        "documents.directory", libraryUrl(kind, `/folders/${folderId}`),
         {
             method: "PATCH",
             headers: { "Content-Type": "application/json" },
@@ -2472,7 +2581,7 @@ export async function deleteLibraryFolder(
     kind: LibraryScope,
     folderId: string,
 ): Promise<void> {
-    await apiRequest(libraryUrl(kind, `/folders/${folderId}`), {
+    await apiRequest("documents.directory", libraryUrl(kind, `/folders/${folderId}`), {
         method: "DELETE",
     });
 }
@@ -2483,7 +2592,7 @@ export async function moveLibraryFolder(
     parentFolderId: string | null,
 ): Promise<LibraryFolder> {
     return apiRequest<LibraryFolder>(
-        libraryUrl(kind, `/folders/${folderId}`),
+        "documents.directory", libraryUrl(kind, `/folders/${folderId}`),
         {
             method: "PATCH",
             headers: { "Content-Type": "application/json" },
@@ -2498,7 +2607,7 @@ export async function moveLibraryDocument(
     folderId: string | null,
 ): Promise<Document> {
     return apiRequest<Document>(
-        libraryUrl(kind, `/documents/${documentId}/folder`),
+        "documents.directory", libraryUrl(kind, `/documents/${documentId}/folder`),
         {
             method: "PATCH",
             headers: { "Content-Type": "application/json" },
@@ -2513,7 +2622,7 @@ export async function renameLibraryDocument(
     filename: string,
 ): Promise<Document> {
     return apiRequest<Document>(
-        libraryUrl(kind, `/documents/${documentId}`),
+        "documents.directory", libraryUrl(kind, `/documents/${documentId}`),
         {
             method: "PATCH",
             headers: { "Content-Type": "application/json" },
@@ -2527,7 +2636,7 @@ export async function addDocumentToProject(
     documentId: string,
 ): Promise<Document> {
     return apiRequest<Document>(
-        `/projects/${projectId}/documents/${documentId}`,
+        "documents.directory", `/projects/${projectId}/documents/${documentId}`,
         { method: "POST" },
     );
 }
@@ -2550,7 +2659,7 @@ export async function listDocumentVersions(documentId: string): Promise<{
     current_version_id: string | null;
     versions: DocumentVersion[];
 }> {
-    return apiRequest(`/single-documents/${documentId}/versions`);
+    return apiRequest("documents.directory", `/single-documents/${documentId}/versions`);
 }
 
 export async function uploadDocumentVersion(
@@ -2613,7 +2722,7 @@ export async function copyDocumentVersionFromDocument(
     filename?: string,
 ): Promise<DocumentVersion> {
     return apiRequest<DocumentVersion>(
-        `/single-documents/${documentId}/versions/from-document`,
+        "documents.directory", `/single-documents/${documentId}/versions/from-document`,
         {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -2631,7 +2740,7 @@ export async function renameDocumentVersion(
     filename: string | null,
 ): Promise<DocumentVersion> {
     return apiRequest<DocumentVersion>(
-        `/single-documents/${documentId}/versions/${versionId}`,
+        "documents.directory", `/single-documents/${documentId}/versions/${versionId}`,
         {
             method: "PATCH",
             headers: { "Content-Type": "application/json" },
@@ -2647,7 +2756,7 @@ export async function deleteDocumentVersion(
     deleted_version_id: string;
     current_version_id: string | null;
 }> {
-    return apiRequest(`/single-documents/${documentId}/versions/${versionId}`, {
+    return apiRequest("documents.directory", `/single-documents/${documentId}/versions/${versionId}`, {
         method: "DELETE",
     });
 }
@@ -2711,12 +2820,41 @@ export async function uploadStandaloneDocuments(
     });
 }
 
+export async function getDocumentStatuses(documentIds: string[], signal?: AbortSignal): Promise<Document[]> {
+    try {
+        return await apiRequest<Document[]>("documents.directory", "/single-documents/status", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ document_ids: documentIds }),
+            signal,
+        });
+    } catch (error) {
+        // Self-hosted frontends and backends may be upgraded independently.
+        // Only an unsupported endpoint selects the legacy reads: auth/server
+        // failures must retain their normal handling and retry behavior.
+        if (!(error instanceof MikeApiError) || ![404, 405].includes(error.status)) throw error;
+        signal?.throwIfAborted();
+        const results = await settleWithConcurrency([...new Set(documentIds)], 2, async id => {
+            signal?.throwIfAborted();
+            return apiRequest<Document>("documents.directory", `/single-documents/${encodeURIComponent(id)}`, { signal });
+        });
+        signal?.throwIfAborted();
+        return results.flatMap(result => {
+            if (result.status === "fulfilled") return [result.value];
+            // The batch endpoint also omits deleted or no-longer-readable
+            // documents. Other failures must not look like an empty result.
+            if (result.reason instanceof MikeApiError && result.reason.status === 404) return [];
+            throw result.reason;
+        });
+    }
+}
+
 export async function getDocument(documentId: string): Promise<Document> {
-    return apiRequest<Document>(`/single-documents/${documentId}`);
+    return apiRequest<Document>("documents.directory", `/single-documents/${documentId}`);
 }
 
 export async function deleteDocument(documentId: string): Promise<void> {
-    await apiRequest(`/single-documents/${documentId}`, { method: "DELETE" });
+    await apiRequest("documents.directory", `/single-documents/${documentId}`, { method: "DELETE" });
 }
 
 interface DocumentEditResolution {
@@ -2734,7 +2872,7 @@ export async function resolveDocumentEdit(
     verb: "accept" | "reject",
 ): Promise<DocumentEditResolution> {
     return apiRequest<DocumentEditResolution>(
-        `/single-documents/${encodeURIComponent(documentId)}/edits/${encodeURIComponent(editId)}/${verb}`,
+        "documents.directory", `/single-documents/${encodeURIComponent(documentId)}/edits/${encodeURIComponent(editId)}/${verb}`,
         { method: "POST" },
     );
 }
@@ -2744,7 +2882,7 @@ export async function getDocumentUrl(
     versionId?: string | null,
 ): Promise<{ url: string; filename: string; version_id: string | null }> {
     const qs = versionId ? `?version_id=${encodeURIComponent(versionId)}` : "";
-    return apiRequest(`/single-documents/${documentId}/url${qs}`);
+    return apiRequest("documents.directory", `/single-documents/${documentId}/url${qs}`);
 }
 
 function documentFilePath(
@@ -2766,7 +2904,7 @@ export async function getDocumentFile(
     documentId: string,
     versionId?: string | null,
 ): Promise<{ blob: Blob; filename: string | null }> {
-    return apiBlobRequest(documentFilePath(documentId, versionId));
+    return apiBlobRequest("documents.directory", documentFilePath(documentId, versionId));
 }
 
 export async function downloadDocumentsZip(
@@ -2785,10 +2923,10 @@ export async function downloadDocumentsZip(
                 document_ids: documentIds,
                 folder_ids: folderIds,
             }),
-        },
+        }, "documents.directory",
     );
     if (!response.ok) {
-        throw await toApiError(response, "/single-documents/download-zip");
+        throw await toApiError(response, "/single-documents/download-zip", "POST", "documents.directory");
     }
     return response.blob();
 }
@@ -2805,7 +2943,7 @@ export async function createChat(payload?: {
      */
     org_id?: string;
 }): Promise<{ id: string }> {
-    return apiRequest<{ id: string }>("/chat/create", {
+    return apiRequest<{ id: string }>("chat.turn", "/chat/create", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload ?? {}),
@@ -2827,15 +2965,15 @@ export async function listChats(options?: {
     if (options?.beforeId) params.set("before_id", options.beforeId);
     if (options?.workspace) params.set("workspace", options.workspace);
     const query = params.toString();
-    return apiRequest<Chat[]>(`/chat${query ? `?${query}` : ""}`);
+    return apiRequest<Chat[]>("chat.turn", `/chat${query ? `?${query}` : ""}`);
 }
 
 export async function listProjectChats(projectId: string): Promise<Chat[]> {
-    return apiRequest<Chat[]>(`/projects/${projectId}/chats`);
+    return apiRequest<Chat[]>("projects.manage", `/projects/${projectId}/chats`);
 }
 
 export async function getChat(chatId: string): Promise<ChatDetailOut> {
-    const raw = await apiRequest<ServerChatDetailOut>(`/chat/${chatId}`);
+    const raw = await apiRequest<ServerChatDetailOut>("chat.turn", `/chat/${chatId}`);
     const messages: Message[] = raw.messages.map((m) => {
         if (m.role === "user") {
             return {
@@ -2893,7 +3031,7 @@ export async function streamChatTurn(payload: {
     const { chatId, turnId, from = 1, signal } = payload;
     return apiFetch(
         `${API_BASE}/chat/${chatId}/turn/${turnId}/stream?from=${from}`,
-        { headers: { Accept: "text/event-stream" }, signal },
+        { headers: { Accept: "text/event-stream" }, signal }, "chat.turn",
     );
 }
 
@@ -2906,13 +3044,13 @@ export async function stopChatTurn(
     turnId: string,
 ): Promise<{ stopped: boolean; finished: boolean }> {
     return apiRequest<{ stopped: boolean; finished: boolean }>(
-        `/chat/${chatId}/turn/${turnId}/stop`,
+        "chat.turn", `/chat/${chatId}/turn/${turnId}/stop`,
         { method: "POST" },
     );
 }
 
 export async function renameChat(chatId: string, title: string): Promise<void> {
-    await apiRequest(`/chat/${chatId}`, {
+    await apiRequest("chat.turn", `/chat/${chatId}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ title }),
@@ -2923,7 +3061,7 @@ export async function updateChatModel(
     chatId: string,
     model: string,
 ): Promise<{ id: string; title: string | null; model: string }> {
-    return apiRequest(`/chat/${chatId}`, {
+    return apiRequest("chat.turn", `/chat/${chatId}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ model }),
@@ -2940,7 +3078,7 @@ export async function updateChatReasoningLevel(
     model: string;
     reasoning_level: NonNullable<Message["reasoning"]>;
 }> {
-    return apiRequest(`/chat/${chatId}`, {
+    return apiRequest("chat.turn", `/chat/${chatId}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ reasoningLevel }),
@@ -2949,11 +3087,11 @@ export async function updateChatReasoningLevel(
 }
 
 export async function getChatPeople(chatId: string): Promise<ProjectPeople> {
-    return apiRequest<ProjectPeople>(`/chat/${chatId}/people`);
+    return apiRequest<ProjectPeople>("chat.turn", `/chat/${chatId}/people`);
 }
 
 export async function getChatAccess(chatId: string): Promise<ContentAccess> {
-    return apiRequest<ContentAccess>(`/chat/${chatId}/access`);
+    return apiRequest<ContentAccess>("chat.turn", `/chat/${chatId}/access`);
 }
 
 export async function grantChatAccess(
@@ -2961,7 +3099,7 @@ export async function grantChatAccess(
     email: string,
     role: AccessAssignmentRole,
 ): Promise<ContentAccessGrant> {
-    return apiRequest<ContentAccessGrant>(`/chat/${chatId}/access`, {
+    return apiRequest<ContentAccessGrant>("chat.turn", `/chat/${chatId}/access`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ email, role }),
@@ -2972,7 +3110,7 @@ export async function revokeChatAccess(
     chatId: string,
     email: string,
 ): Promise<void> {
-    await apiRequest(`/chat/${chatId}/access/${encodeURIComponent(email)}`, {
+    await apiRequest("chat.turn", `/chat/${chatId}/access/${encodeURIComponent(email)}`, {
         method: "DELETE",
     });
 }
@@ -2981,7 +3119,7 @@ export async function updateLastSelectedChatSettings(payload: {
     lastSelectedChatModel?: string;
     lastSelectedReasoningLevel?: NonNullable<Message["reasoning"]>;
 }): Promise<UserProfile> {
-    return apiRequest<UserProfile>("/user/profile", {
+    return apiRequest<UserProfile>("chat.turn", "/user/profile", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
@@ -2990,22 +3128,35 @@ export async function updateLastSelectedChatSettings(payload: {
 }
 
 export async function leaveChat(chatId: string): Promise<void> {
-    await apiRequest(`/chat/${chatId}/leave`, { method: "POST" });
+    await apiRequest("chat.turn", `/chat/${chatId}/leave`, { method: "POST" });
 }
 
 export async function deleteChat(chatId: string): Promise<void> {
-    await apiRequest(`/chat/${chatId}`, { method: "DELETE" });
+    await apiRequest("chat.turn", `/chat/${chatId}`, { method: "DELETE" });
 }
 
 const panelDocumentRequests = new Map<string, Promise<PanelDocument>>();
 
+/**
+ * A source document for the side panel, such as a cited case. `workspace`
+ * ("personal" or an organization id) is the workspace of the chat or project
+ * the citation came from: a case is read with that workspace's CourtListener
+ * connection. Omitted, the server reads it as Personal.
+ */
 export async function getPanelDocument(
     documentId: string,
+    workspace?: string,
 ): Promise<PanelDocument> {
-    let request = panelDocumentRequests.get(documentId);
+    // The same document in two workspaces is two requests: each may use a
+    // different token, and one may be refused where the other is not.
+    const key = JSON.stringify([workspace ?? null, documentId]);
+    let request = panelDocumentRequests.get(key);
     if (!request) {
         request = apiRequest<unknown>(
-            `/documents/${encodeURIComponent(documentId)}`,
+            "documents.directory", connectorPath(
+                `/documents/${encodeURIComponent(documentId)}`,
+                workspace,
+            ),
         )
             .then((value) => {
                 if (!isPanelDocument(value)) {
@@ -3013,8 +3164,8 @@ export async function getPanelDocument(
                 }
                 return value;
             })
-            .finally(() => panelDocumentRequests.delete(documentId));
-        panelDocumentRequests.set(documentId, request);
+            .finally(() => panelDocumentRequests.delete(key));
+        panelDocumentRequests.set(key, request);
     }
     return request;
 }
@@ -3061,7 +3212,7 @@ export async function streamChat(payload: {
         },
         body: JSON.stringify({ ...body, time_zone: browserTimeZone() }),
         signal,
-    });
+    }, "chat.turn");
 }
 
 type StreamChatMessage = {
@@ -3091,7 +3242,7 @@ export async function streamProjectChat(payload: {
         },
         body: JSON.stringify({ ...body, time_zone: browserTimeZone() }),
         signal,
-    });
+    }, "project_chat.turn");
 }
 
 // ---------------------------------------------------------------------------
@@ -3129,7 +3280,7 @@ export async function listTabularReviews(
         params.set("owner_user_id", pagination.ownerUserId);
 
     const qs = params.toString() ? `?${params.toString()}` : "";
-    return apiRequest<TabularReview[]>(`/tabular-review${qs}`, {
+    return apiRequest<TabularReview[]>("tabular.run", `/tabular-review${qs}`, {
         signal: pagination?.signal,
     });
 }
@@ -3139,7 +3290,7 @@ export async function getTabularReviewHistoryStatuses(
     signal?: AbortSignal,
 ): Promise<TabularReviewHistoryStatus[]> {
     const params = new URLSearchParams({ ids: ids.join(",") });
-    return apiRequest(`/tabular-review/history-status?${params}`, { signal });
+    return apiRequest("tabular.run", `/tabular-review/history-status?${params}`, { signal });
 }
 
 export async function listTabularReviewIds(
@@ -3162,7 +3313,7 @@ export async function listTabularReviewIds(
 
     const qs = params.toString() ? `?${params.toString()}` : "";
     return apiRequest<{ id: string; user_id: string }[]>(
-        `/tabular-review/ids${qs}`,
+        "tabular.run", `/tabular-review/ids${qs}`,
         { signal: options?.signal },
     );
 }
@@ -3173,7 +3324,7 @@ export async function listProjectReviewCreators(
     signal?: AbortSignal,
 ): Promise<AuditActor[]> {
     const params = new URLSearchParams({ project_id: projectId });
-    return apiRequest(`/tabular-review/creators?${params}`, { signal });
+    return apiRequest("projects.manage", `/tabular-review/creators?${params}`, { signal });
 }
 
 export async function createTabularReview(payload: {
@@ -3190,7 +3341,7 @@ export async function createTabularReview(payload: {
     document_grouping?: "document" | "folder";
     model: string;
 }): Promise<TabularReview> {
-    const review = await apiRequest<TabularReview>("/tabular-review", {
+    const review = await apiRequest<TabularReview>("tabular.run", "/tabular-review", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
@@ -3202,7 +3353,7 @@ export async function createTabularReview(payload: {
 export async function getTabularReview(
     reviewId: string,
 ): Promise<TabularReviewDetailOut> {
-    return apiRequest<TabularReviewDetailOut>(`/tabular-review/${reviewId}`);
+    return apiRequest<TabularReviewDetailOut>("tabular.run", `/tabular-review/${reviewId}`);
 }
 
 export async function updateTabularReview(
@@ -3216,7 +3367,7 @@ export async function updateTabularReview(
         model?: string;
     },
 ): Promise<TabularReview> {
-    const review = await apiRequest<TabularReview>(`/tabular-review/${reviewId}`, {
+    const review = await apiRequest<TabularReview>("tabular.run", `/tabular-review/${reviewId}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
@@ -3228,13 +3379,13 @@ export async function updateTabularReview(
 export async function getTabularReviewPeople(
     reviewId: string,
 ): Promise<ProjectPeople> {
-    return apiRequest<ProjectPeople>(`/tabular-review/${reviewId}/people`);
+    return apiRequest<ProjectPeople>("tabular.run", `/tabular-review/${reviewId}/people`);
 }
 
 export async function getTabularReviewAccess(
     reviewId: string,
 ): Promise<ContentAccess> {
-    return apiRequest<ContentAccess>(`/tabular-review/${reviewId}/access`);
+    return apiRequest<ContentAccess>("tabular.run", `/tabular-review/${reviewId}/access`);
 }
 
 export async function grantTabularReviewAccess(
@@ -3243,7 +3394,7 @@ export async function grantTabularReviewAccess(
     role: AccessAssignmentRole,
 ): Promise<ContentAccessGrant> {
     return apiRequest<ContentAccessGrant>(
-        `/tabular-review/${reviewId}/access`,
+        "tabular.run", `/tabular-review/${reviewId}/access`,
         {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -3257,7 +3408,7 @@ export async function revokeTabularReviewAccess(
     email: string,
 ): Promise<void> {
     await apiRequest(
-        `/tabular-review/${reviewId}/access/${encodeURIComponent(email)}`,
+        "tabular.run", `/tabular-review/${reviewId}/access/${encodeURIComponent(email)}`,
         { method: "DELETE" },
     );
 }
@@ -3269,7 +3420,7 @@ export async function generateTabularColumnPrompt(
     return apiRequest<{
         prompt: string;
         source: "preset" | "llm" | "fallback";
-    }>("/tabular-review/prompt", {
+    }>("tabular.run", "/tabular-review/prompt", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -3309,7 +3460,7 @@ export async function uploadReviewDocument(
 }
 
 export async function deleteTabularReview(reviewId: string): Promise<void> {
-    await apiRequest(`/tabular-review/${reviewId}`, { method: "DELETE" });
+    await apiRequest("tabular.run", `/tabular-review/${reviewId}`, { method: "DELETE" });
     notifyTabularReviewsChanged();
 }
 
@@ -3323,7 +3474,7 @@ export async function streamTabularGeneration(
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ expected_updated_at: expectedUpdatedAt }),
         signal,
-    });
+    }, "tabular.run");
 }
 
 /**
@@ -3344,7 +3495,7 @@ export async function streamTabularGenerationResume(
     const query = from ? `?from=${from}` : "";
     return apiFetch(
         `${API_BASE}/tabular-review/${reviewId}/generate/stream${query}`,
-        { signal: signal ?? undefined },
+        { signal: signal ?? undefined }, "tabular.run",
     );
 }
 
@@ -3357,7 +3508,7 @@ export async function streamTabularGenerationResume(
 export async function stopTabularGeneration(
     reviewId: string,
 ): Promise<{ stopped: boolean; finished: boolean }> {
-    return apiRequest(`/tabular-review/${reviewId}/generate/stop`, {
+    return apiRequest("tabular.run", `/tabular-review/${reviewId}/generate/stop`, {
         method: "POST",
     });
 }
@@ -3384,7 +3535,7 @@ export async function streamTabularChat(
             time_zone: browserTimeZone(),
         }),
         signal: signal ?? undefined,
-    });
+    }, "tabular.chat");
 }
 
 /**
@@ -3403,7 +3554,7 @@ export async function streamTabularChatTurn(payload: {
     const { reviewId, chatId, turnId, from = 1, signal } = payload;
     return apiFetch(
         `${API_BASE}/tabular-review/${reviewId}/chats/${chatId}/turn/${turnId}/stream?from=${from}`,
-        { headers: { Accept: "text/event-stream" }, signal },
+        { headers: { Accept: "text/event-stream" }, signal }, "tabular.chat",
     );
 }
 
@@ -3417,7 +3568,7 @@ export async function stopTabularChatTurn(
     turnId: string,
 ): Promise<{ stopped: boolean; finished: boolean }> {
     return apiRequest<{ stopped: boolean; finished: boolean }>(
-        `/tabular-review/${reviewId}/chats/${chatId}/turn/${turnId}/stop`,
+        "tabular.chat", `/tabular-review/${reviewId}/chats/${chatId}/turn/${turnId}/stop`,
         { method: "POST" },
     );
 }
@@ -3512,7 +3663,7 @@ export function mapTRMessages(raw: RawTRMessage[]): TRDisplayMessage[] {
 }
 
 export async function getTabularChats(reviewId: string): Promise<TRChat[]> {
-    return apiRequest<TRChat[]>(`/tabular-review/${reviewId}/chats`);
+    return apiRequest<TRChat[]>("tabular.chat", `/tabular-review/${reviewId}/chats`);
 }
 
 export async function getTabularChatMessages(
@@ -3520,7 +3671,7 @@ export async function getTabularChatMessages(
     chatId: string,
 ): Promise<RawTRMessage[]> {
     return apiRequest<RawTRMessage[]>(
-        `/tabular-review/${reviewId}/chats/${chatId}/messages`,
+        "tabular.chat", `/tabular-review/${reviewId}/chats/${chatId}/messages`,
     );
 }
 
@@ -3528,7 +3679,7 @@ export async function deleteTabularChat(
     reviewId: string,
     chatId: string,
 ): Promise<void> {
-    await apiRequest(`/tabular-review/${reviewId}/chats/${chatId}`, {
+    await apiRequest("tabular.chat", `/tabular-review/${reviewId}/chats/${chatId}`, {
         method: "DELETE",
     });
 }
@@ -3538,7 +3689,7 @@ export async function renameTabularChat(
     chatId: string,
     title: string,
 ): Promise<void> {
-    await apiRequest(`/tabular-review/${reviewId}/chats/${chatId}`, {
+    await apiRequest("tabular.chat", `/tabular-review/${reviewId}/chats/${chatId}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ title }),
@@ -3550,7 +3701,7 @@ export async function updateTabularChatModel(
     chatId: string,
     model: string,
 ): Promise<TRChat> {
-    return apiRequest(`/tabular-review/${reviewId}/chats/${chatId}`, {
+    return apiRequest("tabular.chat", `/tabular-review/${reviewId}/chats/${chatId}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ model }),
@@ -3563,7 +3714,7 @@ export async function updateTabularChatReasoningLevel(
     chatId: string,
     reasoningLevel: NonNullable<Message["reasoning"]>,
 ): Promise<TRChat> {
-    return apiRequest(`/tabular-review/${reviewId}/chats/${chatId}`, {
+    return apiRequest("tabular.chat", `/tabular-review/${reviewId}/chats/${chatId}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ reasoningLevel }),
@@ -3584,7 +3735,7 @@ export async function regenerateTabularCell(
     // HTTP 202 — regeneration continues in the background
     | { status: "generating" }
 > {
-    const result = await apiRequest<Awaited<ReturnType<typeof regenerateTabularCell>>>(`/tabular-review/${reviewId}/regenerate-cell`, {
+    const result = await apiRequest<Awaited<ReturnType<typeof regenerateTabularCell>>>("tabular.run", `/tabular-review/${reviewId}/regenerate-cell`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -3600,7 +3751,7 @@ export async function clearTabularCells(
     reviewId: string,
     rowIds: string[],
 ): Promise<void> {
-    await apiRequest(`/tabular-review/${reviewId}/clear-cells`, {
+    await apiRequest("tabular.run", `/tabular-review/${reviewId}/clear-cells`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ row_ids: rowIds }),
@@ -3619,7 +3770,7 @@ export async function listWorkflows(type?: WorkflowType, workspace?: string): Pr
     if (type) params.set("type", type);
     if (workspace) params.set("workspace", workspace);
     const query = params.toString();
-    return apiRequest<Workflow[]>(`/workflows${query ? `?${query}` : ""}`);
+    return apiRequest<Workflow[]>("workflows.run", `/workflows${query ? `?${query}` : ""}`);
 }
 
 // The table uses reduced, paginated records. Pickers use listWorkflows(), whose
@@ -3662,7 +3813,7 @@ export async function listWorkflowsPage(pagination?: {
     if (pagination?.workspace) params.set("workspace", pagination.workspace);
 
     const qs = params.toString() ? `?${params.toString()}` : "";
-    return apiRequest<Workflow[]>(`/workflows${qs}`, {
+    return apiRequest<Workflow[]>("workflows.run", `/workflows${qs}`, {
         signal: pagination?.signal,
     });
 }
@@ -3696,7 +3847,7 @@ export async function listWorkflowIds(options?: {
 
     const qs = params.toString() ? `?${params.toString()}` : "";
     return apiRequest<{ id: string; user_id: string }[]>(
-        `/workflows/ids${qs}`,
+        "workflows.run", `/workflows/ids${qs}`,
         {
             signal: options?.signal,
         },
@@ -3710,7 +3861,7 @@ export async function listSystemWorkflows(
     type?: WorkflowType,
 ): Promise<Workflow[]> {
     const qs = type ? `?type=${type}` : "";
-    return apiRequest<Workflow[]>(`/workflows/system${qs}`);
+    return apiRequest<Workflow[]>("workflows.run", `/workflows/system${qs}`);
 }
 
 export interface WorkflowFilterOptions {
@@ -3732,7 +3883,7 @@ export async function getWorkflowFilterOptions(options?: {
     if (options?.workspace) params.set("workspace", options.workspace);
     const query = params.toString();
     return apiRequest<WorkflowFilterOptions>(
-        `/workflows/filter-options${query ? `?${query}` : ""}`,
+        "workflows.run", `/workflows/filter-options${query ? `?${query}` : ""}`,
         {
             signal: options?.signal,
         },
@@ -3740,7 +3891,7 @@ export async function getWorkflowFilterOptions(options?: {
 }
 
 export async function getWorkflow(workflowId: string): Promise<Workflow> {
-    return apiRequest<Workflow>(`/workflows/${workflowId}`);
+    return apiRequest<Workflow>("workflows.run", `/workflows/${workflowId}`);
 }
 
 export async function createWorkflow(payload: {
@@ -3756,7 +3907,7 @@ export async function createWorkflow(payload: {
     org_id?: string;
     visibility?: ContentVisibility;
 }): Promise<Workflow> {
-    return apiRequest<Workflow>("/workflows", {
+    return apiRequest<Workflow>("workflows.run", "/workflows", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
@@ -3777,7 +3928,7 @@ export async function updateWorkflow(
         visibility?: ContentVisibility;
     },
 ): Promise<Workflow> {
-    return apiRequest<Workflow>(`/workflows/${workflowId}`, {
+    return apiRequest<Workflow>("workflows.run", `/workflows/${workflowId}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
@@ -3785,7 +3936,7 @@ export async function updateWorkflow(
 }
 
 export async function deleteWorkflow(workflowId: string): Promise<void> {
-    await apiRequest(`/workflows/${workflowId}`, { method: "DELETE" });
+    await apiRequest("workflows.run", `/workflows/${workflowId}`, { method: "DELETE" });
 }
 
 export async function openSourceWorkflow(
@@ -3796,7 +3947,7 @@ export async function openSourceWorkflow(
     },
 ): Promise<OpenSourceWorkflowResponse> {
     return apiRequest<OpenSourceWorkflowResponse>(
-        `/workflows/${workflowId}/open-source`,
+        "workflows.run", `/workflows/${workflowId}/open-source`,
         {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -3809,7 +3960,7 @@ export async function shareWorkflow(
     workflowId: string,
     payload: { emails: string[]; role: AccessAssignmentRole },
 ): Promise<void> {
-    await apiRequest<void>(`/workflows/${workflowId}/share`, {
+    await apiRequest<void>("workflows.run", `/workflows/${workflowId}/share`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
@@ -3826,20 +3977,20 @@ export async function listWorkflowShares(workflowId: string): Promise<
         created_at?: string;
     }[]
 > {
-    return apiRequest(`/workflows/${workflowId}/shares`);
+    return apiRequest("workflows.run", `/workflows/${workflowId}/shares`);
 }
 
 export async function getWorkflowPeople(
     workflowId: string,
 ): Promise<ProjectPeople> {
-    return apiRequest<ProjectPeople>(`/workflows/${workflowId}/people`);
+    return apiRequest<ProjectPeople>("workflows.run", `/workflows/${workflowId}/people`);
 }
 
 export async function deleteWorkflowShare(
     workflowId: string,
     shareId: string,
 ): Promise<void> {
-    await apiRequest(`/workflows/${workflowId}/shares/${shareId}`, {
+    await apiRequest("workflows.run", `/workflows/${workflowId}/shares/${shareId}`, {
         method: "DELETE",
     });
 }
@@ -3850,7 +4001,7 @@ export async function listQuickActions(
 ): Promise<QuickAction[]> {
     const params = new URLSearchParams({ surface });
     if (workspace) params.set("workspace", workspace);
-    return apiRequest<QuickAction[]>(`/quick-actions?${params}`);
+    return apiRequest<QuickAction[]>("quick_actions.run", `/quick-actions?${params}`);
 }
 
 export async function createQuickAction(payload: {
@@ -3862,7 +4013,7 @@ export async function createQuickAction(payload: {
     enabled?: boolean;
     sort_order?: number;
 }): Promise<QuickAction> {
-    return apiRequest<QuickAction>("/quick-actions", {
+    return apiRequest<QuickAction>("quick_actions.run", "/quick-actions", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
@@ -3884,7 +4035,7 @@ export async function updateQuickAction(
         >
     >,
 ): Promise<QuickAction> {
-    return apiRequest<QuickAction>(`/quick-actions/${quickActionId}`, {
+    return apiRequest<QuickAction>("quick_actions.run", `/quick-actions/${quickActionId}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
@@ -3892,17 +4043,17 @@ export async function updateQuickAction(
 }
 
 export async function listWorkflowAddons(): Promise<WorkflowAddon[]> {
-    return apiRequest<WorkflowAddon[]>("/workflow-addons");
+    return apiRequest<WorkflowAddon[]>("workflows.import_addon", "/workflow-addons");
 }
 
 export async function getWorkflowAddon(
     addonId: string,
 ): Promise<WorkflowAddon> {
-    return apiRequest<WorkflowAddon>(`/workflow-addons/${addonId}`);
+    return apiRequest<WorkflowAddon>("workflows.import_addon", `/workflow-addons/${addonId}`);
 }
 
 export async function importWorkflowAddon(addonId: string): Promise<Workflow> {
-    return apiRequest<Workflow>(`/workflow-addons/${addonId}/import`, {
+    return apiRequest<Workflow>("workflows.import_addon", `/workflow-addons/${addonId}/import`, {
         method: "POST",
     });
 }
@@ -3910,7 +4061,7 @@ export async function importWorkflowAddon(addonId: string): Promise<Workflow> {
 export async function listWorkflowAssets(
     workflowId: string,
 ): Promise<Document[]> {
-    return apiRequest<Document[]>(`/workflows/${workflowId}/assets`);
+    return apiRequest<Document[]>("workflows.run", `/workflows/${workflowId}/assets`);
 }
 
 export async function copyDocumentsToWorkflowAssets(
@@ -3918,7 +4069,7 @@ export async function copyDocumentsToWorkflowAssets(
     documentIds: string[],
 ): Promise<Document[]> {
     return apiRequest<Document[]>(
-        `/workflows/${workflowId}/assets/from-documents`,
+        "workflows.run", `/workflows/${workflowId}/assets/from-documents`,
         {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -3952,49 +4103,58 @@ export async function deleteWorkflowAsset(
     workflowId: string,
     assetId: string,
 ): Promise<void> {
-    await apiRequest(`/workflows/${workflowId}/assets/${assetId}`, {
+    await apiRequest("workflows.run", `/workflows/${workflowId}/assets/${assetId}`, {
         method: "DELETE",
     });
 }
 
 export async function getGoogleWorkspaceStatus(
     provider: import("@mike/contracts").GoogleWorkspaceProvider,
+    workspace?: string,
 ) {
     return apiRequest<import("@mike/contracts").GoogleWorkspaceStatus>(
-        `/user/integrations/${provider}`,
+        "google.workspace", connectorPath(`/user/integrations/${provider}`, workspace),
     );
 }
 export async function startGoogleWorkspaceOAuth(
     provider: import("@mike/contracts").GoogleWorkspaceProvider,
+    workspace?: string,
 ) {
     return apiRequest<{ authorizationUrl: string }>(
-        `/user/integrations/${provider}/oauth/start`,
+        "google.workspace", connectorPath(`/user/integrations/${provider}/oauth/start`, workspace),
         { method: "POST" },
     );
 }
 export async function cancelGoogleWorkspaceOAuth(
     provider: import("@mike/contracts").GoogleWorkspaceProvider,
     state: string,
+    workspace?: string,
 ) {
-    return apiRequest<void>(`/user/integrations/${provider}/oauth/cancel`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ state }),
-    });
+    return apiRequest<void>(
+        "google.workspace", connectorPath(`/user/integrations/${provider}/oauth/cancel`, workspace),
+        {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ state }),
+        },
+    );
 }
 export async function disconnectGoogleWorkspace(
     provider: import("@mike/contracts").GoogleWorkspaceProvider,
+    workspace?: string,
 ) {
-    return apiRequest<void>(`/user/integrations/${provider}`, {
-        method: "DELETE",
-    });
+    return apiRequest<void>(
+        "google.workspace", connectorPath(`/user/integrations/${provider}`, workspace),
+        { method: "DELETE" },
+    );
 }
 export async function updateGoogleWorkspaceSettings(
     provider: import("@mike/contracts").GoogleWorkspaceProvider,
     settings: { enabled?: boolean; requireWriteApproval?: boolean; readOnly?: boolean },
+    workspace?: string,
 ) {
     return apiRequest<import("@mike/contracts").GoogleWorkspaceStatus>(
-        `/user/integrations/${provider}`,
+        "google.workspace", connectorPath(`/user/integrations/${provider}`, workspace),
         {
             method: "PATCH",
             headers: { "Content-Type": "application/json" },
@@ -4006,9 +4166,13 @@ export async function setGoogleWorkspaceToolEnabled(
     provider: import("@mike/contracts").GoogleWorkspaceProvider,
     toolName: string,
     enabled: boolean,
+    workspace?: string,
 ) {
     return apiRequest<import("@mike/contracts").GoogleWorkspaceStatus>(
-        `/user/integrations/${provider}/tools/${encodeURIComponent(toolName)}`,
+        "google.workspace", connectorPath(
+            `/user/integrations/${provider}/tools/${encodeURIComponent(toolName)}`,
+            workspace,
+        ),
         {
             method: "PATCH",
             headers: { "Content-Type": "application/json" },
@@ -4143,7 +4307,7 @@ export async function getPlaybookConfiguration(
     workspace?: string | null,
 ): Promise<PlaybookConfiguration> {
     return apiRequest(
-        `/playbooks/configuration${workspace ? `?workspace=${encodeURIComponent(workspace)}` : ""}`,
+        "playbooks.save", `/playbooks/configuration${workspace ? `?workspace=${encodeURIComponent(workspace)}` : ""}`,
     );
 }
 
@@ -4151,12 +4315,12 @@ export async function listPlaybooks(
     workspace?: string | null,
 ): Promise<Playbook[]> {
     return apiRequest(
-        `/playbooks${workspace ? `?workspace=${encodeURIComponent(workspace)}` : ""}`,
+        "playbooks.save", `/playbooks${workspace ? `?workspace=${encodeURIComponent(workspace)}` : ""}`,
     );
 }
 
 export async function getPlaybook(playbookId: string): Promise<Playbook> {
-    return apiRequest(`/playbooks/${encodeURIComponent(playbookId)}`);
+    return apiRequest("playbooks.save", `/playbooks/${encodeURIComponent(playbookId)}`);
 }
 
 /** The Word or PDF file a playbook was imported from, streamed for the viewer. */
@@ -4180,7 +4344,7 @@ function playbookSourcesPath(playbookId: string): string {
 export async function listPlaybookSources(
     playbookId: string,
 ): Promise<PlaybookSupplementarySource[]> {
-    return apiRequest(playbookSourcesPath(playbookId));
+    return apiRequest("playbooks.import", playbookSourcesPath(playbookId));
 }
 
 export function getPlaybookSupplementaryFileUrl(
@@ -4199,7 +4363,7 @@ export async function uploadPlaybookSource(
         uploadUrl: string;
         storageKey: string;
         contentType: string;
-    }>(`${playbookSourcesPath(playbookId)}/upload-url`, {
+    }>("playbooks.import", `${playbookSourcesPath(playbookId)}/upload-url`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ filename: file.name, sizeBytes: file.size }),
@@ -4212,7 +4376,7 @@ export async function uploadPlaybookSource(
     if (!upload.ok) {
         throw new Error("The document could not be uploaded. Please try again.");
     }
-    return apiRequest(playbookSourcesPath(playbookId), {
+    return apiRequest("playbooks.import", playbookSourcesPath(playbookId), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ storageKey: staged.storageKey, filename: file.name }),
@@ -4224,7 +4388,7 @@ export async function addPlaybookSourceFromDocument(
     playbookId: string,
     documentId: string,
 ): Promise<PlaybookSupplementarySource> {
-    return apiRequest(playbookSourcesPath(playbookId), {
+    return apiRequest("playbooks.import", playbookSourcesPath(playbookId), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ documentId }),
@@ -4236,7 +4400,7 @@ export async function deletePlaybookSource(
     sourceId: string,
 ): Promise<void> {
     return apiRequest(
-        `${playbookSourcesPath(playbookId)}/${encodeURIComponent(sourceId)}`,
+        "playbooks.import", `${playbookSourcesPath(playbookId)}/${encodeURIComponent(sourceId)}`,
         { method: "DELETE" },
     );
 }
@@ -4262,7 +4426,7 @@ export async function createPlaybook(
     workspace?: string | null,
 ): Promise<Playbook> {
     const name = details.name?.trim();
-    return apiRequest("/playbooks", {
+    return apiRequest("playbooks.save", "/playbooks", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -4309,7 +4473,7 @@ export async function startPlaybookImport(
         ...(workspace ? { workspace } : {}),
     };
     if (!(source instanceof File)) {
-        return apiRequest<PlaybookImport>("/playbooks/import", {
+        return apiRequest<PlaybookImport>("playbooks.import", "/playbooks/import", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ documentId: source.documentId, ...options }),
@@ -4320,7 +4484,7 @@ export async function startPlaybookImport(
         uploadUrl: string;
         storageKey: string;
         contentType: string;
-    }>("/playbooks/import/upload-url", {
+    }>("playbooks.import", "/playbooks/import/upload-url", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ filename: file.name, sizeBytes: file.size }),
@@ -4335,7 +4499,7 @@ export async function startPlaybookImport(
         throw new Error("The playbook could not be uploaded. Please try again.");
     }
 
-    return apiRequest<PlaybookImport>("/playbooks/import", {
+    return apiRequest<PlaybookImport>("playbooks.import", "/playbooks/import", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -4349,7 +4513,7 @@ export async function startPlaybookImport(
 export async function getPlaybookImport(
     importId: string,
 ): Promise<PlaybookImport> {
-    return apiRequest(`/playbooks/imports/${encodeURIComponent(importId)}`);
+    return apiRequest("playbooks.import", `/playbooks/imports/${encodeURIComponent(importId)}`);
 }
 
 /** The caller's imports still compiling in the workspace. */
@@ -4357,7 +4521,7 @@ export async function listRunningPlaybookImports(
     workspace?: string | null,
 ): Promise<PlaybookImport[]> {
     return apiRequest(
-        `/playbooks/imports${workspace ? `?workspace=${encodeURIComponent(workspace)}` : ""}`,
+        "playbooks.import", `/playbooks/imports${workspace ? `?workspace=${encodeURIComponent(workspace)}` : ""}`,
     );
 }
 
@@ -4367,7 +4531,7 @@ export async function updatePlaybook(
     /** Sharing has its own calls (sharePlaybook); only visibility rides along. */
     access?: Pick<Playbook, "visibility">,
 ): Promise<Playbook> {
-    return apiRequest(`/playbooks/${encodeURIComponent(playbookId)}`, {
+    return apiRequest("playbooks.save", `/playbooks/${encodeURIComponent(playbookId)}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ content, ...access }),
@@ -4378,7 +4542,7 @@ export async function updatePlaybook(
 export async function getPlaybookPeople(
     playbookId: string,
 ): Promise<ProjectPeople> {
-    return apiRequest(`/playbooks/${encodeURIComponent(playbookId)}/people`);
+    return apiRequest("playbooks.save", `/playbooks/${encodeURIComponent(playbookId)}/people`);
 }
 
 export interface PlaybookShare {
@@ -4394,14 +4558,14 @@ export interface PlaybookShare {
 export async function listPlaybookShares(
     playbookId: string,
 ): Promise<PlaybookShare[]> {
-    return apiRequest(`/playbooks/${encodeURIComponent(playbookId)}/shares`);
+    return apiRequest("playbooks.save", `/playbooks/${encodeURIComponent(playbookId)}/shares`);
 }
 
 export async function sharePlaybook(
     playbookId: string,
     payload: { emails: string[]; role: AccessAssignmentRole },
 ): Promise<void> {
-    return apiRequest(`/playbooks/${encodeURIComponent(playbookId)}/share`, {
+    return apiRequest("playbooks.save", `/playbooks/${encodeURIComponent(playbookId)}/share`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
@@ -4413,7 +4577,7 @@ export async function revokePlaybookShare(
     shareId: string,
 ): Promise<void> {
     return apiRequest(
-        `/playbooks/${encodeURIComponent(playbookId)}/shares/${encodeURIComponent(shareId)}`,
+        "playbooks.save", `/playbooks/${encodeURIComponent(playbookId)}/shares/${encodeURIComponent(shareId)}`,
         { method: "DELETE" },
     );
 }
@@ -4436,7 +4600,7 @@ export async function reviewDocumentWithPlaybook(
         reviewScope?: PlaybookReviewScope;
     },
 ): Promise<PlaybookRun> {
-    return apiRequest(`/playbooks/${encodeURIComponent(playbookId)}/review`, {
+    return apiRequest("playbooks.save", `/playbooks/${encodeURIComponent(playbookId)}/review`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
@@ -4446,7 +4610,7 @@ export async function reviewDocumentWithPlaybook(
 export async function listPlaybookRuns(
     playbookId: string,
 ): Promise<PlaybookRun[]> {
-    return apiRequest(`/playbooks/${encodeURIComponent(playbookId)}/runs`);
+    return apiRequest("playbooks.review", `/playbooks/${encodeURIComponent(playbookId)}/runs`);
 }
 
 /** A run listed across playbooks, named after the playbook it reviewed. */
@@ -4459,12 +4623,12 @@ export async function listAllPlaybookRuns(
     const query = workspace
         ? `?workspace=${encodeURIComponent(workspace)}`
         : "";
-    return apiRequest(`/playbooks/runs${query}`);
+    return apiRequest("playbooks.review", `/playbooks/runs${query}`);
 }
 
 /** Deletes one of the caller's runs; one still running is refused. */
 export async function deletePlaybookRun(runId: string): Promise<void> {
-    return apiRequest(`/playbooks/runs/${encodeURIComponent(runId)}`, {
+    return apiRequest("playbooks.review", `/playbooks/runs/${encodeURIComponent(runId)}`, {
         method: "DELETE",
     });
 }
@@ -4494,7 +4658,7 @@ export async function listPlaybookRunHistory(options: {
     if (options.before) params.set("before", options.before);
     if (options.limit) params.set("limit", String(options.limit));
     const query = params.toString();
-    return apiRequest(`/playbooks/runs/history${query ? `?${query}` : ""}`, {
+    return apiRequest("playbooks.review", `/playbooks/runs/history${query ? `?${query}` : ""}`, {
         signal: options.signal,
     });
 }
@@ -4511,11 +4675,11 @@ export async function getPlaybookRunStatuses(
     signal?: AbortSignal,
 ): Promise<PlaybookRunStatus[]> {
     const params = new URLSearchParams({ ids: ids.join(",") });
-    return apiRequest(`/playbooks/runs/status?${params}`, { signal });
+    return apiRequest("playbooks.review", `/playbooks/runs/status?${params}`, { signal });
 }
 
 export async function deletePlaybook(playbookId: string): Promise<void> {
-    return apiRequest(`/playbooks/${encodeURIComponent(playbookId)}`, {
+    return apiRequest("playbooks.save", `/playbooks/${encodeURIComponent(playbookId)}`, {
         method: "DELETE",
     });
 }
@@ -4536,29 +4700,29 @@ const jsonBody = (method: string, body: unknown): RequestInit => ({
  * Each is handed over once, so the caller shows what comes back.
  */
 export function claimIntakeNotifications() {
-    return apiRequest<IntakeNotificationClaim>("/intake/notifications/claim", {
+    return apiRequest<IntakeNotificationClaim>("intake.manage", "/intake/notifications/claim", {
         method: "POST",
     });
 }
 
 /** List the organization members a request can be assigned to. */
 export function getIntakeMembers(orgId: string) {
-    return apiRequest<IntakeMember[]>(intakePath(orgId, "/members"));
+    return apiRequest<IntakeMember[]>("intake.manage", intakePath(orgId, "/members"));
 }
 /** List each requester the queue can be filtered by, once. */
 export function getIntakeRequesters(orgId: string) {
-    return apiRequest<IntakeRequester[]>(intakePath(orgId, "/requesters"));
+    return apiRequest<IntakeRequester[]>("intake.manage", intakePath(orgId, "/requesters"));
 }
 /**
  * How MikeGC records requests from email and Slack. Only owners and admins
  * may read it (403 otherwise); secrets come back only as whether they are set.
  */
 export function getIntakeAutomation(orgId: string) {
-    return apiRequest<IntakeAutomationSettings>(intakePath(orgId, "/automation"));
+    return apiRequest<IntakeAutomationSettings>("intake.manage", intakePath(orgId, "/automation"));
 }
 /** Change automated intake; fields left out keep their saved value. */
 export function updateIntakeAutomation(orgId: string, body: IntakeAutomationUpdate) {
-    return apiRequest<IntakeAutomationSettings>(
+    return apiRequest<IntakeAutomationSettings>("intake.manage",
         intakePath(orgId, "/automation"),
         jsonBody("PATCH", body),
     );
@@ -4569,21 +4733,21 @@ export function updateIntakeAutomation(orgId: string, body: IntakeAutomationUpda
  * account. The server checks it can reach the mailbox before saving.
  */
 export function connectIntakeMailbox(orgId: string, body: IntakeMailboxConnection) {
-    return apiRequest<IntakeAutomationSettings>(
+    return apiRequest<IntakeAutomationSettings>("intake.manage",
         intakePath(orgId, "/automation/mailbox"),
         jsonBody("POST", body),
     );
 }
 /** Stop reading and replying from the intake mailbox. */
 export function disconnectIntakeMailbox(orgId: string) {
-    return apiRequest<IntakeAutomationSettings>(
+    return apiRequest<IntakeAutomationSettings>("intake.manage",
         intakePath(orgId, "/automation/mailbox"),
         { method: "DELETE" },
     );
 }
 /** Send a test email from the intake mailbox to the signed-in admin. */
 export function sendIntakeMailboxTest(orgId: string) {
-    return apiRequest<{ sent_to: string }>(
+    return apiRequest<{ sent_to: string }>("intake.manage",
         intakePath(orgId, "/automation/mailbox/test"),
         { method: "POST" },
     );
@@ -4606,7 +4770,7 @@ export function getIntakeDashboard(
         resolved_days: String(periods.resolved_days),
         median_days: String(periods.median_days),
     });
-    return apiRequest<IntakeDashboard>(intakePath(orgId, `/dashboard?${query}`));
+    return apiRequest<IntakeDashboard>("intake.manage", intakePath(orgId, `/dashboard?${query}`));
 }
 /** What a dashboard figure counted, for the queue to show just those requests. */
 export type IntakeListScope =
@@ -4639,31 +4803,31 @@ export function listIntakeRequests(orgId: string, query: IntakeListQuery = {}) {
     const timezone = browserTimeZone();
     if (timezone) params.set("timezone", timezone);
     const suffix = params.size ? `?${params}` : "";
-    return apiRequest<IntakeRequestPage>(intakePath(orgId, `/requests${suffix}`));
+    return apiRequest<IntakeRequestPage>("intake.manage", intakePath(orgId, `/requests${suffix}`));
 }
 /** Submit caller-generated request and command IDs so a lost response can be replayed. */
 export function submitIntakeRequest(orgId: string, body: IntakeSubmission) {
-    return apiRequest<IntakeReceipt>(intakePath(orgId, "/requests"), jsonBody("POST", body));
+    return apiRequest<IntakeReceipt>("intake.manage", intakePath(orgId, "/requests"), jsonBody("POST", body));
 }
 /** Fetch an organization-scoped request with its current command capabilities. */
 export function getIntakeRequest(orgId: string, id: string) {
-    return apiRequest<IntakeRequest>(intakeRequestPath(orgId, id));
+    return apiRequest<IntakeRequest>("intake.manage", intakeRequestPath(orgId, id));
 }
 /** Replace a request's details at the version the editor loaded. */
 export function editIntakeRequest(orgId: string, id: string, body: IntakeEdit) {
-    return apiRequest<IntakeReceipt>(intakeRequestPath(orgId, id), jsonBody("PATCH", body));
+    return apiRequest<IntakeReceipt>("intake.manage", intakeRequestPath(orgId, id), jsonBody("PATCH", body));
 }
 /** Read one 100-note page of the request's activity. */
 export function getIntakeMessages(orgId: string, id: string, offset = 0) {
-    return apiRequest<IntakeMessage[]>(intakeRequestPath(orgId, id, `/messages?offset=${offset}&limit=100`));
+    return apiRequest<IntakeMessage[]>("intake.manage", intakeRequestPath(orgId, id, `/messages?offset=${offset}&limit=100`));
 }
 /** Read one 100-event page of the request's history. */
 export function getIntakeEvents(orgId: string, id: string, offset = 0) {
-    return apiRequest<IntakeEvent[]>(intakeRequestPath(orgId, id, `/events?offset=${offset}&limit=100`));
+    return apiRequest<IntakeEvent[]>("intake.manage", intakeRequestPath(orgId, id, `/events?offset=${offset}&limit=100`));
 }
 /** List the documents attached to a request; every member can open them. */
 export function getIntakeDocuments(orgId: string, id: string) {
-    return apiRequest<IntakeDocument[]>(intakeRequestPath(orgId, id, "/documents"));
+    return apiRequest<IntakeDocument[]>("intake.manage", intakeRequestPath(orgId, id, "/documents"));
 }
 /** The most documents one copy call takes; the API refuses a longer list. */
 export const INTAKE_COPY_BATCH_SIZE = 20;
@@ -4681,7 +4845,7 @@ export async function copyIntakeDocuments(
 ) {
     let documents: IntakeDocument[] = [];
     for (let start = 0; start < documentIds.length; start += INTAKE_COPY_BATCH_SIZE) {
-        documents = await apiRequest<IntakeDocument[]>(
+        documents = await apiRequest<IntakeDocument[]>("intake.manage",
             intakeRequestPath(orgId, requestId, "/documents/copy"),
             jsonBody("POST", {
                 document_ids: documentIds.slice(start, start + INTAKE_COPY_BATCH_SIZE),
@@ -4719,11 +4883,11 @@ export function uploadIntakeDocuments(
 }
 /** Apply a request command; retries must reuse the original command body. */
 export function commandIntakeRequest(orgId: string, id: string, action: IntakeAction, body: IntakeCommand) {
-    return apiRequest<IntakeReceipt>(intakeRequestPath(orgId, id, `/${action}`), jsonBody("POST", body));
+    return apiRequest<IntakeReceipt>("intake.manage", intakeRequestPath(orgId, id, `/${action}`), jsonBody("POST", body));
 }
 /** Send a message to the requester again after it couldn't be sent. */
 export function retryIntakeDelivery(orgId: string, id: string, outboundId: string) {
-    return apiRequest<{ retried: boolean }>(
+    return apiRequest<{ retried: boolean }>("intake.manage",
         intakeRequestPath(orgId, id, `/outbound/${encodeURIComponent(outboundId)}/retry`),
         { method: "POST" },
     );
@@ -4733,7 +4897,7 @@ export function retryIntakeDelivery(orgId: string, id: string, outboundId: strin
  * reply that was on screen, so a reply arriving meanwhile stays new.
  */
 export function markIntakeReplySeen(orgId: string, id: string, seenAt: string | null) {
-    return apiRequest<{ ok: true }>(intakeRequestPath(orgId, id, "/reply-seen"), {
+    return apiRequest<{ ok: true }>("intake.manage", intakeRequestPath(orgId, id, "/reply-seen"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ seen_at: seenAt }),
