@@ -113,6 +113,8 @@ const documentEntry = z.object({
   document_id: z.string(),
   version_id: z.string(),
   done: z.boolean(),
+  /** Why it was left off when its file couldn't be fetched, so a retry still names it. */
+  dropped: skippedReason.optional(),
 });
 export type DocumentEntry = z.infer<typeof documentEntry>;
 

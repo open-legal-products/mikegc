@@ -473,13 +473,17 @@ export function shareId(url: string): string {
 
 const SHAREPOINT = /^https:\/\/[a-z0-9-]+(?:-my)?\.sharepoint\.(?:com|us|de|cn)\//i;
 
-/** A file shared in a channel, through Graph; null when larger than `maxBytes`. */
+/**
+ * A file shared in a channel, through Graph; null when larger than
+ * `maxBytes`, "unreadable" when it isn't in SharePoint or the app has no
+ * document access.
+ */
 export async function teamsDownloadFile(
   settings: AutomationRow,
   url: string,
   maxBytes: number,
-): Promise<ArrayBuffer | null> {
-  if (!SHAREPOINT.test(url) || settings.teams_files_access === false) return null;
+): Promise<ArrayBuffer | "unreadable" | null> {
+  if (!SHAREPOINT.test(url) || settings.teams_files_access === false) return "unreadable";
   const token = await graphToken(settings);
   const response = await microsoftResponse(
     `${GRAPH_API}/shares/${shareId(url)}/driveItem/content`,

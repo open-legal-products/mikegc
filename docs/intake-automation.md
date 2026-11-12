@@ -377,7 +377,10 @@ everyone in the channel"). An email goes to the requester and those copied.
 
 PDF, Word, Excel and PowerPoint attachments are accepted: up to 10 per message
 and 25 MB each. Anything else, or anything over those limits, is listed at the
-end of the request's description so a reviewer can ask for it. Images
+end of the request's description so a reviewer can ask for it. A file shared
+in Slack or Teams that MikeGC can't fetch (larger than the channel said, or
+in Teams without document access) is named in a MikeGC note on the request
+instead, as not attached. Images
 embedded in an email's body, such as signature logos, are left out without
 being listed. Accepted documents become the request's documents, like ones a
 member uploads, and every member can open them: Word and PowerPoint files are
@@ -575,9 +578,9 @@ changing one channel's app or secret later doesn't change the other's.
 Every request from Teams carries a Bot Connector token, which MikeGC checks
 against Bot Framework's signing keys, the bot's app ID, the activity's service
 URL and the configured tenant before reading it. Files shared in the channel
-are read through Graph when document access works, and listed as not attached
-otherwise. MikeGC's replies go through the Bot Connector; a resolution's
-documents are uploaded to the channel's files folder, under
+are read through Graph when document access works, and named as not attached
+in a note on the request otherwise. MikeGC's replies go through the Bot
+Connector; a resolution's documents are uploaded to the channel's files folder, under
 `MikeGC/<request subject>/`, and linked from the message, so channel members
 open them with their existing access. Without document access, the message
 names them and says to ask Legal for a copy. Whether Teams delivers thread

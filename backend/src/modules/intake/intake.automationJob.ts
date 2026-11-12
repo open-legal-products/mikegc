@@ -12,6 +12,7 @@ import {
   RECORDED_INCOMPLETE,
   addDocuments,
   channelAttachments,
+  noteNotAttached,
   type CandidateDownloader,
 } from "./intake.attachments";
 import {
@@ -404,11 +405,11 @@ async function linkRequestThread(
 /** Download a channel file for an attachment. */
 function downloader(settings: AutomationRow | null): CandidateDownloader {
   return async (candidate) => {
-    if (!candidate.url || !settings) return null;
+    if (!candidate.url || !settings) return "unreadable";
     if (candidate.via === "teams")
       return teamsDownloadFile(settings, candidate.url, MAX_ATTACHMENT_BYTES);
     const token = slackBotToken(settings);
-    return token ? downloadSlackFile(token, candidate.url, MAX_ATTACHMENT_BYTES) : null;
+    return token ? downloadSlackFile(token, candidate.url, MAX_ATTACHMENT_BYTES) : "unreadable";
   };
 }
 
@@ -701,6 +702,13 @@ async function processInbound(db: Db, row: InboundRow): Promise<Record<string, u
     await settleInbound(db, row.id, "done", null, payload);
     return { request_id: null, deleted: true };
   }
+  // Files that couldn't be fetched are named on the request, once.
+  await noteNotAttached(db, {
+    orgId: row.org_id,
+    requestId,
+    noteId: stableId(`intake.not-attached:${row.id}`),
+    dropped: attached,
+  });
   if (payload.kind === "mail" && payload.related_request_id && !payload.relatedNoted) {
     await noteRelated(db, row, payload.related_request_id, requestId, payload.from.email);
     payload.relatedNoted = true;

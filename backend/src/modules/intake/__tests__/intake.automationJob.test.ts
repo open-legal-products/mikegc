@@ -965,6 +965,38 @@ describe("recording a Slack thread", () => {
       mocks.enqueueDbJob.mock.calls.find(([, input]) => input.kind === "intake.preprocess")?.[1].payload,
     ).toMatchObject({ round: 0, acknowledge: true, condition: "The request is about an NDA" });
   });
+  it("names on the request a Teams file it couldn't fetch, rather than dropping it unseen", async () => {
+    setup({
+      payload: {
+        kind: "teams",
+        tenant_id: "tenant-1",
+        service_url: "https://smba.trafficmanager.net/emea/",
+        conversation_id: "19:abc@thread.tacv2;messageid=1700000000001",
+        team_id: "team-1",
+        aad_group_id: null,
+        channel_id: "19:abc@thread.tacv2",
+        root_message_id: "1700000000001",
+        activity_id: "1700000000001",
+        from: { id: "29:jane", aad_object_id: "aad-jane", name: "Jane Business" },
+        date: "2026-11-02T09:14:00.000Z",
+        text: "Please review the attached NDA",
+        files: [{ name: "NDA.docx", size: null, url: "https://acme.sharepoint.com/sites/legal/NDA.docx" }],
+      },
+      source: "slack",
+      model: false,
+    });
+    // Document access is an optional Teams setup step.
+    Object.assign(memory.rows("intake_automation")[0]!, { teams_files_access: false });
+    await expect(handleIntakeAgent(memory.db, job())).resolves.toMatchObject({ request_id: inboundId });
+    expect(memory.rows("documents")).toEqual([]);
+    expect(memory.rows("intake_messages").filter((m) => m.kind === "note")).toEqual([
+      expect.objectContaining({
+        request_id: inboundId,
+        automated: true,
+        body: "Not attached: MikeGC couldn't add these files, so ask the requester for a copy.\n- NDA.docx: could not be read",
+      }),
+    ]);
+  });
   it("fails at once, with a reason an admin can act on, when MikeGC can't read the channel", async () => {
     setup({ payload: slackPayload(), source: "slack" });
     stubSlack({ "conversations.replies": () => ({ ok: false, error: "not_in_channel" }) });
