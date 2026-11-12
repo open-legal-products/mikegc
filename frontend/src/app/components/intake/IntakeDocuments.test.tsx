@@ -77,4 +77,35 @@ describe("useIntakeDocumentViewer", () => {
     );
     expect(screen.getByText("versions: b1")).toBeInTheDocument();
   });
+
+  it("keeps the document opened last when an earlier one loads late", async () => {
+    type Viewer = ReturnType<typeof useIntakeDocumentViewer>;
+    const held: { viewer: Viewer | null } = { viewer: null };
+    function Harness() {
+      const viewer = useIntakeDocumentViewer();
+      useEffect(() => {
+        held.viewer = viewer;
+      });
+      return viewer.panel;
+    }
+    const slow = deferred<{ id: string }>();
+    mocks.getDocument.mockImplementation((id: string) =>
+      id === "doc-a" ? slow.promise : Promise.resolve({ id }),
+    );
+    mocks.listDocumentVersions.mockResolvedValue({ current_version_id: null, versions: [] });
+    render(<Harness />);
+
+    let first!: Promise<void>;
+    act(() => {
+      first = held.viewer!.open("doc-a");
+    });
+    await act(() => held.viewer!.open("doc-b"));
+    expect(screen.getByText("open: doc-b")).toBeInTheDocument();
+
+    await act(async () => {
+      slow.resolve({ id: "doc-a" });
+      await first;
+    });
+    expect(screen.getByText("open: doc-b")).toBeInTheDocument();
+  });
 });

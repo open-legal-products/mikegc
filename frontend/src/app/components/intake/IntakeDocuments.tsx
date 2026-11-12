@@ -130,12 +130,19 @@ export function useIntakeDocumentViewer() {
   // before it never replaces the open document's history.
   const versionRequest = useRef(0);
 
+  // Likewise the latest document asked for: a slower answer for one opened
+  // before it never replaces the one opened after.
+  const openRequest = useRef(0);
+
   async function open(documentId: string) {
+    const request = ++openRequest.current;
     try {
       setVersionId(null);
-      setViewing(await getDocument(documentId));
+      const document = await getDocument(documentId);
+      if (request === openRequest.current) setViewing(document);
     } catch (error) {
-      notifyError(error, { action: "open the document" });
+      if (request === openRequest.current)
+        notifyError(error, { action: "open the document" });
     }
   }
 
