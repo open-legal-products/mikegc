@@ -397,17 +397,62 @@ describe("IntakeRules", () => {
         rules: [rule("Employment", "lawyer-b"), rule("NDAs", "lawyer-a")],
       }),
     );
+    // A single rule's Delete asks first, as deleting from Actions does.
     await rowAction(user, 1, "Delete");
+    expect(await screen.findByText("Delete this rule?")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Keep" }));
+    expect(
+      screen.getByRole("textbox", { name: "Rule 1 condition" }),
+    ).toHaveValue("Employment");
+    await rowAction(user, 1, "Delete");
+    await user.click(await screen.findByRole("button", { name: "Delete" }));
     await waitFor(() =>
       expect(mocks.update).toHaveBeenLastCalledWith("org-a", {
         rules: [rule("NDAs", "lawyer-a")],
       }),
     );
     await rowAction(user, 1, "Delete");
+    await user.click(await screen.findByRole("button", { name: "Delete" }));
     await waitFor(() =>
       expect(mocks.update).toHaveBeenLastCalledWith("org-a", { rules: [] }),
     );
     expect(screen.getByText("No rules yet")).toBeInTheDocument();
+  });
+
+  it("moves a rule past the next one shown while the table is filtered", async () => {
+    const user = userEvent.setup();
+    server = settings([
+      rule("NDAs", "lawyer-a"),
+      rule("Employment", "lawyer-b"),
+      rule("Supplier contracts", "lawyer-a"),
+    ]);
+    render(<IntakeRules orgId="org-a" />);
+    await table();
+    await user.click(screen.getByRole("button", { name: "Filter by member" }));
+    await user.click(await screen.findByRole("menuitem", { name: "Lawyer B" }));
+    // The only rule shown has no shown neighbour to move past.
+    await user.click(
+      screen.getByRole("button", { name: "Actions for rule 2" }),
+    );
+    for (const name of ["Move up", "Move down"])
+      expect(screen.getByRole("menuitem", { name })).toHaveAttribute(
+        "aria-disabled",
+        "true",
+      );
+    await user.keyboard("{Escape}");
+
+    await user.click(screen.getByRole("button", { name: "Filter by member" }));
+    await user.click(await screen.findByRole("menuitem", { name: "Lawyer A" }));
+    await rowAction(user, 3, "Move up");
+    await waitFor(() =>
+      expect(mocks.update).toHaveBeenLastCalledWith("org-a", {
+        rules: [
+          rule("Supplier contracts", "lawyer-a"),
+          rule("NDAs", "lawyer-a"),
+          rule("Employment", "lawyer-b"),
+        ],
+      }),
+    );
   });
 
   it("keeps fields open while a save is out, and saves what was typed meanwhile next", async () => {
