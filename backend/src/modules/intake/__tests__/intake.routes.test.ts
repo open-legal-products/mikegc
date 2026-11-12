@@ -468,3 +468,12 @@ describe("intake route contracts", () => {
     ).toBe(403);
   });
 });
+
+it("reads bounded delivery status with the authenticated actor and workspace", async () => {
+  mocks.rpc.mockResolvedValue({ data: [], error: null });
+  expect((await request(app).post(`${path}/requests/${id}/deliveries/status`).send({ ids: [command_id] })).status).toBe(200);
+  expect(mocks.rpc).toHaveBeenCalledWith("intake_delivery_status", {
+    p_org: org, p_actor: "signed-in-user", p_request: id, p_outbound: [command_id],
+  });
+  expect((await request(app).post(`${path}/requests/${id}/deliveries/status`).send({ ids: Array(101).fill(command_id) })).status).toBe(400);
+});

@@ -18,6 +18,7 @@ import {
 import {
   ChannelDeliveryError,
   type ChannelContext,
+  assertIntakeDeliveryActive,
   type ChannelLink,
   type OutboundMessage,
   findConversation,
@@ -623,6 +624,7 @@ export async function sendChatReply(
         : outlookAdapter;
   const ctx: ChannelContext = {
     db,
+    assertActive: () => assertIntakeDeliveryActive(db, row.org_id),
     settings,
     fromName: settings.email_from_name?.trim() || "Legal",
     readDocument: () => Promise.reject(new Error("No documents to read.")),

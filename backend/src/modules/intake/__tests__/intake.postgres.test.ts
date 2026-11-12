@@ -171,6 +171,8 @@ describe.skipIf(!container)("intake real PostgreSQL transactions", () => {
     sql(migration("20261112_04_intake_update_expected_version.sql"));
     sql(migration("20261112_05_intake_thread_claim.sql"));
     sql(migration("20261112_05_intake_thread_claim.sql"));
+    sql(migration("20261112_06_intake_side_effect_guards.sql"));
+    sql(migration("20261112_06_intake_side_effect_guards.sql"));
   }, 90000);
   afterAll(() => {
     execFileSync("docker", [
@@ -1089,6 +1091,7 @@ describe.skipIf(!container)("intake real PostgreSQL transactions", () => {
     sql(migration("20261111_02_intake_edit_preserves_unread.sql"));
     sql(migration("20261112_04_intake_update_expected_version.sql"));
     sql(migration("20261112_05_intake_thread_claim.sql"));
+    sql(migration("20261112_06_intake_side_effect_guards.sql"));
   };
   it("backfills legacy requests from their creator's profile", () => {
     beforeReplay();
@@ -1347,6 +1350,66 @@ describe.skipIf(!container)("intake real PostgreSQL transactions", () => {
         `'{"channel":"C1","thread_ts":"1.${message}","channel_name":"legal-requests"}'::jsonb)`,
     );
   };
+  it("cancels pending delivery on deletion and refuses late progress or retry", () => {
+    thread();
+    sql(`select public.intake_acknowledge_automated(${q(10)},${q(21)},${q(300)})`);
+    sql(`select public.soft_delete_organization(${q(10)},${q(1)})`);
+    expect(sql(`select status from public.intake_outbound where id=${q(300)}`)).toBe("failed");
+    expect(sql(`select public.intake_record_delivery(${q(10)},${q(300)},'pending')`)).toBe("f");
+    expect(() => sql(`select public.intake_retry_delivery(${q(10)},${q(2)},${q(21)},${q(300)})`)).toThrow(/P0002|42501/);
+    sql(`select public.restore_organization(${q(10)},${q(1)})`);
+    expect(sql(`select public.intake_record_delivery(${q(10)},${q(300)},'pending')`)).toBe("f");
+    expect(sql(`select status from public.intake_outbound where id=${q(300)}`)).toBe("failed");
+  });
+  it("returns only authorized, requested delivery statuses", () => {
+    thread();
+    sql(`select public.intake_acknowledge_automated(${q(10)},${q(21)},${q(300)})`);
+    const read = (actor: number, ids: string) => `select public.intake_delivery_status(${q(10)},${q(actor)},${q(21)},(${ids})::uuid[])`;
+    expect(json(read(2, `array[${q(300)}]`))).toMatchObject([{ outbound_id: uid(300), status: "pending" }]);
+    expect(json(read(2, `array[${q(999)}]`))).toEqual([]);
+    expect(() => sql(read(6, `array[${q(300)}]`))).toThrow(/P0002/);
+    expect(() => sql(read(2, `array_fill(${q(300)}::uuid,array[101])`))).toThrow(/22023/);
+  });
+  const reviewDocument = () => {
+    thread();
+    sql(`insert into public.documents(id,org_id,user_id,library_kind,status)
+      values(${q(60)},${q(10)},${q(2)},'intake_attachment','ready');
+      insert into public.intake_request_documents(org_id,request_id,document_id,added_by)
+      values(${q(10)},${q(21)},${q(60)},${q(2)});
+      select public.create_document_version(${q(60)},'{"id":"${uid(61)}","storage_path":"original.docx","filename":"NDA.docx","source":"upload","file_type":"docx"}');`);
+  };
+  const commitReview = () => `select public.create_intake_document_edits(${q(10)},${q(21)},1,${q(60)},${q(61)},
+    '{"storage_path":"edited.docx","filename":"NDA.docx","source":"assistant_edit","file_type":"docx"}',
+    '[{"change_id":"change-1","deleted_text":"five","inserted_text":"two"}]');`;
+  it("atomically commits member-uploaded intake edits with their active version", () => {
+    reviewDocument();
+    const result = json(commitReview());
+    expect(result.edits).toHaveLength(1);
+    expect(sql(`select current_version_id from public.documents where id=${q(60)}`)).toBe(result.version.id);
+  });
+  it("rejects a review when closure commits while its model is running", async () => {
+    reviewDocument();
+    const marker = 960000 + process.pid;
+    const closing = parallel(`begin; update public.intake_requests set state='cancelled',version=version+1 where id=${q(21)};
+      select pg_advisory_xact_lock(${marker}); select pg_sleep(3); commit;`);
+    await waitUntilLocked(marker);
+    const result = await parallel(commitReview());
+    expect((await closing).code).toBe(0);
+    expect(result.code).toBe(0);
+    expect(sql(`select current_version_id from public.documents where id=${q(60)}`)).toBe(uid(61));
+    expect(sql(`select count(*) from public.document_versions where document_id=${q(60)}`)).toBe("1");
+    expect(sql("select count(*) from public.document_edits")).toBe("0");
+    expect(sql(`select public.intake_note_automated(${q(10)},${q(21)},${q(777)},'Late model answer','preprocessing')`)).toBe("f");
+  });
+  it.each(["newer request", "newer document", "deleted org", "unlinked document"])("refuses review persistence after %s", reason => {
+    reviewDocument();
+    if (reason === "newer request") sql(`update public.intake_requests set version=version+1 where id=${q(21)}`);
+    if (reason === "newer document") sql(`update public.documents set current_version_id=null where id=${q(60)}`);
+    if (reason === "deleted org") sql(`select public.soft_delete_organization(${q(10)},${q(1)})`);
+    if (reason === "unlinked document") sql(`delete from public.intake_request_documents where document_id=${q(60)}`);
+    expect(sql(commitReview())).toBe("");
+    expect(sql("select count(*) from public.document_edits")).toBe("0");
+  });
   const ask = (n: number, stage = "rule", request = 21, acknowledge = false) =>
     sql(
       `select public.intake_ask_automated(${q(10)},${q(request)},${q(n)},${q(n + 1)},` +

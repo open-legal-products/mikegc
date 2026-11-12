@@ -87,7 +87,7 @@ function makeDb(opts: {
                         error: null,
                     }),
                 then: (onF: (v: unknown) => unknown) =>
-                    Promise.resolve({ data: null, error: null }).then(onF),
+                    Promise.resolve({ data: [{ id: "row-1" }], error: null }).then(onF),
             };
             return b;
         },

@@ -6,12 +6,13 @@ import { configuredFrontendUrl } from "../../lib/runtimeConfig";
 import { safeError } from "../../lib/safeError";
 import { downloadFile } from "../../lib/storage";
 import type { Db } from "../../lib/supabase";
-import { loadAutomationRow } from "./intake.settingsRow";
+import { intakeOrgDeleted, loadAutomationRow } from "./intake.settingsRow";
 import {
   ChannelDeliveryError,
   loadLinkById,
   type ChannelAdapter,
   type ChannelContext,
+  assertIntakeDeliveryActive,
   type ChannelSource,
   type OutboundDocument,
   type OutboundMessage,
@@ -236,6 +237,7 @@ export async function handleIntakeDeliver(
   const row = await loadOutbound(db, ids.data);
   if (!row) return { skipped: "missing" };
   if (row.status !== "pending") return { skipped: row.status };
+  if (await intakeOrgDeleted(db, row.org_id)) return { skipped: "organization_deleted" };
   const link = await loadLinkById(db, row.link_id);
   const settings = await loadAutomationRow(db, row.org_id);
   const message = await outboundMessage(db, row);
@@ -243,6 +245,12 @@ export async function handleIntakeDeliver(
   const adapter = ADAPTERS[link.source];
   const ctx: ChannelContext = {
     db,
+    assertActive: async () => {
+      await assertIntakeDeliveryActive(db, row.org_id);
+      const current = await loadOutbound(db, ids.data);
+      if (!current || current.status !== "pending")
+        throw new ChannelDeliveryError("This delivery was cancelled or already completed.", true);
+    },
     settings,
     fromName: settings.email_from_name?.trim() || "Legal",
     readDocument: (doc) => readVersion(db, doc),
@@ -354,6 +362,7 @@ export async function dispatchIntakeDeliver(
   orgId: string,
   outboundId: string,
 ): Promise<void> {
+  if (await intakeOrgDeleted(db, orgId)) return;
   await dispatchIntakeJob(db, {
     kind: INTAKE_DELIVER_JOB,
     payload: { orgId, outboundId },

@@ -588,6 +588,7 @@ export const gmailAdapter: ChannelAdapter = {
       });
       if (raw.length > thread.max_attachment_bytes + 1024 * 1024)
         throw new ChannelDeliveryError("The email was too large for Gmail to send.", true);
+      await ctx.assertActive();
       const sent = await gmailFetch<{ id?: string }>(mailbox, "/messages/send", {
         json: { raw: raw.toString("base64url"), threadId: thread.thread },
         long: true,

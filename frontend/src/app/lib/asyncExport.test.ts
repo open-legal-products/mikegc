@@ -9,7 +9,8 @@ const { startUserExportMock, getUserExportStatusMock, downloadUserExportMock } =
         getUserExportStatusMock: vi.fn(),
         downloadUserExportMock: vi.fn(),
     }));
-vi.mock("@/app/lib/mikeApi", () => ({
+vi.mock("@/app/lib/mikeApi", async original => ({
+    ...(await original<typeof import("./mikeApi")>()),
     startUserExport: startUserExportMock,
     getUserExportStatus: getUserExportStatusMock,
     downloadUserExport: downloadUserExportMock,
@@ -128,4 +129,12 @@ describe("runUserExport", () => {
         await vi.advanceTimersByTimeAsync(1);
         await expect(pending).resolves.toMatchObject({ filename: "slow.csv" });
     });
+});
+
+it("explains an oversized archive as a correctable selection error", async () => {
+    getUserExportStatusMock.mockResolvedValue({ status: "failed", reason: "size_limit" });
+    await expect(runUserExport("documents-zip")).rejects.toMatchObject({
+        status: 413, code: "request_too_large", message: expect.stringContaining("Select fewer documents"),
+    });
+    expect(downloadUserExportMock).not.toHaveBeenCalled();
 });

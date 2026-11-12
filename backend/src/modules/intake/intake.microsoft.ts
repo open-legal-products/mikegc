@@ -283,11 +283,13 @@ export async function readLimited(response: Response, maxBytes: number): Promise
 export async function uploadInSession(
   uploadUrl: string,
   bytes: ArrayBuffer,
+  assertActive?: () => Promise<void>,
 ): Promise<Record<string, unknown> | null> {
   const chunk = 320 * 1024 * 12; // 3.75 MiB
   const data = new Uint8Array(bytes);
   let last: Record<string, unknown> | null = null;
   for (let start = 0; start < data.length; start += chunk) {
+    await assertActive?.();
     const end = Math.min(start + chunk, data.length);
     let response: Response;
     try {

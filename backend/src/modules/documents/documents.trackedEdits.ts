@@ -16,6 +16,7 @@ import { profileAttributionName } from "../../lib/userLookup";
 import {
   activateDocumentVersion,
   createDocumentVersion,
+  createIntakeDocumentEdits,
   updateDocumentVersion,
 } from "./documents.lifecycle";
 
@@ -139,6 +140,7 @@ export type TrackedEditsResult =
  */
 export async function writeTrackedEdits(params: {
   documentId: string;
+  intake?: { orgId: string; requestId: string; requestVersion: number };
   storageOwner: string;
   author: string | (() => Promise<string>);
   edits: EditInput[];
@@ -197,7 +199,29 @@ export async function writeTrackedEdits(params: {
   let newPath: string;
   let nextVersionNumber: number;
 
-  if (reuseVersion) {
+  type SavedEdit = { id: string; change_id: string; deleted_text: string; inserted_text: string;
+    context_before: string | null; context_after: string | null };
+  let committedEdits: SavedEdit[] | undefined;
+  if (params.intake) {
+    newPath = `documents/${storageOwner}/${documentId}/edits/${crypto.randomUUID()}.docx`;
+    await uploadFile(newPath, ab, "application/vnd.openxmlformats-officedocument.wordprocessingml.document");
+    const saved = await createIntakeDocumentEdits(db, {
+      ...params.intake, documentId, expectedVersion: activeVersion.id,
+      version: { storage_path: newPath, filename: versionFilename, source: "assistant_edit",
+        file_type: "docx", size_bytes: editedBytes.byteLength, content_sha256: contentSha256(editedBytes) },
+      edits: changes.map(c => ({ change_id: c.id, del_w_id: c.delId ?? null, ins_w_id: c.insId ?? null,
+        deleted_text: c.deletedText, inserted_text: c.insertedText,
+        context_before: c.contextBefore ?? "", context_after: c.contextAfter ?? "" })),
+    });
+    if (saved.error) throw saved.error; // Ambiguous commit: never delete its potentially referenced bytes.
+    if (!saved.data) {
+      await deleteFileBestEffort(newPath, "intake-edit-conflict");
+      return { ok: false, error: "This request or document changed. Run the review again." };
+    }
+    versionRowId = saved.data.version.id;
+    nextVersionNumber = saved.data.version.version_number;
+    committedEdits = saved.data.edits;
+  } else if (reuseVersion) {
     // Reuse the version number, but never overwrite bytes an extraction job
     // may be reading. Publish the new path/hash together after storage succeeds.
     if (activeVersion?.id !== reuseVersion.versionId || current.storage_path !== reuseVersion.storagePath) {
@@ -276,7 +300,9 @@ export async function writeTrackedEdits(params: {
     context_after: c.contextAfter ?? "",
     status: "pending" as const,
   }));
-  const { data: insertedEdits, error: editsErr } = await db
+  const { data: insertedEdits, error: editsErr } = committedEdits
+    ? { data: committedEdits, error: null }
+    : await db
     .from("document_edits")
     .insert(editRows)
     .select(
@@ -287,7 +313,8 @@ export async function writeTrackedEdits(params: {
     return { ok: false, error: "Failed to record edits." };
   }
 
-  const activation = await activateDocumentVersion(db, documentId, versionRowId);
+  const activation = committedEdits ? { activated: true, error: null }
+    : await activateDocumentVersion(db, documentId, versionRowId);
   if (activation.error || !activation.activated) {
     return { ok: false, error: "Failed to activate document version." };
   }

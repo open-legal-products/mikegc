@@ -49,8 +49,9 @@ export {
 
 export {
     loadOrgDocument,
+    loadIntakeDocument,
     readOrgDocumentText,
-    applyOrgTrackedEdits,
+    applyIntakeTrackedEdits,
     type OrgDocument,
 } from "./documents.system";
 

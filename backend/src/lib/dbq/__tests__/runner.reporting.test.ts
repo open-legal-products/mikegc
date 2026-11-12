@@ -48,7 +48,7 @@ function makeDb(rpc: () => Promise<{ data: unknown; error: unknown }>) {
         builder[method] = () => builder;
     }
     builder.then = (resolve: (value: unknown) => unknown) =>
-        Promise.resolve({ data: null, error: null }).then(resolve);
+        Promise.resolve({ data: [{ id: "job-1" }], error: null }).then(resolve);
     return { from: () => builder, rpc };
 }
 

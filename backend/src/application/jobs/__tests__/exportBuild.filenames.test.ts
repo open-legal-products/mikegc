@@ -1,3 +1,4 @@
+import { readFile } from "node:fs/promises";
 import { expect, it, vi } from "vitest";
 import JSZip from "jszip";
 import { setStorageAdapter } from "../../../lib/storage";
@@ -19,8 +20,9 @@ it("keeps every document when two share a filename instead of overwriting the ZI
   const upload = vi.fn(async () => {});
   setStorageAdapter({
     enabled: true, configurationHint: "test",
-    downloadFile: async (key: string) => new TextEncoder().encode(key).buffer,
-    uploadFile: upload,
+    headFile: async () => ({ size: 1, etag: null, contentType: null }),
+    openReadStream: async (key: string) => [new TextEncoder().encode(key)],
+    uploadFileFromPath: async (key: string, path: string, type: string) => (upload as (...args: unknown[]) => Promise<void>)(key, await readFile(path), type),
   } as never);
   const job = {
     id: "export-1", kind: "export.build", payload: { userId: "u1", type: "documents-zip", document_ids: ids },

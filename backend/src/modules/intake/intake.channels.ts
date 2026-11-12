@@ -1,7 +1,7 @@
 import type { IntakeChannel } from "@mike/contracts";
 import { internalFailure, ok } from "../../lib/serviceResult";
 import type { Db } from "../../lib/supabase";
-import type { AutomationRow } from "./intake.settingsRow";
+import { intakeOrgDeleted, type AutomationRow } from "./intake.settingsRow";
 import { insertInbound, type InboundStoreResult } from "./intake.inboundStore";
 import { intakeRpc } from "./intake.shared";
 
@@ -64,6 +64,8 @@ export type OutboundDocument = {
 /** What an adapter sends with, read fresh for each delivery. */
 export type ChannelContext = {
   db: Db;
+  /** Recheck suspension immediately before each external write. */
+  assertActive: () => Promise<void>;
   settings: AutomationRow;
   /** Read a document's bytes for sending. */
   readDocument: (doc: OutboundDocument) => Promise<ArrayBuffer>;
@@ -384,4 +386,10 @@ export async function rememberConversation(
         .insert({ org_id: orgId, source, thread_key: threadKey, rounds: 1, replies: [said], updated_at });
   // Two answers at once in a new thread: the other one remembered it.
   if (error && (error as { code?: string }).code !== "23505") throw error;
+}
+
+/** Every outbound path, including pre-request conversation, shares this guard. */
+export async function assertIntakeDeliveryActive(db: Db, orgId: string): Promise<void> {
+  if (await intakeOrgDeleted(db, orgId))
+    throw new ChannelDeliveryError("Delivery stopped because this workspace was deleted.", true);
 }

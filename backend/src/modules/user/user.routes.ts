@@ -1,3 +1,4 @@
+import { pipeline } from "node:stream/promises";
 import { GoogleWorkspaceError, GoogleWorkspaceUnavailableError, assertWorkspaceProviderAvailable, startWorkspaceOAuth, completeWorkspaceOAuth, cancelWorkspaceOAuth, disconnectWorkspace, updateWorkspaceSettings, setWorkspaceToolEnabled } from "../../lib/integrations/googleWorkspaceAuth";
 import { workspaceConnectorStatus, workspaceToolList } from "../../lib/integrations/googleWorkspace";
 // HTTP layer for the user module. Handlers parse params/query/body, call the
@@ -1781,7 +1782,14 @@ userRouter.get(
             "Content-Disposition",
             buildContentDisposition("attachment", result.filename),
         );
-        res.send(result.body);
+        if (Buffer.isBuffer(result.body)) res.send(result.body);
+        else {
+            try { await pipeline(result.body, res); }
+            catch (error) {
+                if (!res.headersSent && !res.destroyed) throw error;
+                reportError(error, { tags: { operation: "export.download", stage: "stream" } });
+            }
+        }
     }),
 );
 

@@ -10,8 +10,8 @@ import { completeText } from "../../lib/llm";
 import { safeError } from "../../lib/safeError";
 import type { Db } from "../../lib/supabase";
 import {
-  applyOrgTrackedEdits,
-  loadOrgDocument,
+  applyIntakeTrackedEdits,
+  loadIntakeDocument,
   readOrgDocumentText,
   type OrgDocument,
 } from "../documents/documents.service";
@@ -315,12 +315,12 @@ async function readDocuments(
     (data ?? []) as { document_id: string }[],
     4,
     async ({ document_id }) => {
-      const doc = await loadOrgDocument(db, job.orgId, document_id);
+      const doc = await loadIntakeDocument(db, job.orgId, job.requestId, document_id);
       return doc ? { doc, text: await readOrgDocumentText(db, doc) } : null;
     },
   );
   for (const entry of loaded) {
-    if (!entry) continue;
+    if (!entry) { unread.push("An attached document is unavailable"); continue; }
     const { doc, text } = entry;
     if (text.status === "pending" && !lastAttempt)
       throw new Error("Waiting for the request's documents to be read.");
@@ -341,12 +341,12 @@ type MarkUp = { name: string; changes: number } | { name: string; failed: string
  */
 async function markUp(
   db: Db,
-  orgId: string,
+  scope: { orgId: string; requestId: string; requestVersion: number },
   doc: ReadDocument,
   edits: EditInput[],
 ): Promise<MarkUp | null> {
   if (!doc.isDocx || doc.versionCount !== 1 || edits.length === 0) return null;
-  const result = await applyOrgTrackedEdits({ db, orgId, doc, author: AUTHOR, edits });
+  const result = await applyIntakeTrackedEdits({ db, ...scope, doc, author: AUTHOR, edits });
   if (!result.ok) return { name: doc.filename, failed: result.error };
   const changes = result.annotations.length;
   return changes ? { name: doc.filename, changes } : null;
@@ -476,6 +476,7 @@ async function reviewRequest(args: {
   playbookId: string;
   request: PreprocessRequest;
   documents: ReadDocument[];
+  requestVersion: number;
 }): Promise<{ sections: string[]; marked: MarkUp[] }> {
   const sections: string[] = [];
   const marked: MarkUp[] = [];
@@ -505,7 +506,7 @@ async function reviewRequest(args: {
       });
       const result = await markUp(
         args.db,
-        args.job.orgId,
+        { orgId: args.job.orgId, requestId: args.job.requestId, requestVersion: args.requestVersion },
         doc,
         playbookFindingEdits(review.findings).map((p) => p.edit),
       );
@@ -658,11 +659,17 @@ async function preprocess(
       stage: "readiness",
     });
   await acknowledge();
+  // Capture the generation after readiness changes; persistence rechecks it atomically.
+  const { data: current, error: currentError } = await db.from("intake_requests")
+    .select("version, state, subject, description").eq("org_id", job.orgId).eq("id", job.requestId).maybeSingle();
+  if (currentError) throw currentError;
+  if (!current || ["resolved", "cancelled"].includes(current.state)) return { skipped: "closed" };
+  const requestVersion = current.version as number;
   // What preprocessing reads: the request, then its thread with the requester.
   const withThread: PreprocessRequest = {
-    subject: request.subject,
-    description: request.description,
-    thread: thread.length ? threadText(thread) : "",
+    subject: current.subject,
+    description: current.description,
+    thread: threadText(await loadThreadEntries(db, job.orgId, job.requestId)),
   };
   const stillMissing = missing.length
     ? `Still missing: ${missing.join(" ")}\n\n`
@@ -682,6 +689,7 @@ async function preprocess(
       playbookId: job.with.id,
       request: withThread,
       documents: read,
+      requestVersion,
     });
     return postNote(db, job, `${stillMissing}${title}\n\n${sections.join("\n\n")}${markedLines(marked)}${skippedLine}`);
   }
@@ -692,9 +700,16 @@ async function preprocess(
     documents: read,
     instructions: rule?.instructions ?? null,
   });
+  const { data: latest, error: latestError } = await db.from("intake_requests")
+    .select("state").eq("org_id", job.orgId).eq("id", job.requestId).maybeSingle();
+  if (latestError) throw latestError;
+  // Only closure stops here. A request a member assigned or edited meanwhile
+  // still gets its note; saving each edit rechecks the version read above, so
+  // an outdated one is refused and named in the note rather than lost quietly.
+  if (!latest || ["resolved", "cancelled"].includes(latest.state)) return { skipped: "closed" };
   const marked: MarkUp[] = [];
   for (const [index, list] of edits) {
-    const result = await markUp(db, job.orgId, read[index]!, list);
+    const result = await markUp(db, { orgId: job.orgId, requestId: job.requestId, requestVersion }, read[index]!, list);
     if (result) marked.push(result);
   }
   return postNote(db, job, `${stillMissing}${title}\n\n${answer}${markedLines(marked)}${skippedLine}`);

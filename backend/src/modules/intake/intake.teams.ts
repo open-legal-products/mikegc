@@ -565,6 +565,7 @@ async function uploadToChannel(
   subject: string,
   doc: OutboundDocument,
   bytes: ArrayBuffer,
+  assertActive: () => Promise<void>,
 ): Promise<string> {
   if (!address.aad_group_id || !address.channel_id)
     throw new MicrosoftApiError({ status: 404, code: "no_channel", permanent: true, sentence: "MikeGC can't find the Teams channel's files." });
@@ -582,6 +583,7 @@ async function uploadToChannel(
     .join("/");
   const item = `${GRAPH_API}/drives/${encodeURIComponent(driveId)}/items/${encodeURIComponent(folder.id)}:/${path}:`;
   let uploaded: { webUrl?: unknown } | null;
+  await assertActive();
   if (bytes.byteLength <= SIMPLE_UPLOAD_BYTES) {
     uploaded = await microsoftFetch(`${item}/content?@microsoft.graph.conflictBehavior=rename`, {
       token,
@@ -599,7 +601,7 @@ async function uploadToChannel(
     });
     if (!isMicrosoftUploadUrl(session?.uploadUrl))
       throw new MicrosoftApiError({ status: 0, code: "invalid_session", permanent: false, sentence: "Microsoft wouldn't take a document." });
-    uploaded = await uploadInSession(session.uploadUrl, bytes);
+    uploaded = await uploadInSession(session.uploadUrl, bytes, assertActive);
   }
   const webUrl = uploaded?.webUrl;
   if (typeof webUrl !== "string" || !webUrl.startsWith("https://"))
@@ -653,6 +655,7 @@ export const teamsAdapter: ChannelAdapter = {
             message.requestSubject,
             doc,
             await ctx.readDocument(doc),
+            ctx.assertActive,
           );
         } catch (error) {
           // A document Microsoft refuses is named in the reply instead, so the
@@ -665,6 +668,7 @@ export const teamsAdapter: ChannelAdapter = {
       for (const doc of withheld) doc.leftOut = true;
       if (delivered) return { externalId: delivered, documents };
       const token = await botToken(ctx.settings);
+      await ctx.assertActive();
       const posted = await microsoftFetch<{ id?: unknown }>(
         `${address.service_url.replace(/\/+$/, "")}/v3/conversations/${encodeURIComponent(address.conversation_id)}/activities`,
         {

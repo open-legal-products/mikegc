@@ -398,8 +398,9 @@ export async function slackChannelName(
  */
 export async function slackUploadFile(
   token: string,
-  args: { channel: string; threadTs: string; filename: string; bytes: ArrayBuffer },
+  args: { channel: string; threadTs: string; filename: string; bytes: ArrayBuffer; assertActive?: () => Promise<void> },
 ): Promise<string> {
+  await args.assertActive?.();
   const ticket = await slackApi<{ upload_url?: unknown; file_id?: unknown }>(
     "files.getUploadURLExternal",
     token,
@@ -418,6 +419,7 @@ export async function slackUploadFile(
   if (target.protocol !== "https:" || !/(^|\.)slack\.com$/.test(target.hostname))
     throw new SlackApiError("invalid_response");
   let response: Response;
+  await args.assertActive?.();
   try {
     response = await fetch(target, {
       method: "POST",
@@ -431,6 +433,7 @@ export async function slackUploadFile(
   await response.body?.cancel().catch(() => undefined);
   if (response.status === 429) throw new SlackApiError("ratelimited");
   if (!response.ok) throw new SlackApiError(`http_${response.status}`);
+  await args.assertActive?.();
   await slackApi("files.completeUploadExternal", token, {
     files: JSON.stringify([{ id: fileId, title: args.filename }]),
     channel_id: args.channel,
@@ -652,6 +655,7 @@ export const slackAdapter: ChannelAdapter = {
     let ts = delivered;
     try {
       if (!ts) {
+        await ctx.assertActive();
         ts = await slackPostMessage(token, {
           channel: address.channel,
           threadTs: address.thread_ts,
@@ -679,6 +683,7 @@ export const slackAdapter: ChannelAdapter = {
             threadTs: address.thread_ts,
             filename: doc.name,
             bytes: await ctx.readDocument(doc),
+            assertActive: ctx.assertActive,
           });
         } catch (error) {
           // Without files:write the text still went; the request says why.

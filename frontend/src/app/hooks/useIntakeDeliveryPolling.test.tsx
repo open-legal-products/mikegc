@@ -1,0 +1,40 @@
+import { act, renderHook } from "@testing-library/react";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import type { IntakeDelivery } from "@mike/contracts";
+const poll = vi.hoisted(() => vi.fn());
+vi.mock("@/app/lib/mikeApi", () => ({ getIntakeDeliveryStatus: poll }));
+import { useIntakeDeliveryPolling } from "./useIntakeDeliveryPolling";
+const pending = [{ outbound_id: "out-1", status: "pending" }] as IntakeDelivery[];
+beforeEach(() => { vi.useFakeTimers(); poll.mockReset(); });
+afterEach(() => vi.useRealTimers());
+it("does not overlap slow polls and ignores a response after unmount", async () => {
+  let resolve!: (rows: IntakeDelivery[]) => void;
+  poll.mockReturnValue(new Promise<IntakeDelivery[]>(r => { resolve = r; }));
+  const update = vi.fn();
+  const hook = renderHook(() => useIntakeDeliveryPolling("org", "request", pending, update, vi.fn()));
+  await act(() => vi.advanceTimersByTimeAsync(20_000));
+  expect(poll).toHaveBeenCalledTimes(1);
+  hook.unmount();
+  expect(poll.mock.calls[0][3].aborted).toBe(true);
+  await act(async () => resolve([]));
+  expect(update).not.toHaveBeenCalled();
+});
+it("backs off failures and respects a longer Retry-After", async () => {
+  poll.mockRejectedValueOnce({ status: 429, retryAfterMs: 120_000 }).mockResolvedValue(pending);
+  const hook = renderHook(() => useIntakeDeliveryPolling("org", "request", pending, vi.fn(), vi.fn()));
+  await act(() => vi.advanceTimersByTimeAsync(5_000));
+  await act(() => vi.advanceTimersByTimeAsync(119_999));
+  expect(poll).toHaveBeenCalledTimes(1);
+  await act(() => vi.advanceTimersByTimeAsync(1));
+  expect(poll).toHaveBeenCalledTimes(2);
+  hook.unmount();
+});
+it("stops polling when access is revoked", async () => {
+  poll.mockRejectedValue({ status: 403 });
+  const lost = vi.fn();
+  const hook = renderHook(() => useIntakeDeliveryPolling("org", "request", pending, vi.fn(), lost));
+  await act(() => vi.advanceTimersByTimeAsync(30_000));
+  expect(poll).toHaveBeenCalledTimes(1);
+  expect(lost).toHaveBeenCalledTimes(1);
+  hook.unmount();
+});

@@ -254,7 +254,7 @@ async function runClaimedJob(
                       Date.now(),
               )
             : retryDelayMs(job.attempts);
-        await fence(
+        const transition = await fence(
             db.from("db_jobs").update(
                 spent
                     ? {
@@ -276,7 +276,11 @@ async function runClaimedJob(
                               : {}),
                       },
             ),
-        );
+        ).select("id");
+        // A reclaimed/completed job no longer belongs to this attempt. Its
+        // failure hook must not undo the winner's resource state or requeue it.
+        if (transition.error) throw transition.error;
+        if (!transition.data?.length) return;
         if (spent) {
             const hook = failureHooks[job.kind];
             if (hook) {

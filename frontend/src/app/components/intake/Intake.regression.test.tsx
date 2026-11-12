@@ -23,6 +23,7 @@ import { IntakeNewRequestPage } from "./IntakeNewRequest";
 import { setIntakeMemoryAccount } from "@/app/lib/intakeMemory";
 
 const mocks = vi.hoisted(() => ({
+  deliveryStatus: vi.fn().mockResolvedValue([]),
   members: vi.fn(),
   requesters: vi.fn(),
   copy: vi.fn(),
@@ -70,6 +71,7 @@ vi.mock("@/app/lib/mikeApi", () => ({
   submitIntakeRequest: mocks.submit,
   editIntakeRequest: mocks.edit,
   getIntakeRequest: mocks.request,
+  getIntakeDeliveryStatus: mocks.deliveryStatus,
   getIntakeMessages: mocks.messages,
   getIntakeEvents: mocks.events,
   commandIntakeRequest: mocks.command,
@@ -3389,11 +3391,8 @@ describe("requester loop", () => {
         },
       });
       mocks.request.mockResolvedValue(threaded());
-      mocks.messages
-        .mockResolvedValueOnce([pending])
-        .mockResolvedValue([
-          { ...pending, delivery: { ...pending.delivery!, status: "sent" } },
-        ]);
+      mocks.messages.mockResolvedValue([pending]);
+      mocks.deliveryStatus.mockResolvedValue([{ ...pending.delivery!, status: "sent" }]);
       render(detail());
       const activity = await screen.findByRole("region", { name: "Activity" });
       fireEvent.click(await screen.findByRole("button", { name: /^Messages/ }));
@@ -3435,10 +3434,9 @@ describe("requester loop", () => {
           documents: [],
         },
       });
-      const slow = deferred<IntakeRequest>();
-      mocks.request
-        .mockResolvedValueOnce(threaded())
-        .mockReturnValue(slow.promise);
+      const slow = deferred<NonNullable<typeof pending.delivery>[]>();
+      mocks.request.mockResolvedValue(threaded());
+      mocks.deliveryStatus.mockReturnValue(slow.promise);
       mocks.messages
         .mockResolvedValueOnce([pending])
         .mockResolvedValue([
@@ -3449,13 +3447,15 @@ describe("requester loop", () => {
       await act(async () => {
         vi.advanceTimersByTime(5_100);
       });
-      expect(mocks.request).toHaveBeenCalledTimes(2);
+      expect(mocks.deliveryStatus).toHaveBeenCalledTimes(1);
+      expect(mocks.request).toHaveBeenCalledTimes(1);
       // The first check is still loading: later ticks must not supersede it.
       await act(async () => {
         vi.advanceTimersByTime(10_200);
       });
-      expect(mocks.request).toHaveBeenCalledTimes(2);
-      await act(async () => slow.resolve(threaded()));
+      expect(mocks.deliveryStatus).toHaveBeenCalledTimes(1);
+      expect(mocks.request).toHaveBeenCalledTimes(1);
+      await act(async () => slow.resolve([{ ...pending.delivery!, status: "sent" }]));
       await waitFor(() =>
         expect(activity).toHaveTextContent("Message to the requester sent."),
       );

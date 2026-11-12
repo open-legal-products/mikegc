@@ -2,6 +2,7 @@ import { BACKEND_REPORTING_OWNER } from "@mike/client";
 import type { Operation } from "@mike/client";
 import { settleWithConcurrency } from "@mike/client";
 import type {
+    UserExportStatus,
     TabularReviewHistoryStatus,
     AuditActor,
     AuditActorPage,
@@ -17,6 +18,7 @@ import type {
     IntakeDashboardMedianDays,
     IntakeDashboardWeeks,
     IntakeDocument,
+    IntakeDelivery,
     IntakeEdit,
     IntakeEvent,
     IntakeMailboxConnection,
@@ -30,6 +32,7 @@ import type {
     IntakeSubmission,
 } from "@mike/contracts";
 export type {
+    UserExportStatus,
     AuditActor,
     AuditActorPage,
     OrgMemberHandover,
@@ -176,6 +179,7 @@ const devLog = (...args: Parameters<typeof console.log>) => {
 
 export class MikeApiError extends Error {
     status: number;
+    retryAfterMs?: number;
     code: string | null;
     requestId: string | null;
     reportingOwner?: typeof BACKEND_REPORTING_OWNER;
@@ -183,6 +187,7 @@ export class MikeApiError extends Error {
     constructor(args: {
         message: string;
         status: number;
+        retryAfterMs?: number;
         code?: string | null;
         requestId?: string | null;
         reportingOwner?: typeof BACKEND_REPORTING_OWNER;
@@ -190,6 +195,7 @@ export class MikeApiError extends Error {
         super(args.message);
         this.name = "MikeApiError";
         this.status = args.status;
+        this.retryAfterMs = args.retryAfterMs;
         this.code = args.code ?? null;
         this.requestId = args.requestId ?? null;
         this.reportingOwner = args.reportingOwner;
@@ -305,6 +311,9 @@ async function toApiError(
     method = "GET",
     operation?: Operation,
 ) {
+    const retryAfter = response.headers.get("retry-after");
+    const retryAfterMs = retryAfter == null ? undefined : /^\d+(?:\.\d+)?$/.test(retryAfter)
+        ? Number(retryAfter) * 1000 : Math.max(0, Date.parse(retryAfter) - Date.now());
     const text = await response.text();
     try {
         const parsed = JSON.parse(text) as {
@@ -320,6 +329,7 @@ async function toApiError(
         devLog("[mike-api] non-ok response", {
             path,
             status: response.status,
+            retryAfterMs: Number.isFinite(retryAfterMs) ? retryAfterMs : undefined,
             code: parsed.code,
             requestId,
         });
@@ -330,6 +340,7 @@ async function toApiError(
         const upstreamMessage = code ? reportedUpstreamMessage(code) : null;
         const apiError = new MikeApiError({
             status: response.status,
+            retryAfterMs: Number.isFinite(retryAfterMs) ? retryAfterMs : undefined,
             code,
             requestId,
             ...(parsed.reporting_owner === BACKEND_REPORTING_OWNER ? { reportingOwner: BACKEND_REPORTING_OWNER } : {}),
@@ -369,10 +380,12 @@ async function toApiError(
         devLog("[mike-api] non-ok non-json response", {
             path,
             status: response.status,
+            retryAfterMs: Number.isFinite(retryAfterMs) ? retryAfterMs : undefined,
             requestId: response.headers.get("x-request-id"),
         });
         const apiError = new MikeApiError({
             status: response.status,
+            retryAfterMs: Number.isFinite(retryAfterMs) ? retryAfterMs : undefined,
             requestId: response.headers.get("x-request-id"),
             message:
                 response.status >= 500
@@ -764,11 +777,6 @@ export type UserExportType =
     | "audit-csv"
     | "documents-zip"
     | "memory-zip";
-
-export type UserExportStatus =
-    | { status: "pending" }
-    | { status: "failed" }
-    | { status: "done"; filename: string | null };
 
 /**
  * `params` carries the inputs of the filtered exports — the History CSV's
@@ -4947,4 +4955,10 @@ export function markIntakeReplySeen(orgId: string, id: string, seenAt: string | 
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ seen_at: seenAt }),
     });
+}
+
+/** Poll status without re-reading request details and complete histories. */
+export function getIntakeDeliveryStatus(orgId: string, id: string, ids: string[], signal?: AbortSignal) {
+    return apiRequest<IntakeDelivery[]>("intake.manage", intakeRequestPath(orgId, id, "/deliveries/status"),
+        { ...jsonBody("POST", { ids }), signal });
 }

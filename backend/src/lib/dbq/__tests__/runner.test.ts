@@ -103,7 +103,7 @@ function makeDb(opts?: {
                 const value =
                     state.op === "select"
                         ? { data: page ?? opts?.selectData ?? [], error: null }
-                        : { data: null, error: null };
+                        : { data: state.op === "update" ? [{ id: state.filters.id }] : null, error: null };
                 return Promise.resolve(value).then(onF);
             },
         };

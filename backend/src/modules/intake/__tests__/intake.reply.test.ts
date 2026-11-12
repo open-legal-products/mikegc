@@ -560,3 +560,10 @@ describe("a requester's reply in the thread", () => {
     });
   });
 });
+
+it(" legacy persisted plan cannot bypass version protection", async()=>{
+ const newer="Newer requester details";
+ setup({request:{assignee_id:sam,state:"in_review",version:2,description:newer},payload:{...slackReply,recorded:true,agent:{agent:true,update:{subject:null,description:"Obsolete requester details",requested_by_date:null,lines:{}}},agentStage:null,agentRound:0}});
+ await handleIntakeAgent(memory.db,job());
+ expect(request().description).toBe(newer);
+});

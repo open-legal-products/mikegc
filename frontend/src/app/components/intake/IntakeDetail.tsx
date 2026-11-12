@@ -26,6 +26,7 @@ import {
   PERSONAL_WORKSPACE,
   useWorkspace,
 } from "@/app/contexts/WorkspaceContext";
+import { useIntakeDeliveryPolling } from "@/app/hooks/useIntakeDeliveryPolling";
 import { useItemWorkspace } from "@/app/hooks/useItemWorkspace";
 import { assistantPathWithIntake } from "@/app/lib/assistantIntakeLink";
 import {
@@ -121,8 +122,6 @@ import {
 const SECTION_HEADING = "text-sm font-medium text-gray-900";
 /** Quiet refreshes when the window regains focus are at most this frequent. */
 const FOCUS_REFRESH_MS = 30_000;
-/** How often the page checks on a message to the requester still sending. */
-const DELIVERY_REFRESH_MS = 5_000;
 
 /** Scope a deep-linked request to its workspace before mounting retained drafts. */
 export function IntakeDetail({
@@ -302,29 +301,20 @@ export function Detail({
   const [announcement, setAnnouncement] = useState("");
   const deliveryStates = useRef(new Map<string, IntakeDelivery["status"]>());
   const epoch = useRef(0);
-  // Whether a loaded request is on screen, and how many loads are running.
+  // Whether a loaded request is on screen.
   const loaded = useRef(false);
-  const inFlight = useRef(0);
-  const refresh = useCallback(async (poll = false) => {
-    // A delivery check never overlaps a load: on a slow connection each
-    // would supersede the last before it landed, and nothing would update.
-    if (poll && inFlight.current) return;
+  const refresh = useCallback(async () => {
     const generation = ++epoch.current;
-    inFlight.current++;
     try {
       const r = await getIntakeRequest(orgId, requestId);
       const [m, e, d, roster] = await Promise.all([
         allPages((offset) => getIntakeMessages(orgId, requestId, offset)),
         allPages((offset) => getIntakeEvents(orgId, requestId, offset)),
-        // A delivery check reads only where a delivery's status is shown:
-        // sending a message changes neither the documents nor the members.
-        poll ? null : getIntakeDocuments(orgId, requestId),
+        getIntakeDocuments(orgId, requestId),
         // Members are who an open request can be assigned to, and every
         // request's people take their photos from them. A closed request
         // falls back to initials if they cannot be read.
-        poll
-          ? null
-          : r.capabilities.assign
+        r.capabilities.assign
             ? getIntakeMembers(orgId)
             : getIntakeMembers(orgId).catch(() => []),
       ]);
@@ -349,7 +339,7 @@ export function Detail({
       // A failed refresh keeps the request on screen, unless the account
       // may no longer read it. A delivery check tries again by itself.
       if (loaded.current && ![401, 403, 404].includes(status)) {
-        if (!poll) notifyError(e, { action: "refresh the request" });
+        notifyError(e, { action: "refresh the request" });
         return;
       }
       loaded.current = false;
@@ -359,8 +349,6 @@ export function Detail({
       setDocuments([]);
       setMembers([]);
       setError(intakeError(e, "load the request"));
-    } finally {
-      inFlight.current--;
     }
   }, [orgId, requestId]);
   const invalidate = useCallback(() => {
@@ -380,6 +368,7 @@ export function Detail({
     });
   }, [messagesOpen, newReplyAt, orgId, requestId]);
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- refresh only sets state after its awaited network request settles.
     void refresh();
     return invalidate;
   }, [refresh, invalidate]);
@@ -644,12 +633,16 @@ export function Detail({
     ...messages.flatMap((m) => (m.delivery ? [m.delivery] : [])),
     ...events.flatMap((e) => (e.delivery ? [e.delivery] : [])),
   ];
-  const sending = deliveries.some((d) => d.status === "pending");
-  useEffect(() => {
-    if (!sending) return;
-    const timer = setInterval(() => void refresh(true), DELIVERY_REFRESH_MS);
-    return () => clearInterval(timer);
-  }, [sending, refresh]);
+  useIntakeDeliveryPolling(orgId, requestId, deliveries, (rows) => {
+    const byId = new Map(rows.map(row => [row.outbound_id, row]));
+    const update = <T extends { delivery?: IntakeDelivery | null }>(items: T[]): T[] => items.map(item =>
+      item.delivery && byId.has(item.delivery.outbound_id)
+        ? { ...item, delivery: byId.get(item.delivery.outbound_id)! } : item);
+    setMessages(update);
+    setEvents(update);
+    const said = settledDeliveryAnnouncement(deliveryStates.current, rows);
+    if (said) setAnnouncement(said);
+  }, () => { void refresh(); });
   function retryDelivery(outboundId: string) {
     setRetrying((current) => [...current, outboundId]);
     // Settled either way: the timeline then shows how it is going.

@@ -7,6 +7,7 @@ export {
   listIntakeRequests,
   submitIntakeRequest,
   getIntakeRequest,
+  getIntakeDeliveryStatus,
   listIntakeMessages,
   listIntakeEvents,
   commandIntakeRequest,

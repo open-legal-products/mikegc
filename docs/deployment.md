@@ -941,3 +941,16 @@ of on the next fresh install.
 
 See [Safe local testing](safe-local-testing.md), the [security policy](../SECURITY.md),
 and [Troubleshooting](troubleshooting.md) for related guidance.
+
+### Asynchronous document ZIP exports
+
+Document ZIP jobs stream object-store reads into a private temporary archive and
+upload that file through the storage adapter. Authenticated downloads stream the
+finished document archive too. They do not retain all source files
+or the complete ZIP in memory. Source and archive bytes are each capped at 2 GiB;
+select fewer documents if the archive exceeds that limit. One archive per worker
+process may be built/uploaded at a time; other ZIP jobs defer for 30 seconds
+without spending a retry. Reserve at least 2 GiB of temporary disk
+per worker process. Temporary files are removed after upload and handled failures;
+an abruptly terminated process can leave files under the system temporary directory
+with the `mike-export-` prefix for the host's normal temporary-file cleanup.

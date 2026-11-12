@@ -18,8 +18,9 @@ vi.mock("../documents.trackedEdits", () => ({
   writeTrackedEdits: mocks.writeTrackedEdits,
 }));
 import {
-  applyOrgTrackedEdits,
+  applyIntakeTrackedEdits,
   loadOrgDocument,
+  loadIntakeDocument,
   readOrgDocumentText,
 } from "../documents.system";
 
@@ -28,6 +29,7 @@ const org = "org-a";
 /** The few reads these helpers make, answered from fixed rows. */
 function fakeDb(rows: {
   document?: Record<string, unknown> | null;
+  linked?: boolean;
   versions?: number;
   text?: Record<string, unknown> | null;
 }): Db {
@@ -42,7 +44,8 @@ function fakeDb(rows: {
   return {
     from: (table: string) =>
       chain(
-        table === "documents"
+        table === "intake_request_documents" ? (rows.linked ? { document_id: "doc" } : null)
+        : table === "documents"
           ? rows.document ?? null
           : table === "document_version_texts"
             ? rows.text ?? null
@@ -115,7 +118,7 @@ describe("organization-owned documents", () => {
       versionCount: 1,
     };
     const edits = [{ find: "five", replace: "two", context_before: "", context_after: "" }];
-    await applyOrgTrackedEdits({ db, orgId: org, doc, author: "MikeGC", edits });
+    await applyIntakeTrackedEdits({ db, orgId: org, requestId: "request", requestVersion: 1, doc, author: "MikeGC", edits });
     expect(mocks.writeTrackedEdits).toHaveBeenCalledWith({
       documentId: "doc",
       storageOwner: "intake-org-a",
@@ -123,6 +126,14 @@ describe("organization-owned documents", () => {
       edits,
       db,
       expectedVersion: { id: "v1", storagePath: "path" },
+      intake: { orgId: org, requestId: "request", requestVersion: 1 },
     });
   });
+});
+
+it.each([null, "member"])("reads linked intake documents with uploader %s", async user_id => {
+  const document = { id: "doc", org_id: org, user_id, library_kind: "intake_attachment" };
+  expect(await loadIntakeDocument(fakeDb({ document, linked: true }), org, "request", "doc")).not.toBeNull();
+  expect(await loadIntakeDocument(fakeDb({ document }), org, "request", "doc")).toBeNull();
+  expect(await loadIntakeDocument(fakeDb({ document: { ...document, org_id: "other" }, linked: true }), org, "request", "doc")).toBeNull();
 });

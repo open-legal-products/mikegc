@@ -27,10 +27,9 @@ export function isWorkspaceExportType(type: ExportType): boolean {
 const JSON_EXPORT_TYPES = ["account", "chats", "tabular-reviews"] as const;
 export type JsonExportType = (typeof JSON_EXPORT_TYPES)[number];
 /**
- * Upper bound on a documents-zip selection. The zip is assembled in memory,
- * so an unbounded selection is an OOM waiting to happen; the route rejects
- * oversized requests with a 400 and the handler treats one that slipped
- * through as malformed rather than retrying it forever.
+ * Bound the selection metadata and authorization work separately from the
+ * streamed archive's byte limit. Oversized selections are rejected with a
+ * 400; the handler also rejects malformed persisted jobs without retrying.
  */
 export const MAX_ZIP_EXPORT_DOCUMENTS = 500;
 /** Durable request identity and stored input; execution revalidates permissions. */

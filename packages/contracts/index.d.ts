@@ -1162,3 +1162,9 @@ export interface IntakeCommand {
   /** Resolve with send_to_requester: the reply sent, apart from the resolution, which stays in the app. */
   reply?: string;
 }
+
+/** Serialized status returned by the authenticated durable-export endpoint. */
+export type UserExportStatus =
+  | { status: "pending" }
+  | { status: "failed"; reason?: "size_limit" }
+  | { status: "done"; filename: string | null };
