@@ -95,4 +95,21 @@ describe("ZIP export limits", () => {
     expect(uniqueArchiveFilename("contract.pdf", used)).toBe("contract (2).pdf");
     expect(uniqueArchiveFilename("CONTRACT (2).PDF", used)).toBe("CONTRACT (2) (2).PDF");
   });
+  it("keeps a filename one entry of the archive, never a path out of it", () => {
+    const used = new Set<string>();
+    expect(uniqueArchiveFilename("../../.zshrc", used)).toBe(".._.._.zshrc");
+    expect(uniqueArchiveFilename("deal\\..\\notes.pdf", used)).toBe("deal_.._notes.pdf");
+    expect(uniqueArchiveFilename("a/b.pdf", used)).toBe("a_b.pdf");
+    expect(uniqueArchiveFilename("..", used)).toBe("Untitled");
+    expect(uniqueArchiveFilename(" ", used)).toBe("Untitled (2)");
+  });
+  it("keeps apart names a file system unpacks to one file", () => {
+    const used = new Set<string>();
+    expect(uniqueArchiveFilename("R\u00e9sum\u00e9.pdf", used)).toBe("R\u00e9sum\u00e9.pdf");
+    // The same name as macOS stores it: letters followed by combining accents.
+    expect(uniqueArchiveFilename("Re\u0301sume\u0301.pdf", used)).toBe("Re\u0301sume\u0301 (2).pdf");
+    // Windows drops trailing dots and spaces.
+    expect(uniqueArchiveFilename("Notes.txt", used)).toBe("Notes.txt");
+    expect(uniqueArchiveFilename("Notes.txt.", used)).toBe("Notes.txt (2).");
+  });
 });
