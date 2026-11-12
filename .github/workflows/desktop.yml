@@ -163,7 +163,7 @@ jobs:
       - name: Audit packaged PostgREST linkage
         run: |
           MAC_DIST_DIR=$(node -p 'process.arch === "arm64" ? "mac-arm64" : "mac"')
-          MIKE_NATIVE_BIN="$PWD/desktop/dist/$MAC_DIST_DIR/Mike.app/Contents/Resources/local-stack/bin" node --test --test-name-pattern='actual PostgREST input' desktop/src/local/postgrest-linkage.test.js
+          MIKE_NATIVE_BIN="$PWD/desktop/dist/$MAC_DIST_DIR/MikeGC.app/Contents/Resources/local-stack/bin" node --test --test-name-pattern='actual PostgREST input' desktop/src/local/postgrest-linkage.test.js
 
       - name: Packaged first-run + returning-user e2e
         run: npm run e2e:local --prefix desktop
