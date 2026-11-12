@@ -12,6 +12,7 @@ import { selectInBatches } from "../../lib/batchedQuery";
 import { mapWithConcurrency } from "../../lib/concurrency";
 import { attachActiveVersionPaths, downloadFilenameForVersion } from "../../lib/documentVersions";
 import { downloadFile, uploadFile } from "../../lib/storage";
+import { uniqueArchiveFilename } from "../../lib/zipExport";
 import type { Db } from "../../lib/supabase";
 import type { ExportBuildRequest } from "./exportContracts";
 import { buildMemoryArchive } from "../../lib/memory/archive";
@@ -121,6 +122,9 @@ async function buildDocumentsZipExport(db: Db, job: ExportBuildRequest, userId: 
 
     const JSZip = (await import("jszip")).default;
     const zip = new JSZip();
+    // Two documents can share a filename; without this the later one
+    // replaces the earlier entry and the export silently loses a file.
+    const usedNames = new Set<string>();
     let added = 0;
     for (const doc of readable) {
         if (!doc.storage_path) continue;
@@ -136,7 +140,7 @@ async function buildDocumentsZipExport(db: Db, job: ExportBuildRequest, userId: 
         // Sequential, unlike the sync route's Promise.all: this path exists
         // for selections large enough that fetching every file at once is
         // what would blow the memory ceiling.
-        zip.file(downloadFilenameForVersion(active.filename, active.version_number, active.source === "assistant_edit"), Buffer.from(raw));
+        zip.file(uniqueArchiveFilename(downloadFilenameForVersion(active.filename, active.version_number, active.source === "assistant_edit"), usedNames), Buffer.from(raw));
         added++;
     }
     if (added === 0) {
