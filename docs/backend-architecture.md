@@ -174,7 +174,29 @@ for response headers. Provider clocks stop at the end of each provider step,
 so local tool execution is governed by its own timeout and the run limits.
 Model output refreshes idle even while tabular JSON is buffered; transport
 keep-alives do not. Deadline errors are preserved in history and replay, while
-an explicit Stop remains a cancellation. A resume has to reach the replica
+an explicit Stop remains a cancellation. Once a turn's signal fires, the tool
+dispatcher starts none of the batch's remaining server tools (and no write
+that was still waiting on a document lock, connector planning or a source
+download), tools that already finished keep their events in the stored turn
+(also when a later call of the batch rejects, or is still pending when the
+model adapter ends the stream on the stop; a rejection after the stop ends
+the turn as stopped),
+and a chat, project-chat, Word chat or tabular chat route whose `runLLMStream` returns anyway (a
+provider or tool that ignored the abort) takes its stop path: the turn is
+stored with its stop
+outcome, and is neither saved as a completed answer, given a fallback title,
+nor scheduled for memory curation. A stop that lands while the finished answer
+is being saved (or while its title is awaited) is checked again before the
+fallback title and memory curation (in chat, project chat and Word chat): the
+saved answer then gets only the stop label added, so it is stored once, ends with the outcome readers were
+sent, and is neither given a fallback title nor curated.
+Tabular chat checks again after saving the finished answer and after awaiting
+its title. A stop during either step marks the already-saved row as stopped
+instead of inserting it again, and skips memory curation. A stop during the
+save also skips title generation; a title already being generated is retained.
+A route that unwinds after the grace period
+has already ended the run writes no more frames, because the run is finished.
+A resume has to reach the replica
 that is generating: run one replica, or route by session, until the buffer is moved
 to shared storage. `lib/assistantSse.ts` (`openAssistantSse`) survives only
 for the one case that cannot be a run: a tabular review chat whose
@@ -347,6 +369,56 @@ For changes to these rules, add a test of the shared operation and verify the
 caller-specific permissions and response contracts. The rename route and
 folder-service compatibility suites also pass against the pre-consolidation
 PR snapshot (`54d067d3`), so their assertions characterize existing behavior.
+
+### Provider-backed source documents
+
+A source that is read from a provider rather than uploaded (CourtListener case
+law, Legal Data Hunter documents) is a *source provider* in
+`modules/source-documents/`:
+
+- `sourceDocuments.types.ts` defines `SourceProvider`: which opaque document
+  ids it owns (id families must not overlap; `mcp:*` belongs to Legal Data
+  Hunter because its ids are keyed by connector), how its quotes are verified
+  (`exact` or `fuzzy`, applied when a request-scoped source is cited and when
+  citations are re-verified by `verifyCitations`, and stamped on the panel
+  document as `quote_verification` so the client highlights the same way), how
+  to hydrate a document for the panel (`fetch`), and optionally how to
+  recognise a complete document inside an MCP tool result (`fromMcpCall`) and
+  how much of a result from its server the model may see (`mcpResultChars`;
+  every other connector keeps `MAX_MCP_RESULT_CHARS`).
+- `sourceDocuments.providers.ts` is the registry. `getSourceDocument`
+  dispatches a `GET /documents/:id` to the owning provider and deduplicates
+  concurrent fetches; `externalSourceFromMcpCall` asks every provider about a
+  successful connector call. No other code dispatches on a provider's
+  identity; the engine's CourtListener tools predate the registry and keep
+  their own case-citation handling, stamping the documents they emit through
+  `stampSourceDocument`.
+- One `sourceDocuments.<provider>.ts` per provider holds the implementation:
+  `sourceDocuments.courtlistener.ts` hydrates `case:*` ids;
+  `sourceDocuments.legalDataHunter.ts` owns `mcp:*` ids, recognises complete
+  `get_document` results and reads a document again through the viewer's
+  connector with `executeMcpToolOnServer`.
+
+The chat engine consumes providers only through the facade. A source a
+provider recognises in a connector result is registered for the request by
+`modules/chat/engine/tools/externalSources.ts` (`DocStore.external_source`
+plus `inline_text`), which makes it readable and searchable like an attachment
+and citable through `createCitation`, with verbatim quotes only when the
+provider verifies exactly. Nothing is persisted: a citation carries the
+provider's document id, and the panel reads the text again through
+`getSourceDocument` when the source is opened.
+
+Every provider document the backend emits carries `provider` and
+`quote_verification`: the registry stamps what it hands out, and the chat
+engine stamps the case documents it assembles itself (`createCitation`, the
+`case_citation` and `case_opinions` events) through `stampSourceDocument`.
+The client reads origin and highlight exactness from those fields and falls
+back to the legal document types only for documents saved before the fields
+existed. Adding a provider therefore means one implementation file and one
+registry entry. The frontend changes only if the provider introduces a new
+`SourceDocumentType`: add it to the contract's union, to `PANEL_DOCUMENT_TYPES`
+in `frontend/src/app/components/shared/types.ts`, and to the type set and icon
+map in `frontend/src/app/components/shared/documentCapabilities.ts`.
 
 ## Shared API contracts
 

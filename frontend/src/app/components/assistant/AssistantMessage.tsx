@@ -6,7 +6,6 @@ import { createCitationPreprocessor } from "./message/citationPreprocessor";
 import { TextCardUI } from "@mike/ui";
 import { memo, useMemo, useRef, useState, type ReactNode } from "react";
 import { IntakeActionCard } from "./IntakeActionCard";
-import type { WebSource } from "@mike/contracts";
 import { Check, Copy } from "lucide-react";
 import type {
     AssistantEvent,
@@ -16,16 +15,12 @@ import type {
 } from "../shared/types";
 import { ConnectorSkeuoIcon } from "@/app/components/shared/AppSidebarSkeuoIcons";
 import { notifyError } from "@/app/lib/userFacingError";
-import { useOptionalUserProfile } from "@/app/contexts/UserProfileContext";
+import { useWorkspacePreferences } from "@/app/hooks/useWorkspacePreferences";
 import { EditCard } from "./EditCard";
 import { PreResponseWrapper } from "./PreResponseWrapper";
 import { ResponseStatus, type StatusState } from "./message/ResponseStatus";
 import { DocSearchBlock } from "./message/DocSearchBlock";
-import {
-    WebReadBlock,
-    WebSearchBlock,
-    WebSourcesBlock,
-} from "./message/WebActivityBlock";
+import { WebReadBlock, WebSearchBlock } from "./message/WebActivityBlock";
 import {
     SubagentGroup,
     subagentTints,
@@ -43,11 +38,13 @@ import {
 import { preprocessCitations, internalCaseHref } from "./message/citationUtils";
 import { useSmoothedReveal } from "./message/useSmoothedReveal";
 import { MarkdownContent } from "./message/MarkdownContent";
+import { currentCitationSteps } from "@/app/lib/citationsRecorded";
 import { CitationsBlock, buildCitationAppendix } from "./message/CitationSources";
 import { EditCardsSection } from "./message/EditCardsSection";
 import {
     AskInputsBlock,
     CourtListenerBlock,
+    CitationsRecordedBlock,
     DocCreatedBlock,
     DocDownloadBlock,
     DocEditBlock,
@@ -81,7 +78,6 @@ interface Props {
     /** Human-readable error text rendered alongside the red Mike icon. */
     errorMessage?: string;
     citations?: Citation[];
-    citationStatus?: "started" | "partial" | "final";
     activeCitation?: Citation | null;
     onCitationClick?: (citation: Citation) => void;
     onOpenCitationSource?: (citation: Citation) => void;
@@ -154,7 +150,6 @@ function AssistantMessageImpl({
     isError = false,
     errorMessage,
     citations = EMPTY_CITATIONS,
-    citationStatus,
     activeCitation,
     onCitationClick,
     onOpenCitationSource,
@@ -296,22 +291,19 @@ function AssistantMessageImpl({
     const canOpenCitationSource = (citation: Citation) =>
         !!onOpenCitationSource ||
         (citation.kind !== "case" && !!onOpenDocument);
+    // A cited source opens through the first citation that cites it.
+    const citationSteps = currentCitationSteps(events ?? []);
+    const openCitedSource = ({ ref }: { ref: number }) => {
+        const citation = citations.find((c) => c.ref === ref);
+        return citation && canOpenCitationSource(citation)
+            ? () => handleOpenCitationSource(citation)
+            : undefined;
+    };
     const eventsWithDelegated = withDelegationEvents(events ?? []);
-    // The pages an answer cites follow the answer, not the steps before it.
-    // Several provider steps can cite the same page, so list each URL once.
-    const webSourcesByUrl = new Map<string, WebSource>();
-    for (const event of events ?? []) {
-        if (event.type !== "web_sources") continue;
-        for (const source of event.sources) {
-            const existing = webSourcesByUrl.get(source.url);
-            if (!existing || (!existing.title && source.title)) {
-                webSourcesByUrl.set(source.url, source);
-            }
-        }
-    }
-    const webSources = [...webSourcesByUrl.values()];
-    const showCitationBlock =
-        !!citationStatus || (!isStreaming && citations.length > 0);
+    // The list waits until the answer is finished: citations recorded
+    // before the answer arrive first, and the list must not sit under prose
+    // that is still being written.
+    const showCitationBlock = !isStreaming && citations.length > 0;
     const handleCopy = async () => {
         try {
             let html = "";
@@ -496,15 +488,17 @@ function AssistantMessageImpl({
         }
         if (event.type === "mcp_tool_call") {
             const isError = event.status === "error";
-            const label = event.connector_name
-                ? `${event.connector_name}: ${connectorToolLabel(event.tool_name, event.tool_title)}`
-                : toolCallLabel(event.openai_tool_name);
+            const label = event.interrupted
+                ? "Connector call stopped"
+                : event.connector_name
+                  ? `${event.connector_name}: ${connectorToolLabel(event.tool_name, event.tool_title)}`
+                  : toolCallLabel(event.openai_tool_name);
             return (
                 <EventBlock
                     key={globalIdx}
                     showConnector={showConnector}
                     isStreaming={event.isStreaming}
-                    dotColor={isError ? "red" : "green"}
+                    dotColor={isError ? "red" : event.interrupted ? "gray" : "green"}
                 >
                     <span className="flex min-w-0 items-center gap-1.5 font-medium">
                         <ConnectorSkeuoIcon
@@ -532,6 +526,7 @@ function AssistantMessageImpl({
                     key={globalIdx}
                     filename={event.filename}
                     isStreaming={event.isStreaming}
+                    interrupted={!!event.interrupted}
                     onClick={
                         !event.isStreaming &&
                         event.document_id &&
@@ -554,15 +549,18 @@ function AssistantMessageImpl({
         }
         if (event.type === "doc_search") {
             return <DocSearchBlock key={globalIdx} event={event}
-                isStreaming={event.isStreaming} showConnector={showConnector} />;
+                isStreaming={event.isStreaming} interrupted={!!event.interrupted}
+                showConnector={showConnector} />;
         }
         if (event.type === "web_search") {
             return <WebSearchBlock key={globalIdx} event={event}
-                isStreaming={event.isStreaming} showConnector={showConnector} />;
+                isStreaming={event.isStreaming} interrupted={!!event.interrupted}
+                showConnector={showConnector} />;
         }
         if (event.type === "web_read") {
             return <WebReadBlock key={globalIdx} event={event}
-                isStreaming={event.isStreaming} showConnector={showConnector} />;
+                isStreaming={event.isStreaming} interrupted={!!event.interrupted}
+                showConnector={showConnector} />;
         }
         if (event.type === "doc_find") {
             return (
@@ -572,6 +570,7 @@ function AssistantMessageImpl({
                     query={event.query}
                     totalMatches={event.total_matches}
                     isStreaming={!!event.isStreaming}
+                    interrupted={!!event.interrupted}
                     showConnector={showConnector}
                     onClick={
                         !event.isStreaming &&
@@ -596,6 +595,7 @@ function AssistantMessageImpl({
                     key={globalIdx}
                     filename={event.filename}
                     isStreaming={event.isStreaming}
+                    interrupted={!!event.interrupted}
                     showConnector={showConnector}
                     onClick={
                         !event.isStreaming &&
@@ -626,6 +626,7 @@ function AssistantMessageImpl({
                     copies={event.copies}
                     isStreaming={!!event.isStreaming}
                     hasError={!!event.error}
+                    interrupted={!!event.interrupted}
                     showConnector={showConnector}
                     onOpenCopy={
                         !event.isStreaming && onOpenDocument
@@ -648,6 +649,7 @@ function AssistantMessageImpl({
                     filename={event.filename}
                     isStreaming={event.isStreaming}
                     hasError={!!event.error}
+                    interrupted={!!event.interrupted}
                     showConnector={showConnector}
                     onClick={
                         !event.isStreaming &&
@@ -663,6 +665,22 @@ function AssistantMessageImpl({
                                   })
                             : undefined
                     }
+                />
+            );
+        }
+        if (event.type === "citations_recorded") {
+            return (
+                <CitationsRecordedBlock
+                    key={globalIdx}
+                    refs={event.refs}
+                    removedRefs={event.removed_refs}
+                    sources={event.sources}
+                    quotesNotFound={event.quotes_not_found}
+                    rejected={event.rejected}
+                    isStreaming={!!event.isStreaming}
+                    interrupted={!!event.interrupted}
+                    showConnector={showConnector}
+                    openSource={source => citationSteps.get(source.ref) === event ? openCitedSource(source) : undefined}
                 />
             );
         }
@@ -693,7 +711,8 @@ function AssistantMessageImpl({
         }
         if (event.type === "courtlistener_search_case_law") {
             const count = event.result_count ?? 0;
-            const detail = event.isStreaming
+            // A stopped search reported no results: show its query, not "0 results".
+            const detail = event.isStreaming || event.interrupted
                 ? event.query
                     ? `for "${event.query}"`
                     : undefined
@@ -708,11 +727,14 @@ function AssistantMessageImpl({
                             ? "Searching case law"
                             : event.error
                               ? "Case law search failed"
-                              : "Searched case law"
+                              : event.interrupted
+                                ? "Case law search stopped"
+                                : "Searched case law"
                     }
                     detail={detail}
                     isStreaming={!!event.isStreaming}
                     hasError={!!event.error}
+                    interrupted={!!event.interrupted}
                     showConnector={showConnector}
                 />
             );
@@ -745,11 +767,14 @@ function AssistantMessageImpl({
                             ? `Fetching ${displayLabel}`
                             : event.error
                               ? "Case fetch failed"
-                              : `Fetched ${displayLabel}`
+                              : event.interrupted
+                                ? `Fetch of ${displayLabel} stopped`
+                                : `Fetched ${displayLabel}`
                     }
                     detail={detail}
                     isStreaming={!!event.isStreaming}
                     hasError={!!event.error}
+                    interrupted={!!event.interrupted}
                     showConnector={showConnector}
                     items={items.length > 0 ? items : undefined}
                 />
@@ -775,7 +800,7 @@ function AssistantMessageImpl({
                 const searchLabel = `${searches.length} ${
                     searches.length === 1 ? "search" : "searches"
                 } in ${caseCount} ${caseCount === 1 ? "case" : "cases"}`;
-                const detail = event.isStreaming
+                const detail = event.isStreaming || event.interrupted
                     ? undefined
                     : event.error
                       ? event.error
@@ -790,7 +815,10 @@ function AssistantMessageImpl({
                                 : null),
                         url: null,
                         query: search.query,
-                        totalMatches: search.total_matches ?? 0,
+                        // A stopped search has no match count to show.
+                        totalMatches: event.interrupted
+                            ? undefined
+                            : (search.total_matches ?? 0),
                         hasError: !!search.error,
                     }),
                 );
@@ -802,11 +830,14 @@ function AssistantMessageImpl({
                                 ? `Running ${searchLabel}`
                                 : event.error
                                   ? "Case searches failed"
-                                  : `Ran ${searchLabel}`
+                                  : event.interrupted
+                                    ? `Stopped ${searchLabel}`
+                                    : `Ran ${searchLabel}`
                         }
                         detail={detail}
                         isStreaming={!!event.isStreaming}
                         hasError={!!event.error}
+                        interrupted={!!event.interrupted}
                         showConnector={showConnector}
                         items={items.length > 0 ? items : undefined}
                     />
@@ -816,7 +847,7 @@ function AssistantMessageImpl({
             const caseLabel =
                 [event.case_name, event.citation].filter(Boolean).join(", ") ||
                 (event.cluster_id ? `cluster ${event.cluster_id}` : "case");
-            const detail = event.isStreaming
+            const detail = event.isStreaming || event.interrupted
                 ? event.query
                     ? `for "${event.query}" in ${caseLabel}`
                     : caseLabel
@@ -831,11 +862,14 @@ function AssistantMessageImpl({
                             ? "Searching case"
                             : event.error
                               ? "Case search failed"
-                              : "Searched case"
+                              : event.interrupted
+                                ? "Case search stopped"
+                                : "Searched case"
                     }
                     detail={detail}
                     isStreaming={!!event.isStreaming}
                     hasError={!!event.error}
+                    interrupted={!!event.interrupted}
                     showConnector={showConnector}
                 />
             );
@@ -845,7 +879,7 @@ function AssistantMessageImpl({
             const caseLabel =
                 [event.case_name, event.citation].filter(Boolean).join(", ") ||
                 "case";
-            const detail = event.isStreaming
+            const detail = event.isStreaming || event.interrupted
                 ? undefined
                 : event.error
                   ? event.error
@@ -860,11 +894,14 @@ function AssistantMessageImpl({
                             ? `Reading case ${caseLabel}`
                             : event.error
                               ? `Case read failed ${caseLabel}`
-                              : `Read case ${caseLabel}`
+                              : event.interrupted
+                                ? `Case read stopped ${caseLabel}`
+                                : `Read case ${caseLabel}`
                     }
                     detail={detail}
                     isStreaming={!!event.isStreaming}
                     hasError={!!event.error}
+                    interrupted={!!event.interrupted}
                     showConnector={showConnector}
                 />
             );
@@ -873,7 +910,7 @@ function AssistantMessageImpl({
             const citations = event.citation_count ?? 0;
             const matches = event.match_count ?? 0;
             const citationLabel = `${citations} ${citations === 1 ? "citation" : "citations"}`;
-            const detail = event.isStreaming
+            const detail = event.isStreaming || event.interrupted
                 ? undefined
                 : event.error
                   ? event.error
@@ -899,11 +936,14 @@ function AssistantMessageImpl({
                             ? `Verifying ${citationLabel}`
                             : event.error
                               ? "Citation verification failed"
-                              : `Verified ${citationLabel}`
+                              : event.interrupted
+                                ? `Verification of ${citationLabel} stopped`
+                                : `Verified ${citationLabel}`
                     }
                     detail={detail}
                     isStreaming={!!event.isStreaming}
                     hasError={!!event.error}
+                    interrupted={!!event.interrupted}
                     showConnector={showConnector}
                     items={items.length > 0 ? items : undefined}
                 />
@@ -916,9 +956,10 @@ function AssistantMessageImpl({
     // subagents Mike ran in parallel; they render as one group.
     const tints = subagentTints(events ?? []);
     // Settings > Features > Response details: the model, effort and tokens
-    // under the answer and in each subagent's details. Off without a profile.
+    // under the answer and in each subagent's details, as the workspace sets
+    // it. Off until that is known, and without a profile.
     const showDetails =
-        useOptionalUserProfile()?.profile?.responseDetailsVisible === true;
+        useWorkspacePreferences().responseDetailsVisible === true;
     const answerDetails = showDetails
         ? (events ?? []).findLast((e) => e.type === "response_details")
         : undefined;
@@ -1134,22 +1175,6 @@ function AssistantMessageImpl({
                                         filenameByDocId={filenameByDocId}
                                         cards={cards}
                                         resolvedCount={resolvedCount}
-                                        onViewClick={
-                                            onOpenDocument
-                                                ? (annotation, filename) =>
-                                                      onOpenDocument({
-                                                          documentId:
-                                                              annotation.document_id,
-                                                          filename,
-                                                          versionId:
-                                                              annotation.version_id ??
-                                                              null,
-                                                          versionNumber:
-                                                              annotation.version_number ??
-                                                              null,
-                                                      })
-                                                : undefined
-                                        }
                                         onResolveStart={onEditResolveStart}
                                         onResolved={handleEditResolved}
                                         onError={onEditError}
@@ -1276,12 +1301,6 @@ function AssistantMessageImpl({
                         </div>
                     )}
 
-                {webSources.length > 0 && (
-                    <div className="mt-2 mb-3">
-                        <WebSourcesBlock sources={webSources} />
-                    </div>
-                )}
-
                 {showCitationBlock && (
                     <CitationsBlock
                         citations={citations}
@@ -1289,11 +1308,6 @@ function AssistantMessageImpl({
                         onCitationClick={onCitationClick}
                         onOpenSource={handleOpenCitationSource}
                         canOpenSource={canOpenCitationSource}
-                        showWhenEmpty={!!citationStatus}
-                        isLoading={
-                            citationStatus === "started" ||
-                            citationStatus === "partial"
-                        }
                     />
                 )}
 

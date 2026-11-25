@@ -1,6 +1,10 @@
 import { BACKEND_REPORTING_OWNER } from "../../lib/reportedUpstreamCodes";
 import { sendInternalError } from "../../lib/httpError";
 import {
+  resolveWorkspaceFilter,
+  sendWorkspaceFailure,
+} from "../../lib/workspace";
+import {
   attachAssistantTurnSse,
   getActiveAssistantTurn,
   getAssistantTurnRun,
@@ -22,10 +26,11 @@ import { requireAuth } from "../../middleware/auth";
 import { asyncRoute, routerErrorHandler } from "../../middleware/asyncRoute";
 import { createServerSupabase } from "../../lib/supabase";
 import {
+  ACTIVE_WORD_DOCUMENT_ID,
   AssistantStreamError,
   assistantStreamErrorPayload,
+  buildStoppedAssistantEvent,
   buildStoppedAssistantMessage,
-  extractCitations,
   isAbortError,
   parseChatMessages,
   parseOptionalChatId,
@@ -41,8 +46,9 @@ import {
   runLLMStream,
   stripTransientAssistantEvents,
   submitClientToolResult,
+  throwIfTurnStopped,
 } from "../chat/chat.service";
-import { enqueueChatTurnAudit } from "../../lib/audit";
+import { enqueueChatTurnAudit, stoppedTurnAuditStatus } from "../../lib/audit";
 import { setOperation, isReported, reportError } from "../../lib/observability/sentry";
 import {
   persistWordDocumentEdits,
@@ -64,6 +70,7 @@ import {
   updateWordEditOutcome,
   type ProposedWordEdit,
 } from "./wordChat.service";
+import { log } from "../../lib/log";
 
 export const wordChatRouter = Router();
 
@@ -260,7 +267,8 @@ function turnNotFound(res: Response): void {
   });
 }
 
-// GET /word-chat?document_id=<embedded document UUID>&limit=10
+// GET /word-chat?document_id=<embedded document UUID>&workspace=personal|<org id>&limit=10
+// Without `workspace` the list spans every workspace the caller can reach.
 wordChatRouter.get("/", requireAuth, asyncRoute(async (req, res) => {
   const userId = res.locals.userId as string;
   const parsedDocumentId = parseDocumentId(req.query.document_id);
@@ -276,9 +284,12 @@ wordChatRouter.get("/", requireAuth, asyncRoute(async (req, res) => {
     ? Math.max(requestedOffset, 0)
     : 0;
   const db = createServerSupabase();
+  const workspace = await resolveWorkspaceFilter(db, userId, req.query.workspace);
+  if (!workspace.ok) return void sendWorkspaceFailure(res, workspace);
   const result = await listWordChats(db, {
     userId,
     clientDocumentId: parsedDocumentId.value,
+    workspace: workspace.workspace,
     limit,
     offset,
   });
@@ -695,6 +706,7 @@ wordChatRouter.post("/", requireAuth, asyncRoute(async (req, res) => {
     requestedModel: parsedModel.value,
     requestedReasoning: parsedReasoning.value,
     requestedTimeZone: req.body?.time_zone,
+    requestedOrgId: body.org_id,
   });
   if (!prep.ok) {
     if (prep.status === 500 && "error" in prep)
@@ -715,6 +727,7 @@ wordChatRouter.post("/", requireAuth, asyncRoute(async (req, res) => {
     apiMessages,
     workflowStore,
     apiKeys,
+    orgId,
     selectedModel,
     selectedReasoningLevel,
     nonce,
@@ -818,6 +831,13 @@ wordChatRouter.post("/", requireAuth, asyncRoute(async (req, res) => {
     });
     if (nextTitle) chatTitle = nextTitle;
   };
+  // The answer's events once normalized (its Word edits persisted). A stop
+  // seen after that point reuses them with the stop label instead of
+  // persisting the same edits a second time.
+  let normalizedAnswer: {
+    events: unknown[];
+    citations: unknown[];
+  } | null = null;
 
   try {
     write(
@@ -828,7 +848,7 @@ wordChatRouter.post("/", requireAuth, asyncRoute(async (req, res) => {
         assistantMessageId,
       })}\n\n`,
     );
-    const { events, citations } = await runLLMStream({
+    const { fullText, events, citations } = await runLLMStream({
       onActivity: run?.touch,
       apiMessages,
       docStore,
@@ -845,6 +865,12 @@ wordChatRouter.post("/", requireAuth, asyncRoute(async (req, res) => {
       ...(clientToolsEnabled
         ? {
             clientTools: createWordClientToolsAdapter({
+              onCitationText: (text) => {
+                docStore.set(ACTIVE_WORD_DOCUMENT_ID, {
+                  storage_path: `inline:word-document:${parsedDocumentId.value}`,
+                  file_type: "text/markdown", filename: activeDocumentName, inline_text: text,
+                });
+              },
               userId,
               write: writeClientToolFrame,
               signal: stream.signal,
@@ -860,6 +886,10 @@ wordChatRouter.post("/", requireAuth, asyncRoute(async (req, res) => {
       model: selectedModel,
       reasoning: selectedReasoningLevel,
       apiKeys,
+      // The chat's organization: its keys and models, its memory, where
+      // generated documents are filed, and the user's connections for that
+      // workspace rather than their Personal ones.
+      orgId,
       signal: stream.signal,
       conversationId: persistChat ? chatId : null,
         includeMemory: true,
@@ -867,9 +897,17 @@ wordChatRouter.post("/", requireAuth, asyncRoute(async (req, res) => {
       nonce,
       emitDone: false,
     });
+    // A stream that returns after the turn was stopped (citation checks, or a
+    // provider or tool that ignored the abort) must not be saved as a
+    // completed answer: the abort handler below stores the stop outcome.
+    throwIfTurnStopped(stream.signal, { fullText, events, citations });
     const persistedEvents = await normalizeAssistantEvents(
       stripTransientAssistantEvents(events),
     );
+    normalizedAnswer = {
+      events: persistedEvents,
+      citations,
+    };
     const saveError = await updateAssistantMessage(
       persistedEvents.length ? persistedEvents : null,
       citations.length ? citations : null,
@@ -882,6 +920,9 @@ wordChatRouter.post("/", requireAuth, asyncRoute(async (req, res) => {
         cause: saveError,
         component: "word-chat",
       });
+      // A turn stopped while the save was pending ends as stopped, not as a
+      // save failure (the stop path saves it again).
+      throwIfTurnStopped(stream.signal, { fullText, events, citations });
       write(
         `data: ${JSON.stringify({
           type: "error",
@@ -894,6 +935,10 @@ wordChatRouter.post("/", requireAuth, asyncRoute(async (req, res) => {
       write("data: [DONE]\n\n");
       return;
     }
+    // The answer is saved, but the turn may have been stopped while it was
+    // being saved. A stop seen here still ends it as stopped: no memory
+    // consolidation, and the stored answer gets the stop label.
+    throwIfTurnStopped(stream.signal, { fullText, events, citations });
       // Local Word chats deliberately have no durable transcript. Only a cloud
       // turn can be curated later, once its reserved assistant row is complete.
       if (
@@ -925,6 +970,7 @@ wordChatRouter.post("/", requireAuth, asyncRoute(async (req, res) => {
       db,
       {
         userId,
+        orgId,
         userEmail,
         chatId: null,
         projectId: null,
@@ -949,25 +995,36 @@ wordChatRouter.post("/", requireAuth, asyncRoute(async (req, res) => {
         db,
         {
           userId,
+          orgId,
           userEmail,
           chatId: null,
           projectId: null,
           surface: "word",
           title: chatTitle ?? activeDocumentName ?? null,
           model: selectedModel,
-          status: run?.stopReason && run.stopReason !== "user" ? "failed" : "cancelled",
+          status: stoppedTurnAuditStatus(run?.stopReason),
         },
         null,
       );
       if (error instanceof AssistantStreamError) {
-        const partial = buildStoppedAssistantMessage({
-          stopReason: run?.stopReason,
-          fullText: error.fullText,
-          events: error.events,
-          buildCitations: (fullText) =>
-            extractCitations(fullText, docIndex, docStore),
-        });
-        const partialEvents = await normalizeAssistantEvents(partial.events);
+        // Reuse persisted edit references; normalizing the raw answer again
+        // would write its Word edits a second time.
+        const partial = normalizedAnswer
+          ? {
+              events: [
+                ...normalizedAnswer.events,
+                buildStoppedAssistantEvent(run?.stopReason),
+              ],
+              citations: normalizedAnswer.citations,
+            }
+          : buildStoppedAssistantMessage({
+              stopReason: run?.stopReason,
+              events: error.events,
+              citations: error.citations,
+            });
+        const partialEvents = normalizedAnswer
+          ? partial.events
+          : await normalizeAssistantEvents(partial.events);
         const saveError = await updateAssistantMessage(
           partialEvents.length ? partialEvents : null,
           partial.citations.length ? partial.citations : null,
@@ -998,10 +1055,9 @@ wordChatRouter.post("/", requireAuth, asyncRoute(async (req, res) => {
       error instanceof AssistantStreamError
         ? stripTransientAssistantEvents(error.events)
         : [{ type: "error" as const, message }];
-    const errorFullText =
-      error instanceof AssistantStreamError ? error.fullText : "";
     try {
-      const citations = extractCitations(errorFullText, docIndex, docStore);
+      const citations =
+        error instanceof AssistantStreamError ? error.citations : [];
       const normalizedErrorEvents = await normalizeAssistantEvents(errorEvents);
       const saveError = await updateAssistantMessage(
         normalizedErrorEvents.length ? normalizedErrorEvents : null,
@@ -1044,7 +1100,7 @@ wordChatRouter.post("/", requireAuth, asyncRoute(async (req, res) => {
           turn: memoryTurn,
         });
       } catch {
-        console.warn("[memory] Word activity release failed", { chatId });
+        log.warn("memory", "Word activity release failed", { chatId });
       }
     }
   }

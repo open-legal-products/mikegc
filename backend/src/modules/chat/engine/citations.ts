@@ -1,7 +1,14 @@
-import { type DocIndex, type DocStore, resolveDoc } from "./types";
+import { type DocIndex, type DocStore, resolveDoc, resolveDocLabel } from "./types";
+import {
+  isExternalSourceDocumentId,
+  sourceProviderFor,
+  stampSourceDocument,
+} from "../../source-documents/sourceDocuments.service";
+import { quoteOccursVerbatim } from "./tools/externalSources";
 import {
   normalizeCaseDocument,
   sourceDocumentType,
+  type SourceDocument,
   type SourceDocumentQuote,
 } from "../../../lib/sourceDocuments";
 
@@ -41,9 +48,10 @@ type ParsedCaseCitation = {
   }[];
 };
 
-type ParsedCitation = ParsedDocumentCitation | ParsedCaseCitation;
+export type ParsedCitation = ParsedDocumentCitation | ParsedCaseCitation;
 
-function normalizeCitation(raw: unknown): ParsedCitation | null {
+/** One citation entry as the model wrote it, or null when it is unusable. */
+export function normalizeCitation(raw: unknown): ParsedCitation | null {
   if (!raw || typeof raw !== "object") return null;
   const c = raw as Record<string, unknown>;
   const markerRef =
@@ -56,7 +64,7 @@ function normalizeCitation(raw: unknown): ParsedCitation | null {
       : Number.isFinite(markerRef)
         ? markerRef
         : null;
-  if (typeof ref !== "number") return null;
+  if (typeof ref !== "number" || !Number.isSafeInteger(ref) || ref < 1) return null;
   const quote = typeof c.quote === "string" ? c.quote : c.text;
 
   const rawClusterId =
@@ -179,139 +187,32 @@ function normalizeCaseCitationQuotes(c: Record<string, unknown>) {
 }
 
 // ---------------------------------------------------------------------------
-// Citation block constants and parsers
+// Limits
 // ---------------------------------------------------------------------------
 
-export const CITATIONS_BLOCK_RE = /<CITATIONS>\s*([\s\S]*?)\s*<\/CITATIONS>/;
-export const CITATIONS_OPEN_TAG = "<CITATIONS>";
-export const CITATIONS_CLOSE_TAG = "</CITATIONS>";
+export const MAX_CITATIONS = 50;
+export const MAX_CITATION_PAYLOAD_BYTES = 5_000_000;
 
-type CitationParseDiagnostics = {
-  hasBlock: boolean;
-  rawLength: number;
-  error: string | null;
-};
-
-export function parseCitationsWithDiagnostics(text: string): {
-  citations: ParsedCitation[];
-  diagnostics: CitationParseDiagnostics;
-} {
-  const match = text.match(CITATIONS_BLOCK_RE);
-  if (!match) {
-    return { citations: [], diagnostics: { hasBlock: false, rawLength: 0, error: null } };
+export function limitCitationPayload(citations: unknown[]): unknown[] {
+  const limited: unknown[] = [];
+  let totalBytes = 2; // JSON array brackets.
+  for (const citation of citations) {
+    if (citation == null) continue;
+    let serialized: string | undefined;
+    try {
+      serialized = JSON.stringify(citation);
+    } catch {
+      continue;
+    }
+    if (serialized === undefined) continue;
+    const bytes = Buffer.byteLength(serialized, "utf8") + (limited.length ? 1 : 0);
+    if (totalBytes + bytes > MAX_CITATION_PAYLOAD_BYTES) continue;
+    limited.push(citation);
+    totalBytes += bytes;
   }
-  const raw = match[1] ?? "";
-  try {
-    const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed)) {
-      return {
-        citations: [],
-        diagnostics: { hasBlock: true, rawLength: raw.length, error: "CITATIONS block JSON was not an array." },
-      };
-    }
-    return {
-      citations: parsed.map(normalizeCitation).filter((c): c is ParsedCitation => c !== null),
-      diagnostics: { hasBlock: true, rawLength: raw.length, error: null },
-    };
-  } catch (error) {
-    return {
-      citations: [],
-      diagnostics: {
-        hasBlock: true,
-        rawLength: raw.length,
-        error: error instanceof Error ? error.message : String(error),
-      },
-    };
-  }
+  return limited;
 }
 
-export function parseCitations(text: string): ParsedCitation[] {
-  return parseCitationsWithDiagnostics(text).citations;
-}
-
-/**
- * Completed citation objects from a CITATIONS block that is still streaming.
- *
- * The parser keeps its scan state between `push` calls, so each delta costs
- * work proportional to its own length: nothing already scanned is read,
- * split or JSON-parsed again. `push` returns only the citations completed by
- * that delta. Like the whole-buffer parse it replaces, it stops at the close
- * tag (even one split across deltas) or at the array's closing `]`, and skips
- * an object that does not parse as a citation.
- */
-export function createPartialCitationParser(): {
-  push: (delta: string) => ParsedCitation[];
-} {
-  let finished = false;
-  let arrayStarted = false;
-  let inString = false;
-  let escaped = false;
-  let depth = 0;
-  // Text of the object being read, from its `{` up to the end of the
-  // previous delta; the current delta's part is sliced once it closes.
-  let objectCarry: string | null = null;
-  // How many leading characters of CITATIONS_CLOSE_TAG the input has
-  // just matched. The tag's characters never change the JSON scan state,
-  // so the scan can run ahead before the tag is recognised.
-  let closeMatched = 0;
-
-  const push = (delta: string): ParsedCitation[] => {
-    const completed: ParsedCitation[] = [];
-    if (finished) return completed;
-    let objectStart = objectCarry === null ? -1 : 0;
-    for (let i = 0; i < delta.length; i += 1) {
-      const char = delta[i];
-      if (char === CITATIONS_CLOSE_TAG[closeMatched]) {
-        closeMatched += 1;
-        if (closeMatched === CITATIONS_CLOSE_TAG.length) {
-          finished = true;
-          break;
-        }
-      } else {
-        closeMatched = char === CITATIONS_CLOSE_TAG[0] ? 1 : 0;
-      }
-      if (!arrayStarted) {
-        if (char === "[") arrayStarted = true;
-        continue;
-      }
-      if (escaped) { escaped = false; continue; }
-      if (char === "\\") { escaped = inString; continue; }
-      if (char === '"') { inString = !inString; continue; }
-      if (inString) continue;
-      if (char === "{") {
-        if (depth === 0) {
-          objectStart = i;
-          objectCarry = "";
-        }
-        depth += 1;
-      } else if (char === "}") {
-        if (depth === 0) continue;
-        depth -= 1;
-        if (depth === 0 && objectCarry !== null) {
-          const raw = objectCarry + delta.slice(objectStart, i + 1);
-          objectCarry = null;
-          objectStart = -1;
-          try {
-            const citation = normalizeCitation(JSON.parse(raw));
-            if (citation) completed.push(citation);
-          } catch { /* ignore incomplete/malformed partial object */ }
-        }
-      } else if (char === "]" && depth === 0) {
-        finished = true;
-        break;
-      }
-    }
-    if (!finished && objectCarry !== null) {
-      objectCarry += delta.slice(Math.max(objectStart, 0));
-    }
-    return completed;
-  };
-  return { push };
-}
-
-export function parsePartialCitationObjects(text: string): ParsedCitation[] {
-  return createPartialCitationParser().push(text);
-}
 
 type CasesByClusterId = Map<number, {
   caseName: string | null;
@@ -321,6 +222,58 @@ type CasesByClusterId = Map<number, {
   dateFiled: string | null;
 }>;
 
+/**
+ * A citation of a source read from a provider during this request. The
+ * source is not an upload: there is no page or version. A provider that
+ * verifies quotes exactly accepts a quote only when it occurs verbatim in
+ * the canonical text, so a changed legal quotation can never be surfaced as
+ * verified; such a citation is returned null when any quote fails. A
+ * provider that verifies tolerantly leaves its quotes to the end-of-turn
+ * verification, like an upload's; until that runs they are marked unverified,
+ * so a turn that ends before verification (a stopped stream) never stores
+ * them as verified. A source no provider owns cannot occur in production
+ * (every registered source comes from a provider) and is treated as exact,
+ * the safe default.
+ */
+function createExternalSourceCitation(
+  citation: ParsedDocumentCitation,
+  label: string,
+  document: SourceDocument,
+  text: string,
+) {
+  const exact = sourceProviderFor(document.document_id)?.quoteVerification !== "fuzzy";
+  if (exact && citation.quotes.some(({ quote }) => !quoteOccursVerbatim(text, quote))) {
+    return null;
+  }
+  const subdocumentId = document.subdocuments?.[0]?.document_id;
+  const quotes: SourceDocumentQuote[] = citation.quotes.map((quote) => ({
+    quote: quote.quote,
+    verification: { verified: exact },
+    target: subdocumentId ? { subdocument_id: subdocumentId } : {},
+  }));
+  return {
+    type: "citation_data",
+    kind: "document",
+    ref: citation.ref,
+    document: { ...document, quotes },
+    doc_id: label,
+    document_id: document.document_id,
+    version_id: null,
+    version_number: null,
+    filename: document.title,
+    verified: exact,
+    page: citation.page,
+    quote: citation.quote,
+    quotes: citation.quotes,
+  };
+}
+
+/**
+ * Builds the citation annotation for one parsed citation, or null when the
+ * citation names a request-scoped external source of an exact provider whose
+ * quotes do not occur verbatim in it, or a provider id that was never read in
+ * this request (callers drop those).
+ */
 export function createCitation(
   citation: ParsedCitation,
   docIndex: DocIndex,
@@ -329,15 +282,19 @@ export function createCitation(
 ) {
   if (citation.kind === "case") {
     const caseRecord = casesByClusterId?.get(citation.cluster_id);
-    const document = normalizeCaseDocument({
-      clusterId: citation.cluster_id,
-      caseName: caseRecord?.caseName,
-      citations: caseRecord?.citations,
-      url: caseRecord?.url,
-      pdfUrl: caseRecord?.pdfUrl,
-      dateFiled: caseRecord?.dateFiled,
-      quotes: citation.quotes,
-    });
+    // Stamped like every registry document, so the client learns the
+    // origin from the wire rather than from the document type.
+    const document = stampSourceDocument(
+      normalizeCaseDocument({
+        clusterId: citation.cluster_id,
+        caseName: caseRecord?.caseName,
+        citations: caseRecord?.citations,
+        url: caseRecord?.url,
+        pdfUrl: caseRecord?.pdfUrl,
+        dateFiled: caseRecord?.dateFiled,
+        quotes: citation.quotes,
+      }),
+    );
     return {
       type: "citation_data",
       kind: "case",
@@ -353,9 +310,41 @@ export function createCitation(
     };
   }
 
-  const docInfo = resolveDoc(citation.doc_id, docIndex);
-  const requestScopedDocument = docStore?.get(citation.doc_id);
-  const documentId = docInfo?.document_id ?? citation.doc_id;
+  // An external source may be cited by its handle, its title or the
+  // provider's document id, and must resolve through the request-scoped
+  // store rather than fall through to the tolerant uploaded-document path.
+  const sourceLabel = docStore
+    ? resolveDocLabel(citation.doc_id, docStore, docIndex)
+    : null;
+  const sourceEntry = sourceLabel ? docStore?.get(sourceLabel) : undefined;
+  // A title shared by two sources cannot identify which one owns the quote.
+  if (docStore && !docStore.has(citation.doc_id) && citation.doc_id === sourceEntry?.filename) {
+    let matches = 0;
+    for (const entry of docStore.values()) {
+      if (entry.filename === citation.doc_id && ++matches > 1) return null;
+    }
+  }
+  if (sourceLabel && sourceEntry?.external_source) {
+    return createExternalSourceCitation(
+      citation,
+      sourceLabel,
+      sourceEntry.external_source,
+      sourceEntry.inline_text ?? "",
+    );
+  }
+
+  const label = sourceLabel ?? citation.doc_id;
+  const docInfo = resolveDoc(label, docIndex);
+  // A provider's document id cited without that source having been read in
+  // this request has no text to verify against: it never becomes a citation.
+  if (
+    isExternalSourceDocumentId(citation.doc_id) ||
+    (docInfo && isExternalSourceDocumentId(docInfo.document_id))
+  ) {
+    return null;
+  }
+  const requestScopedDocument = docStore?.get(label);
+  const documentId = docInfo?.document_id ?? label;
   const filename =
     docInfo?.filename ?? requestScopedDocument?.filename ?? citation.doc_id;
   const quotes: SourceDocumentQuote[] = citation.quotes.map((quote) => ({
@@ -379,7 +368,7 @@ export function createCitation(
       version_id: docInfo?.version_id ?? null,
       version_number: docInfo?.version_number ?? null,
     },
-    doc_id: citation.doc_id,
+    doc_id: label,
     document_id: docInfo?.document_id,
     version_id: docInfo?.version_id ?? null,
     version_number: docInfo?.version_number ?? null,

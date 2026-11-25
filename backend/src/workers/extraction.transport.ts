@@ -4,9 +4,11 @@ import { ExtractionParseError } from "../lib/extraction/failure";
 import { ExtractionLimitError } from "../lib/extraction/limits";
 import { runIsolated } from "../lib/dbq/jobScope";
 import { getRedisConnection, watchQueueErrors } from "../lib/queue/connection";
-import { reportError } from "../lib/observability/sentry";
+import { isDeterministicProviderRefusal, providerFailureLevel } from "../lib/llm/providerErrors";
+import { markErrorHandled, reportError } from "../lib/observability/sentry";
 import { EXTRACTION_QUEUE, type ExtractionJobData } from "../lib/queue/extractionQueue";
-import { extractionJobOperation, runExtractionJob, markExtractionFailed } from "../modules/tabular/tabular.service";
+import { extractionJobOperation, isRefusalShownToUser, runExtractionJob, markExtractionFailed } from "../modules/tabular/tabular.service";
+import { log } from "../lib/log";
 
 /** Terminal resource refusals and exhausted retries both need cell cleanup. */
 export function isPermanentFailure(job: Job<ExtractionJobData>, error?: Error): boolean {
@@ -30,6 +32,9 @@ export function createExtractionWorker(): Worker<ExtractionJobData> {
                     if (error instanceof ExtractionLimitError || error instanceof ExtractionParseError) {
                         throw Object.assign(new UnrecoverableError(error instanceof ExtractionParseError ? "document_text_unreadable" : "document_too_large"), { cause: error });
                     }
+                    if (isDeterministicProviderRefusal(error)) {
+                        throw Object.assign(new UnrecoverableError("provider_refused"), { cause: error });
+                    }
                     throw error;
                 }
             });
@@ -46,17 +51,21 @@ export function createExtractionWorker(): Worker<ExtractionJobData> {
     );
     watchQueueErrors(worker, "worker");
     worker.on("stalled", (jobId) => {
-        console.warn(
-            "[extraction-worker] job stalled; will be re-queued",
+        log.warn("extraction-worker", "job stalled; will be re-queued",
             { jobId },
         );
     });
     worker.on("failed", async (job, err) => {
         const permanent = !!job && isPermanentFailure(job, err);
         // The 'failed' event fires outside the processor's isolation scope,
-        // so the operation is named here rather than inherited.
-        reportError(err, {
-            level: err.cause instanceof ExtractionParseError ? "warning" : permanent ? "error" : "warning",
+        // so the operation is named here rather than inherited. The grid was
+        // already told the user's key was rejected: only the log below stays.
+        if (isRefusalShownToUser(err)) markErrorHandled(err);
+        else reportError(err, {
+            // A refusal ends on its first attempt, at the chat engine's level.
+            level: err.cause instanceof ExtractionParseError ? "warning"
+                : isDeterministicProviderRefusal(err) ? providerFailureLevel(err)
+                : permanent ? "error" : "warning",
             tags: {
                 component: "extraction-worker",
                 operation: extractionJobOperation(job?.data ?? {}),

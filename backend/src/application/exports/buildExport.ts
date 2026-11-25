@@ -140,7 +140,17 @@ async function buildDocumentsZipExport(db: Db, job: ExportBuildRequest, userId: 
         // Sequential, unlike the sync route's Promise.all: this path exists
         // for selections large enough that fetching every file at once is
         // what would blow the memory ceiling.
-        zip.file(uniqueArchiveFilename(downloadFilenameForVersion(active.filename, active.version_number, active.source === "assistant_edit"), usedNames), Buffer.from(raw));
+        zip.file(
+            uniqueArchiveFilename(
+                downloadFilenameForVersion(
+                    active.filename,
+                    active.version_number,
+                    active.source === "assistant_edit",
+                ),
+                usedNames,
+            ),
+            Buffer.from(raw),
+        );
         added++;
     }
     if (added === 0) {

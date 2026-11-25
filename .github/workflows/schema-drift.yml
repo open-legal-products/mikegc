@@ -61,6 +61,8 @@ env:
 
 jobs:
   drift:
+    # Runs here and in forks; skipped in copies such as the Vercel Deploy button makes (docs/vercel.md).
+    if: github.repository == 'open-legal-products/mike' || github.event.repository.fork
     name: Fresh install vs upgraded deployment
     runs-on: ubuntu-latest
     timeout-minutes: 25
@@ -162,6 +164,9 @@ jobs:
 
       - name: Playbook storage cleanup transactions
         run: psql "$SUPABASE_TEST_DB_URL" -X --set ON_ERROR_STOP=1 -f backend/scripts/test-playbook-lifecycle.sql
+
+      - name: Playbook review publication transactions
+        run: psql "$SUPABASE_TEST_DB_URL" -X --set ON_ERROR_STOP=1 -f backend/scripts/test-playbook-review-publication.sql
 
       - name: Document text search and backfill transactions
         run: psql "$SUPABASE_TEST_DB_URL" -X --set ON_ERROR_STOP=1 -f backend/src/modules/documents/__tests__/documents.textSearch.sql

@@ -2,6 +2,7 @@ import path from "node:path";
 import type { NextConfig } from "next";
 import { withSentryConfig } from "@sentry/nextjs/config";
 import { releaseName } from "@mike/client";
+import { securityHeaders } from "./src/app/lib/securityHeaders";
 
 // The repository root: the parent of this directory, here and in the Docker
 // image (frontend/Dockerfile mirrors the layout at /app/frontend and
@@ -11,12 +12,19 @@ const REPO_ROOT = path.resolve(__dirname, "..");
 
 const nextConfig: NextConfig = {
     /* config options here */
-    // Standalone output emits a self-contained server (server.js + traced
-    // node_modules) that runs without the repo — the desktop app bundles it
-    // and runs it under Electron's own Node. Opt-in so the Docker image and
-    // dev workflow are untouched.
+    // Docker and the desktop app package the generated server and its traced dependencies.
     ...(process.env.NEXT_OUTPUT_STANDALONE === "1"
-        ? { output: "standalone" as const }
+        ? {
+              output: "standalone" as const,
+              // Sentry registers its Node diagnostics hook by file URL. The
+              // standalone trace otherwise omits the hook's ESM dependencies.
+              outputFileTracingIncludes: {
+                  "/*": [
+                      "./node_modules/@sentry/{server-runtime-injection,core,server-utils}/build/esm/**/*.{js,json}",
+                      "./node_modules/@sentry/conventions/dist/*.mjs",
+                  ],
+              },
+          }
         : {}),
     reactCompiler: true,
     typescript: {
@@ -50,6 +58,20 @@ const nextConfig: NextConfig = {
             path.join(__dirname, "node_modules"),
         ];
         return config;
+    },
+    // Do not advertise the framework and version in every response.
+    poweredByHeader: false,
+    async headers() {
+        return [
+            {
+                // Every path except the /api proxy, which forwards the
+                // backend's own stricter helmet headers (no-referrer on the
+                // OAuth callbacks, default-src 'none'); a rule here would
+                // overwrite them.
+                source: "/:path((?!api(?:/|$)).*)",
+                headers: securityHeaders(process.env.NODE_ENV === "production"),
+            },
+        ];
     },
     async rewrites() {
         return [

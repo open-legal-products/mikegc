@@ -126,7 +126,9 @@ export function PageHeader({
         <div
             className={cn(
                 "flex items-center justify-between",
-                "mx-3 md:mx-6.5",
+                // Below md the title lines up with the top bar's sidebar
+                // toggle, which sits 16px in.
+                "mx-4 md:mx-6",
                 PAGE_HEADER_ROW_CLASS,
                 shrink && "shrink-0",
             )}
@@ -256,7 +258,6 @@ function PageHeaderButtonActionControl({
                 aria-label={action.title}
                 aria-pressed={action.pressed}
                 iconOnly={iconOnly}
-                labelled={action.pressed !== undefined}
                 className={
                     action.pressed
                         ? `${LIQUID_GLASS_SELECTED_CLASS} text-gray-900 hover:text-gray-900`
@@ -376,6 +377,7 @@ function PageHeaderSearchActionControl({
 }
 
 function PageHeaderBreadcrumbs({ items }: { items: PageHeaderBreadcrumb[] }) {
+    const { mobileBackContainer } = usePageChrome();
     const containerRef = useRef<HTMLDivElement>(null);
     const measurementRefs = useRef<Array<HTMLSpanElement | null>>([]);
     const ellipsisMeasurementRef = useRef<HTMLSpanElement>(null);
@@ -446,16 +448,35 @@ function PageHeaderBreadcrumbs({ items }: { items: PageHeaderBreadcrumb[] }) {
                 PAGE_HEADER_TITLE_CLASS,
             )}
         >
-            {parent?.onClick && (
-                <button
-                    onClick={parent.onClick}
-                    className="shrink-0 text-gray-400 transition-colors hover:text-gray-600 sm:hidden"
-                    title={parent.title ?? "Back"}
-                    aria-label={parent.title ?? "Back"}
-                >
-                    <ChevronLeft className="h-5 w-5" />
-                </button>
-            )}
+            {/* On a small screen only the current crumb shows, so the way
+                up to its parent is a back button in the top bar, beside the
+                sidebar toggle. Without that bar it stays beside the title. */}
+            {parent?.onClick &&
+                (mobileBackContainer ? (
+                    createPortal(
+                        <HeaderButtonsUI>
+                            <HeaderButtonUI
+                                iconOnly
+                                onClick={parent.onClick}
+                                title={parent.title ?? "Back"}
+                                aria-label={parent.title ?? "Back"}
+                            >
+                                <ChevronLeft className="h-4 w-4" />
+                            </HeaderButtonUI>
+                        </HeaderButtonsUI>,
+                        mobileBackContainer,
+                    )
+                ) : (
+                    <button
+                        type="button"
+                        onClick={parent.onClick}
+                        className="shrink-0 text-gray-400 transition-colors hover:text-gray-600 sm:hidden"
+                        title={parent.title ?? "Back"}
+                        aria-label={parent.title ?? "Back"}
+                    >
+                        <ChevronLeft className="h-5 w-5" />
+                    </button>
+                ))}
             <div className="flex min-w-0 flex-1 items-center gap-1.5 overflow-hidden">
                 {entries.map((entry) =>
                     entry.type === "item" ? (

@@ -15,11 +15,13 @@ import { claimIntakeNotifications } from "./mikeApi";
 // the reporter's own suite covers what it does with it.
 const reportApiFailure = vi.hoisted(() => vi.fn());
 const reportNetworkFailure = vi.hoisted(() => vi.fn());
+const reportGatewayLimit = vi.hoisted(() => vi.fn());
 const markErrorHandled = vi.hoisted(() => vi.fn());
 vi.mock("@/app/lib/errorReporting", () => ({
     trackPendingRequest: () => () => {},
     markErrorHandled,
     reportApiFailure,
+    reportGatewayLimit,
     reportNetworkFailure,
 }));
 
@@ -124,6 +126,8 @@ import {
     getOrgProfile,
     updateOrgProfile,
     getOrgApiKeys,
+    getOrgPreferences,
+    updateOrgPreferences,
     saveOrgApiKey,
     saveOrgRouterModels,
     setOrgApiKeyEnabled,
@@ -556,6 +560,42 @@ describe("apiRequest plumbing (via thin wrappers)", () => {
         });
     });
 
+    it("reports a 413 that is not the backend's own as a limit in front of the API", async () => {
+        // A host or proxy size cap answers before the backend: no JSON, no code.
+        reportGatewayLimit.mockClear();
+        fetchMock.mockResolvedValue(
+            new Response("Request Entity Too Large", {
+                status: 413,
+                headers: { "x-request-id": "req-413" },
+            }),
+        );
+        await expect(getUserProfile()).rejects.toMatchObject({ status: 413 });
+        expect(reportGatewayLimit).toHaveBeenCalledExactlyOnceWith("payload-too-large", {
+            path: "/user/profile",
+            method: "GET",
+            status: 413,
+            requestId: "req-413",
+        });
+
+        // The same cap answering with JSON but none of our codes.
+        reportGatewayLimit.mockClear();
+        fetchMock.mockResolvedValue(jsonResponse({ error: "too large" }, { status: 413 }));
+        await expect(getUserProfile()).rejects.toMatchObject({ status: 413 });
+        expect(reportGatewayLimit).toHaveBeenCalledTimes(1);
+
+        // The backend's own limit is an intended answer and is not reported.
+        reportGatewayLimit.mockClear();
+        fetchMock.mockResolvedValue(
+            jsonResponse(
+                { code: "request_too_large", detail: "The request is too large." },
+                { status: 413 },
+            ),
+        );
+        await expect(getUserProfile()).rejects.toMatchObject({ status: 413, code: "request_too_large" });
+        expect(reportGatewayLimit).not.toHaveBeenCalled();
+        expect(reportApiFailure).not.toHaveBeenCalledWith(expect.objectContaining({ status: 413 }));
+    });
+
     it("discards raw JSON details from 5xx responses and keeps the request ID", async () => {
         fetchMock.mockResolvedValue(
             jsonResponse(
@@ -808,6 +848,11 @@ describe("audit history", () => {
         fetchMock.mockResolvedValueOnce(jsonResponse({ events: [], total: 0, page: 1, pageSize: 50 }));
         await getAuditHistory({ orgId: "org-1", username: "Alex & Pat" });
         expect(lastFetchCall().url).toBe("/api/audit?org_id=org-1&username=Alex+%26+Pat");
+    });
+    it("narrows personal activity to one workspace", async () => {
+        fetchMock.mockResolvedValueOnce(jsonResponse({ events: [], total: 0, page: 1, pageSize: 50 }));
+        await getAuditHistory({ workspace: "personal" });
+        expect(lastFetchCall().url).toBe("/api/audit?workspace=personal");
     });
     it("includes the organization scope in audit requests", async () => {
         fetchMock.mockResolvedValueOnce(jsonResponse({ events: [], total: 0, page: 1, pageSize: 50 }));
@@ -2133,6 +2178,7 @@ describe("tabular review CRUD", () => {
             format: "date",
             documentName: "lease.pdf",
             tags: ["real-estate"],
+            workspace: "org-1",
         });
 
         expect(result.source).toBe("preset");
@@ -2143,6 +2189,7 @@ describe("tabular review CRUD", () => {
             format: "date",
             documentName: "lease.pdf",
             tags: ["real-estate"],
+            workspace: "org-1",
         });
     });
 });
@@ -3445,6 +3492,15 @@ describe("thin endpoint wrappers", () => {
             name: "getOrgApiKeys", call: () => getOrgApiKeys("org-1"), url: "/orgs/org-1/api-keys",
         },
         {
+            name: "getOrgPreferences", call: () => getOrgPreferences("org-1"), url: "/orgs/org-1/preferences",
+        },
+        {
+            name: "updateOrgPreferences",
+            call: () => updateOrgPreferences("org-1", { tabular_model: "gpt-6-luna", web_search: { enabled: true } }),
+            url: "/orgs/org-1/preferences", method: "PATCH",
+            body: { tabular_model: "gpt-6-luna", web_search: { enabled: true } },
+        },
+        {
             name: "saveOrgApiKey (clear)", call: () => saveOrgApiKey("org-1", "openai", null),
             url: "/orgs/org-1/api-keys/openai", method: "PUT", body: { api_key: null },
         },
@@ -3979,5 +4035,27 @@ describe("intake API boundary", () => {
         const ids = Array.from({ length: 45 }, (_, i) => `doc-${i}`);
         await expect(copyIntakeDocuments("org-1", "request-1", ids)).rejects.toBeTruthy();
         expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+});
+
+it("cache regression: merges a revision delta against the confirmed grid and accepts full fallback", async () => {
+    const first = { review: { id: "r" }, cells: [{ id: "keep" }, { id: "remove" }], cell_revision: "one" };
+    fetchMock.mockResolvedValueOnce(jsonResponse(first));
+    const previous = await getTabularReview("r");
+    fetchMock.mockResolvedValueOnce(jsonResponse({ ...first, cells: [{ id: "add" }], removed_cell_ids: ["remove"], cell_revision: "two" }));
+    const next = await getTabularReview("r", previous);
+    expect(fetchMock.mock.calls.at(-1)?.[0]).toContain("cell_revision=one");
+    expect(next.cells).toEqual([{ id: "keep" }, { id: "add" }]);
+    expect(previous.cells).toEqual(first.cells);
+    fetchMock.mockResolvedValueOnce(jsonResponse({ ...first, cells: [] }));
+    expect((await getTabularReview("r", next)).cells).toEqual([]);
+});
+
+describe("organization preferences", () => {
+    it("passes the caller's abort signal to the read", async () => {
+        fetchMock.mockResolvedValue(jsonResponse({ tabular_model: null }));
+        const controller = new AbortController();
+        await getOrgPreferences("org-1", controller.signal);
+        expect(lastFetchCall().init.signal).toBe(controller.signal);
     });
 });

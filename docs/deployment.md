@@ -3,6 +3,9 @@
 Use this path when connecting Mike to managed Supabase and S3-compatible
 storage instead of the infrastructure bundled with Docker Compose.
 
+To run everything on Vercel with a Marketplace Supabase project instead, see
+[Deploy on Vercel](vercel.md).
+
 ## Prerequisites
 
 - Node.js 22.19 or newer. The backend's HTTP client (undici 8) needs it;
@@ -144,9 +147,52 @@ the variable; generate a real value for each and restart:
 openssl rand -hex 32   # once per variable
 ```
 
-Both variables may also be left unset: the download and API-key features then
-fail on first use, as before. Plan for these effects when replacing existing
-secrets; changing the environment does not re-encrypt stored credentials:
+Releases after v2.1.0 add two more startup checks, applied only with
+`NODE_ENV=production`. Outside production nothing changes: the two secrets may
+be left unset (the download and API-key features then fail on first use), and
+the local demo keys are accepted. A production deployment is affected when:
+
+- `DOWNLOAD_SIGNING_SECRET` or `USER_API_KEYS_ENCRYPTION_SECRET` is unset or
+  empty. Older versions booted and then failed every download link and every
+  saved provider, connector or Google credential. The backend now refuses to
+  start with `<VARIABLE> is required in production`. Generate each value with
+  `openssl rand -hex 32` before upgrading.
+- `SUPABASE_SECRET_KEY`, `SUPABASE_PUBLISHABLE_KEY` or `SUPABASE_ANON_KEY`
+  holds one of Supabase's published demo keys (the anon and service_role JWTs
+  that `docker-compose.yml` and `supabase start` ship, signed with a publicly
+  known JWT secret, so anyone who can reach the Supabase gateway can mint a
+  service_role token). The backend refuses to start with `<VARIABLE> is a
+  published Supabase demo key`. A hosted Supabase project already has its own
+  keys; use them. The bundled Compose Supabase only has the demo keys, so
+  before upgrading give it its own JWT secret and keys:
+
+  1. Generate a JWT secret and mint anon and service_role keys signed with it
+     (any HS256 JWT tool works; this uses Node only):
+
+     ```bash
+     node -e '
+     const c = require("crypto"), s = c.randomBytes(32).toString("hex");
+     const b = (o) => Buffer.from(JSON.stringify(o)).toString("base64url");
+     const now = Math.floor(Date.now() / 1000);
+     const key = (role) => {
+       const h = b({ alg: "HS256", typ: "JWT" });
+       const p = b({ iss: "supabase", role, iat: now, exp: now + 10 * 365 * 86400 });
+       return `${h}.${p}.${c.createHmac("sha256", s).update(`${h}.${p}`).digest("base64url")}`;
+     };
+     console.log(`JWT_SECRET=${s}\nSUPABASE_PUBLISHABLE_KEY=${key("anon")}\nSUPABASE_SECRET_KEY=${key("service_role")}`);'
+     ```
+
+  2. Replace the demo value of `JWT_SECRET`, `GOTRUE_JWT_SECRET` and
+     `PGRST_JWT_SECRET` in `docker-compose.yml` with the new secret (all three
+     must match).
+  3. Put the two keys in the compose-root `.env`, which the backend and
+     `workflow-sync` read in place of their demo defaults.
+  4. Restart the stack. Access tokens issued under the old secret stop
+     validating, so users may have to sign in again; stored data is
+     unaffected.
+
+Plan for these effects when replacing existing secrets; changing the
+environment does not re-encrypt stored credentials:
 
 - Changing `USER_API_KEYS_ENCRYPTION_SECRET` makes stored personal and
   organization provider credentials unreadable. Users must re-enter their
@@ -204,6 +250,24 @@ new add-in can read those databases in place, but a rollback to a released
 v4-only bundle cannot. Keep a compatible add-in build for those devices.
 Do not clear browser/add-in storage to resolve a version error: device-only
 chats have no durable server copy.
+
+### Playbook review publication upgrade
+
+`20261107_01_playbook_review_publication.sql` adds atomic publication of a
+review's document version, tracked edits and saved findings. Before deploying
+its backend, stop accepting new playbook reviews and let old in-flight reviews
+finish. Apply the migration, reload the PostgREST schema cache, and replace
+**all** API and worker processes before accepting reviews again. The old
+publisher bypasses the new transaction, so a mixed-version rolling deployment
+does not provide this guarantee. Backend rollback restores that older behavior.
+
+The migration does not reconstruct edits orphaned by an older interrupted
+review: those versions lack the provenance needed to recover the exact findings.
+An upload the database answered as unpublished is deleted; one whose
+publication outcome is unknown (a lost response or timeout) is kept and may
+remain an unreferenced object. Never remove an object merely because a review
+row is missing after a timeout: history can be deleted after a successful
+publication while its document version stays.
 
 ### Adopting the ledger on an older deployment
 
@@ -321,7 +385,8 @@ admission slot instead of holding it indefinitely.
 Generic job concurrency does not create more parser slots.
 
 Linux requires `prlimit` (util-linux), installed by Docker and Nixpacks. Missing
-`prlimit` fails extraction. Defaults:
+`prlimit` fails extraction; the backend and worker log a warning at startup when
+it is not on `PATH`. Defaults:
 
 | Limit | Setting |
 | --- | --- |
@@ -907,11 +972,12 @@ Backend and frontend Docker build contexts are now the repository root, so both
 can compile against `packages/contracts`. For a manual backend image build use
 `docker build -f backend/Dockerfile -t mike-backend .` from the root.
 
-Each image reads only what its Dockerfile copies: the frontend image contains
-`frontend/`, `packages/contracts`, `packages/ui` and `packages/client`; the
-add-in image holds `word-addin/`, the same three packages and
-`frontend/public/icons`, which its bundle includes. In the frontend image
-`next build` type-checks `frontend/tsconfig.build.json`, which excludes test
+The frontend builds from `frontend/`, `packages/contracts`, `packages/ui` and
+`packages/client`. Its runtime image ships the Next.js standalone server, traced
+dependencies, static chunks and public assets. The add-in builds from
+`word-addin/`, the same three packages and `frontend/public/icons`.
+
+The frontend build type-checks `frontend/tsconfig.build.json`, which excludes test
 files, so test fixtures and sibling applications never become build inputs. CI builds all three
 images on every pull request (`.github/workflows/docker-images.yml`), so a
 source change that reaches outside a build context fails before merge instead

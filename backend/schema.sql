@@ -423,6 +423,26 @@ create table if not exists public.organizations (
   -- Whose personal organization this is; set exactly when it is one.
   -- Deleting the account takes its personal organization with it.
   personal_user_id uuid references auth.users(id) on delete cascade,
+  -- Settings > Features and Settings > Model Preferences for work in the
+  -- organization's workspace, set by its owners and admins for every member
+  -- (in Personal the person's own user_profiles columns apply). They mirror
+  -- those columns; web_search likewise holds only the choices that differ
+  -- from the default.
+  title_model text,
+  tabular_model text,
+  memory_curator_model text,
+  subagent_model text,
+  subagent_reasoning text
+    constraint organizations_subagent_reasoning_check
+    check (subagent_reasoning in ('none', 'low', 'medium', 'high', 'xhigh', 'max')),
+  quick_actions_visible boolean not null default true,
+  response_details_visible boolean not null default false,
+  web_search jsonb not null default '{}'::jsonb
+    constraint organizations_web_search_check
+    check (
+      jsonb_typeof(web_search) = 'object'
+      and octet_length(web_search::text) <= 1000
+    ),
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
   constraint organizations_personal_owner_check
@@ -945,7 +965,7 @@ create table if not exists public.user_mcp_connectors (
   enabled boolean not null default true,
   -- Write tools (user_mcp_connector_tools.requires_confirmation) wait for the
   -- user's approval in the assistant turn when this is set.
-  require_write_approval boolean not null default false,
+  require_write_approval boolean not null default true,
   read_only boolean not null default false,
   tool_policy jsonb not null default '{}'::jsonb,
   encrypted_auth_config text,
@@ -2814,6 +2834,9 @@ create table if not exists public.word_chats (
   title text,
   model text,
   reasoning_level text check (reasoning_level in ('none', 'low', 'medium', 'high', 'xhigh', 'max')),
+  -- The organization whose workspace its author started it in, fixed at
+  -- creation, like a chat started on its own. Null is personal.
+  org_id uuid references public.organizations(id) on delete restrict,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
@@ -2821,8 +2844,15 @@ create table if not exists public.word_chats (
 create index if not exists idx_word_chats_document_updated
   on public.word_chats(word_document_id, updated_at desc);
 
+-- The task pane lists one document's chats in one workspace, newest first.
+create index if not exists idx_word_chats_document_org_updated
+  on public.word_chats(word_document_id, org_id, updated_at desc);
+
 create index if not exists idx_word_chats_user
   on public.word_chats(user_id);
+
+-- Purging an organization deletes its Word chats by organization.
+create index if not exists idx_word_chats_org on public.word_chats(org_id);
 
 create table if not exists public.word_chat_messages (
   id uuid primary key default gen_random_uuid(),
@@ -3117,8 +3147,20 @@ create table if not exists public.tabular_cells (
   citations jsonb,
   status text not null default 'pending',
   generation_id uuid,
+  cache_revision uuid not null default '00000000-0000-0000-0000-000000000000',
   created_at timestamptz not null default now()
 );
+
+create or replace function public.stamp_tabular_cell_revision()
+returns trigger language plpgsql set search_path = pg_catalog as $$
+begin
+  new.cache_revision := gen_random_uuid();
+  return new;
+end;
+$$;
+drop trigger if exists stamp_tabular_cell_revision on public.tabular_cells;
+create trigger stamp_tabular_cell_revision before insert or update on public.tabular_cells
+for each row execute function public.stamp_tabular_cell_revision();
 
 create or replace function public.begin_tabular_review_generation(
   target_review_id uuid,
@@ -3213,7 +3255,7 @@ create or replace function public.get_tabular_review_history_status(
   p_user_email text,
   p_review_ids uuid[]
 )
-returns table (id uuid, is_running boolean, is_complete boolean)
+returns table (id uuid, is_running boolean, is_complete boolean, updated_at timestamptz, title text, project_id uuid, org_id uuid)
 language sql
 stable
 set search_path = public
@@ -3234,7 +3276,7 @@ as $$
               and c.column_index = (col->>'index')::integer
               and c.status = 'done' and c.content is not null
           )
-      ) as is_complete
+      ) as is_complete, tr.updated_at, tr.title, tr.project_id, tr.org_id
   from public.tabular_reviews tr
   where tr.id = any(p_review_ids)
     and public.review_access_role(
@@ -5335,9 +5377,9 @@ as $$
 $$;
 
 -- The workspace a conversation's own-memory belongs to: the team
--- organization of a chat started on its own there, otherwise null —
--- Personal. A chat in a project, a Word chat and a tabular review chat are
--- never a workspace's: what they may learn is decided by
+-- organization of a chat started on its own there, or of a Word chat started
+-- there, otherwise null — Personal. A chat in a project and a tabular review
+-- chat are never a workspace's: what they may learn is decided by
 -- memory_source_allows_app_memory.
 create or replace function public.memory_source_org_id(
   p_surface text,
@@ -5349,13 +5391,21 @@ stable
 security definer
 set search_path = public, pg_temp
 as $$
-  select case when p_surface = 'chat' then (
-    select chat.org_id
-    from public.chats chat
-    where chat.id = p_conversation_id
-      and chat.project_id is null
-      and public.org_is_team(chat.org_id)
-  ) end;
+  select case
+    when p_surface = 'chat' then (
+      select chat.org_id
+      from public.chats chat
+      where chat.id = p_conversation_id
+        and chat.project_id is null
+        and public.org_is_team(chat.org_id)
+    )
+    when p_surface = 'word' then (
+      select chat.org_id
+      from public.word_chats chat
+      where chat.id = p_conversation_id
+        and public.org_is_team(chat.org_id)
+    )
+  end;
 $$;
 
 -- A person's memory file for one workspace, created if it is not there.
@@ -5454,8 +5504,25 @@ as $$
   -- to its author too, and learns into that author's memory FOR THAT
   -- WORKSPACE (memory_source_org_id says which). A chat in an organization's
   -- project is the project's, and never learns into anybody's own memory.
+  -- A Word chat is never shared and never in a project: it is a standalone
+  -- chat that only its author, while still a member, can reach.
   select case
-    when p_surface = 'word' then p_project_id is null
+    when p_surface = 'word' then
+      p_project_id is null
+      and exists (
+        select 1
+        from public.word_chats chat
+        where chat.id = p_conversation_id
+          and chat.user_id = p_actor_user_id
+          and (
+            not public.org_is_team(chat.org_id)
+            or exists (
+              select 1 from public.org_members member
+              where member.org_id = chat.org_id
+                and member.user_id = p_actor_user_id
+            )
+          )
+      )
     when p_surface = 'chat' then
       exists (
         select 1
@@ -7703,7 +7770,7 @@ CREATE TABLE IF NOT EXISTS public.user_google_drive_tokens (
   expires_at timestamptz,
   enabled boolean NOT NULL DEFAULT true,
   grant_id uuid NOT NULL DEFAULT gen_random_uuid(),
-  require_write_approval boolean NOT NULL DEFAULT false,
+  require_write_approval boolean NOT NULL DEFAULT true,
   read_only boolean NOT NULL DEFAULT false,
   disabled_tools text[] NOT NULL DEFAULT '{}',
   -- The Google account this connection signed in as; display only.
@@ -7810,7 +7877,7 @@ create table if not exists public.user_google_workspace_tokens (
   scope text not null, expires_at timestamptz not null,
   write_enabled boolean not null default false,
   enabled boolean not null default true,
-  require_write_approval boolean not null default false,
+  require_write_approval boolean not null default true,
   read_only boolean not null default false,
   disabled_tools text[] not null default '{}',
   constraint user_google_workspace_tokens_pkey primary key (id),
@@ -8346,6 +8413,7 @@ begin
     delete from public.documents where org_id=org.id;
     delete from public.tabular_reviews where org_id=org.id;
     delete from public.chats where org_id=org.id;
+    delete from public.word_chats where org_id=org.id;
     delete from public.memory_files where org_id=org.id;
     insert into public.audit_events(org_id,action,title,surface) values(org.id,'org.purged',org.name,'organization');
     delete from public.organizations where id=org.id;
@@ -8655,8 +8723,25 @@ as $$
   -- to its author too, and learns into that author's memory FOR THAT
   -- WORKSPACE (memory_source_org_id says which). A chat in an organization's
   -- project is the project's, and never learns into anybody's own memory.
+  -- A Word chat is never shared and never in a project: it is a standalone
+  -- chat that only its author, while still a member, can reach.
   select case
-    when p_surface = 'word' then p_project_id is null
+    when p_surface = 'word' then
+      p_project_id is null
+      and exists (
+        select 1
+        from public.word_chats chat
+        where chat.id = p_conversation_id
+          and chat.user_id = p_actor_user_id
+          and (
+            not public.org_is_team(chat.org_id)
+            or exists (
+              select 1 from public.active_org_members member
+              where member.org_id = chat.org_id
+                and member.user_id = p_actor_user_id
+            )
+          )
+      )
     when p_surface = 'chat' then
       exists (
         select 1
@@ -14283,6 +14368,182 @@ create index if not exists tabular_reviews_private_catalogue_idx
 create index if not exists document_version_texts_unfinished_idx
   on public.document_version_texts(status,version_id) where status <> 'ready';
 
+-- Migration date: 2026-11-07
+-- Publish a review outcome and its document effects in one transaction.
+-- Drain old in-flight reviews before deploying the new publisher on all workers.
+create or replace function public.publish_playbook_review(
+  p_run_id uuid,
+  p_user_id uuid,
+  p_summary text,
+  p_findings jsonb,
+  p_document_id uuid default null,
+  p_expected_version_id uuid default null,
+  p_expected_storage_path text default null,
+  p_version jsonb default null,
+  p_edits jsonb default '[]'::jsonb
+) returns jsonb
+language plpgsql security definer set search_path = ''
+as $$
+declare
+  v_run public.playbook_runs%rowtype;
+  v_current uuid;
+  v_document_exists boolean := false;
+  v_source_exists boolean := false;
+  v_source_path text;
+  v_source_document_id uuid;
+  v_source_deleted timestamptz;
+  v_version jsonb;
+  v_version_id uuid;
+  v_findings jsonb := p_findings;
+  v_item jsonb;
+  v_index integer;
+  v_annotation jsonb;
+  v_native boolean := p_version is not null;
+  v_disposition text := 'published';
+  v_completed_at timestamptz := clock_timestamp();
+begin
+  if p_summary is null or p_findings is null or jsonb_typeof(p_findings) <> 'array'
+     or jsonb_array_length(p_findings) > 1000
+     or p_edits is null or jsonb_typeof(p_edits) <> 'array'
+     or jsonb_array_length(p_edits) > 1000 then
+    raise exception 'invalid_review_publication' using errcode = '22023';
+  end if;
+  if exists(
+    select 1 from jsonb_array_elements(p_findings) as f(value)
+    where jsonb_typeof(f.value) is distinct from 'object' or f.value ? 'edit'
+  ) then
+    raise exception 'findings_must_be_unlinked_objects' using errcode = '22023';
+  end if;
+
+  -- Parent first, consistent with existing document lifecycle primitives.
+  -- Lock source bytes as well: updateDocumentVersion can replace that row's
+  -- storage path without updating/locking the parent document pointer.
+  if v_native then
+    if p_document_id is null or p_expected_version_id is null
+       or p_expected_storage_path is null or jsonb_typeof(p_version) <> 'object'
+       or jsonb_array_length(p_edits) = 0 then
+      raise exception 'invalid_review_document' using errcode = '22023';
+    end if;
+    select current_version_id into v_current
+      from public.documents where id = p_document_id for update;
+    v_document_exists := found;
+    select storage_path, deleted_at, document_id
+      into v_source_path, v_source_deleted, v_source_document_id
+      from public.document_versions
+      where id = p_expected_version_id
+      for share;
+    v_source_exists := found;
+  elsif jsonb_array_length(p_edits) <> 0 then
+    raise exception 'edits_require_version' using errcode = '22023';
+  end if;
+
+  select * into v_run from public.playbook_runs
+    where id = p_run_id and user_id = p_user_id for update;
+  if not found then
+    return jsonb_build_object('disposition', 'missing');
+  end if;
+  if v_run.status = 'completed' then
+    -- Never reactivate a result version after a later edit or user action.
+    return jsonb_build_object('disposition', 'existing', 'run', to_jsonb(v_run));
+  end if;
+  if v_run.status <> 'running' then
+    return jsonb_build_object('disposition', 'terminal', 'run', to_jsonb(v_run));
+  end if;
+
+  if v_native then
+    if v_source_exists and v_source_document_id <> p_document_id then
+      raise exception 'review_source_document_mismatch' using errcode = '22023';
+    end if;
+    if v_run.document_id is not null and v_run.document_id <> p_document_id then
+      raise exception 'review_document_mismatch' using errcode = '22023';
+    end if;
+    if v_run.document_id is null or not v_document_exists or not v_source_exists
+       or v_source_deleted is not null or v_current is distinct from p_expected_version_id
+       or v_source_path is distinct from p_expected_storage_path then
+      -- Preserve current text-only source-conflict behavior without changing
+      -- any document. This is a semantic result, not a DB failure fallback.
+      v_native := false;
+      v_disposition := 'source_changed';
+    end if;
+  end if;
+
+  if v_native then
+    v_version_id := (p_version->>'id')::uuid;
+    if p_version ? 'version_number' then
+      raise exception 'review_version_number_is_allocated' using errcode = '22023';
+    end if;
+    if v_version_id is null or nullif(p_version->>'storage_path', '') is null
+       or nullif(p_version->>'filename', '') is null
+       or p_version->>'file_type' is distinct from 'docx'
+       or p_version->>'source' is distinct from 'assistant_edit' then
+      raise exception 'invalid_review_version' using errcode = '22023';
+    end if;
+    -- A previous successful publication would have made the run completed.
+    -- Never quietly adopt unrelated/partial versions via the lifecycle RPC's
+    -- idempotency convenience when the run is still running.
+    if exists(select 1 from public.document_versions where id = v_version_id) then
+      raise exception 'review_version_identity_conflict' using errcode = '23505';
+    end if;
+    if exists(
+      select 1 from jsonb_array_elements(p_edits) as e(value)
+      where jsonb_typeof(e.value->'finding_index') is distinct from 'number'
+         or e.value->>'id' is null or e.value->>'change_id' is null
+    ) or (
+      select count(*) <> count(distinct e.value->>'finding_index')
+        from jsonb_array_elements(p_edits) as e(value)
+    ) then
+      raise exception 'invalid_review_edit_links' using errcode = '22023';
+    end if;
+
+    v_version := public.create_document_version(p_document_id, p_version, false);
+    for v_item in select value from jsonb_array_elements(p_edits) loop
+      v_index := (v_item->>'finding_index')::integer;
+      if v_index < 0 or v_index >= jsonb_array_length(v_findings) then
+        raise exception 'invalid_review_finding_index' using errcode = '22023';
+      end if;
+      insert into public.document_edits(
+        id, document_id, version_id, change_id, del_w_id, ins_w_id,
+        deleted_text, inserted_text, context_before, context_after, status
+      ) values (
+        (v_item->>'id')::uuid, p_document_id, v_version_id,
+        v_item->>'change_id', v_item->>'del_w_id', v_item->>'ins_w_id',
+        coalesce(v_item->>'deleted_text', ''), coalesce(v_item->>'inserted_text', ''),
+        coalesce(v_item->>'context_before', ''), coalesce(v_item->>'context_after', ''), 'pending'
+      );
+      v_annotation := jsonb_strip_nulls(jsonb_build_object(
+        'kind', 'edit', 'edit_id', v_item->>'id', 'document_id', p_document_id,
+        'version_id', v_version_id, 'version_number', (v_version->>'version_number')::integer,
+        'change_id', v_item->>'change_id', 'del_w_id', v_item->>'del_w_id',
+        'ins_w_id', v_item->>'ins_w_id', 'deleted_text', coalesce(v_item->>'deleted_text', ''),
+        'inserted_text', coalesce(v_item->>'inserted_text', ''),
+        'context_before', coalesce(v_item->>'context_before', ''),
+        'context_after', coalesce(v_item->>'context_after', ''),
+        'reason', v_item->>'reason', 'status', 'pending'
+      ));
+      v_findings := jsonb_set(v_findings, array[v_index::text, 'edit'], v_annotation, true);
+    end loop;
+    if not public.activate_document_version(p_document_id, v_version_id) then
+      raise exception 'review_activation_failed' using errcode = 'P0002';
+    end if;
+  end if;
+
+  update public.playbook_runs set
+    status = 'completed', summary = p_summary, findings_json = v_findings,
+    edited_version_id = v_version_id, error = null,
+    completed_at = v_completed_at, updated_at = v_completed_at
+    where id = p_run_id and user_id = p_user_id and status = 'running'
+    returning * into v_run;
+  if not found then
+    raise exception 'review_publication_guard_lost' using errcode = 'P0002';
+  end if;
+  return jsonb_build_object('disposition', v_disposition, 'run', to_jsonb(v_run), 'version', v_version);
+end;
+$$;
+revoke all on function public.publish_playbook_review(uuid, uuid, text, jsonb, uuid, uuid, text, jsonb, jsonb)
+  from public, anon, authenticated;
+grant execute on function public.publish_playbook_review(uuid, uuid, text, jsonb, uuid, uuid, text, jsonb, jsonb)
+  to service_role;
+
 -- Migration date: 2026-11-12
 -- Reconciles intake with the upstream Mike migrations merged on 2026-11-11.
 -- Those migrations (20261030_03 … 20261101_21) redefine functions that
@@ -14743,6 +15004,7 @@ insert into public.schema_migrations (filename) values
   ('20261104_06_intake_always_clarify.sql'),
   ('20261104_07_intake_delivery_message.sql'),
   ('20261104_08_intake_notifications.sql'),
+  ('20261107_01_playbook_review_publication.sql'),
   ('20261110_01_intake_conversations.sql'),
   ('20261110_02_intake_conversations_email.sql'),
   ('20261111_01_intake_agent.sql'),
@@ -14753,5 +15015,9 @@ insert into public.schema_migrations (filename) values
   ('20261112_02_intake_after_upstream_sync.sql'),
   ('20261112_03_intake_event_indexes.sql'),
   ('20261112_04_intake_update_expected_version.sql'),
-  ('20261112_05_intake_thread_claim.sql')
+  ('20261112_05_intake_thread_claim.sql'),
+  ('20261116_01_tabular_cache_revisions.sql'),
+  ('20261118_01_connector_write_approval_default.sql'),
+  ('20261123_01_org_workspace_preferences.sql'),
+  ('20261124_01_word_chat_workspaces.sql')
 on conflict (filename) do nothing;

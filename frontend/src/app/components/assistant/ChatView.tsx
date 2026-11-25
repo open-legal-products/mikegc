@@ -1261,9 +1261,6 @@ export function AssistantChatColumn({
                                                                 : undefined
                                                         }
                                                         citations={msg.citations}
-                                                        citationStatus={
-                                                            msg.citationStatus
-                                                        }
                                                         activeCitation={
                                                             activeCitation
                                                         }

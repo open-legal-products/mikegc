@@ -40,6 +40,7 @@ import {
 } from "./middleware/internalErrorResponse";
 import { configuredAllowedOrigins } from "./lib/origins";
 import { envInt } from "./lib/runtimeConfig";
+import { stripApiPathPrefix } from "./middleware/apiPathPrefix";
 import { requestDiagnostics } from "./middleware/requestDiagnostics";
 
 export const app = express();
@@ -257,6 +258,7 @@ const authMfaLimiter = makeLimiter({
 
 app.disable("x-powered-by");
 app.set("trust proxy", envInt("TRUST_PROXY_HOPS", 1));
+app.use(stripApiPathPrefix(process.env.API_PATH_PREFIX));
 app.use(requestDiagnostics);
 app.use(protectInternalErrorResponses);
 
@@ -313,7 +315,7 @@ app.post(INTAKE_NOTIFICATIONS_PATH, intakeNotificationsFailureLimiter);
 app.use("/intake", express.json({ limit: "128kb" }));
 
 app.post("/auth/login", authLoginIpLimiter);
-app.post(["/auth/signup", "/auth/password-reset"], authEmailLimiter);
+app.post(["/auth/signup", "/auth/password-reset", "/auth/setup"], authEmailLimiter);
 app.post(["/auth/oauth", "/auth/exchange", "/auth/handoff"], authFlowLimiter);
 app.post(
   ["/auth/mfa/verify", "/auth/mfa/challenge-and-verify"],

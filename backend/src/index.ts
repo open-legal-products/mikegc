@@ -8,6 +8,7 @@ import { enforceDocumentLifecycleMigration } from "./lib/dbq/lifecycleGuard";
 import { manifestPublicKey } from "./lib/manifestSigning";
 import {
   gmailSharedMailboxWarnings,
+  extractionLauncherWarnings,
   storagePublicEndpointWarnings,
   validateRuntimeConfiguration,
 } from "./lib/runtimeConfig";
@@ -18,12 +19,15 @@ import {
   type WorkerRole,
 } from "./workerRuntime";
 import { reportError } from "./lib/observability/sentry";
+import { drainStdout } from "./lib/log";
+import { flushToolActivity } from "./lib/toolActivity";
 import {
   closeHttpServer,
   createShutdown,
   failBoot,
   listenOrFail,
 } from "./lib/processLifecycle";
+import { log, tpl } from "./lib/log";
 
 const PORT = process.env.PORT ?? 3001;
 const HOST = process.env.HOST?.trim() || undefined;
@@ -42,7 +46,10 @@ async function validateBootConfiguration(): Promise<void> {
   try {
     validateRuntimeConfiguration();
     for (const warning of storagePublicEndpointWarnings()) {
-      console.warn(`[storage] ${warning}`);
+      log.warn(tpl`[storage] ${warning}`);
+    }
+    for (const warning of extractionLauncherWarnings()) {
+      log.warn(tpl`[extraction] ${warning}`);
     }
     for (const warning of gmailSharedMailboxWarnings()) {
       console.warn(`[intake] ${warning}`);
@@ -167,10 +174,16 @@ void main();
 // background workers wherever they run, then exit 0. A hard timeout guards
 // against a connection or job that never drains.
 async function stopBackgroundWork(): Promise<void> {
+  // In-flight turns have drained by now: log what they counted.
+  flushToolActivity();
   if (WORKERS_MODE === "inline") {
     await stopAllWorkers();
+    // Inline jobs make tool calls too; log what they counted while stopping.
+    flushToolActivity();
+    await drainStdout();
     return;
   }
+  await drainStdout();
   await Promise.all(
     [...workerThreads.values()].map(
       (thread) =>

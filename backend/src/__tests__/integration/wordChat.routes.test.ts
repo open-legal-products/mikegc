@@ -9,7 +9,7 @@ type RecordedQuery = {
   filters: { column: string; value: unknown }[];
   /** Which write produced `payload`; a user insert and an assistant update
    *  both carry a `content`, so the two have to be told apart. */
-  op?: "insert" | "update";
+  op?: "insert" | "update" | "upsert";
   payload?: unknown;
 };
 
@@ -22,6 +22,9 @@ const { dbState, recordedQueries } = vi.hoisted(() => ({
     messageDetail: { data: null, error: null },
     edits: { data: [], error: null },
     editDetail: { data: null, error: null },
+    orgMember: { data: null, error: null },
+    organization: { data: null, error: null },
+    assistantUpdateGate: null,
   } as {
     document: QueryResult;
     chatList: QueryResult;
@@ -30,6 +33,12 @@ const { dbState, recordedQueries } = vi.hoisted(() => ({
     messageDetail: QueryResult;
     edits: QueryResult;
     editDetail: QueryResult;
+    /** The caller's org_members row (getOrgRole, resolveWorkspaceFilter). */
+    orgMember: QueryResult;
+    /** The organization's kind (isPersonalOrg); null reads as a team. */
+    organization: QueryResult;
+    /** Holds updates of word_chat_messages open until a test releases it. */
+    assistantUpdateGate: Promise<void> | null;
   },
   recordedQueries: [] as RecordedQuery[],
 }));
@@ -63,6 +72,8 @@ function resultForSingleQuery(table: string): QueryResult {
   if (table === "word_chats") return dbState.chatDetail;
   if (table === "word_chat_messages") return dbState.messageDetail;
   if (table === "word_document_edits") return dbState.editDetail;
+  if (table === "org_members") return dbState.orgMember;
+  if (table === "organizations") return dbState.organization;
   return { data: null, error: null };
 }
 
@@ -74,10 +85,8 @@ function makeQuery(table: string) {
   const chain = [
     "select",
     "delete",
-    "upsert",
     "neq",
     "in",
-    "is",
     "or",
     "not",
     "lt",
@@ -96,6 +105,11 @@ function makeQuery(table: string) {
     recorded.payload = payload;
     return query;
   });
+  query.upsert = vi.fn((payload: unknown) => {
+    recorded.op = "upsert";
+    recorded.payload = payload;
+    return query;
+  });
   // What a turn WRITES BACK into its reserved assistant row is as much a part
   // of the contract as what it inserted, and only recording it can show it.
   query.update = vi.fn((payload: unknown) => {
@@ -107,12 +121,24 @@ function makeQuery(table: string) {
     recorded.filters.push({ column, value });
     return query;
   });
+  query.is = vi.fn((column: string, value: unknown) => {
+    recorded.filters.push({ column: `is:${column}`, value });
+    return query;
+  });
   query.single = vi.fn(() => Promise.resolve(resultForSingleQuery(table)));
   query.maybeSingle = vi.fn(() => Promise.resolve(resultForSingleQuery(table)));
   query.then = (
     resolve: (value: unknown) => unknown,
     reject?: (reason: unknown) => unknown,
-  ) => Promise.resolve(resultForAwaitedQuery(table)).then(resolve, reject);
+  ) => {
+    const gate =
+      table === "word_chat_messages" && recorded.op === "update"
+        ? dbState.assistantUpdateGate
+        : null;
+    return (gate ?? Promise.resolve())
+      .then(() => resultForAwaitedQuery(table))
+      .then(resolve, reject);
+  };
   return query;
 }
 
@@ -214,6 +240,8 @@ function resetDbState() {
   dbState.messageDetail = { data: null, error: null };
   dbState.edits = { data: [], error: null };
   dbState.editDetail = { data: null, error: null };
+  dbState.orgMember = { data: null, error: null };
+  dbState.organization = { data: null, error: null };
 }
 
 describe("Word chat history routes", () => {
@@ -958,6 +986,121 @@ describe("server-owned Word turns", () => {
     },
   );
 
+  it("stores a stream that returns after Stop as stopped, not as a completed answer", async () => {
+    const started = new Promise<StreamParams>((resolve) => {
+      runLLMStream.mockImplementation(async (raw: unknown) => {
+        const params = raw as StreamParams;
+        resolve(params);
+        await new Promise<void>((done) =>
+          params.signal?.addEventListener("abort", () => done(), {
+            once: true,
+          }),
+        );
+        // Ignores the abort and returns the whole answer anyway.
+        return {
+          fullText: "Late answer",
+          events: [{ type: "content", text: "Late answer" }],
+          citations: [],
+        };
+      });
+    });
+    const firstDone = send().then((res) => res);
+    await started;
+    const turnId = (await detail()).body.active_turn.id as string;
+    const { getAssistantTurnRun } =
+      await import("../../lib/assistantTurnRuns.js");
+    getAssistantTurnRun(turnId, "word")!.stop();
+
+    const text = (await firstDone).text;
+    expect(text).toContain('"type":"cancelled"');
+    expect(assistantUpdate()).toMatchObject({
+      content: [
+        { type: "content", text: "Late answer" },
+        { type: "content", text: "Cancelled by user." },
+      ],
+    });
+    expect(scheduleMemoryConsolidation).not.toHaveBeenCalled();
+  });
+
+  it.each(["user", "idle", "max_lifetime"] as const)(
+    "preserves persisted Word edits without writing them again when %s stops the answer's save",
+    async (reason) => {
+      let releaseSave!: () => void;
+      dbState.assistantUpdateGate = new Promise<void>((resolve) => {
+        releaseSave = resolve;
+      });
+      const edit = {
+        type: "word_edit_block",
+        block_index: 0,
+        original_text: "Schedule 1",
+        replacement_text: "Schedule 2",
+        reason: "Correct the schedule reference",
+      };
+      dbState.edits = {
+        data: [{ id: "edit-1", block_index: 0 }],
+        error: null,
+      };
+      runLLMStream.mockResolvedValue({
+        fullText: "Done",
+        events: [edit, { type: "content", text: "Done" }],
+        citations: [],
+      });
+      const updates = () =>
+        recordedQueries
+          .filter(({ table, op }) => table === "word_chat_messages" && op === "update")
+          .map(({ payload }) => (payload as { content?: unknown }).content);
+      try {
+        const firstDone = send().then((res) => res);
+        await vi.waitFor(() => {
+          expect(updates()).toHaveLength(1);
+        });
+        const turnId = (await detail()).body.active_turn.id as string;
+        const { getAssistantTurnRun } =
+          await import("../../lib/assistantTurnRuns.js");
+        getAssistantTurnRun(turnId, "word")!.stop(reason);
+        releaseSave();
+
+        const text = (await firstDone).text;
+        expect(text).toContain(
+          reason === "user" ? '"type":"cancelled"' : '"type":"error"',
+        );
+        const { deadlineMessage } = await import("../../lib/streamRuns.js");
+        const stopEvent = reason === "user"
+          ? { type: "content", text: "Cancelled by user." }
+          : {
+              type: "error",
+              message: deadlineMessage(reason),
+              safe_to_display: true,
+            };
+        const savedEvents = [
+          { type: "word_edit_ref", edit_id: "edit-1" },
+          { type: "content", text: "Done" },
+        ];
+        // Saved once as the answer, then rewritten with the stop label.
+        expect(updates()).toEqual([
+          savedEvents,
+          [...savedEvents, stopEvent],
+        ]);
+        expect(
+          recordedQueries
+            .filter(({ table, op }) => table === "word_document_edits" && op === "upsert")
+            .map(({ payload }) => payload),
+        ).toEqual([
+          [expect.objectContaining({
+            word_chat_message_id: turnId,
+            block_index: 0,
+            original_text: "Schedule 1",
+            replacement_text: "Schedule 2",
+          })],
+        ]);
+        expect(scheduleMemoryConsolidation).not.toHaveBeenCalled();
+      } finally {
+        releaseSave();
+        dbState.assistantUpdateGate = null;
+      }
+    },
+  );
+
   it("refuses a second turn while one is generating into the chat", async () => {
     const held = heldGeneration();
     const first = send();
@@ -1118,5 +1261,178 @@ describe("server-owned Word turns", () => {
     // The keep-alive comments the adapter wrote while the call was
     // outstanding were never buffered, so they cannot be replayed either.
     expect(settledReplay.text).not.toContain("tool-wait");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// A Word chat belongs to a workspace, fixed at creation, like a standalone
+// web chat: Personal (org_id null) or one team organization.
+// ---------------------------------------------------------------------------
+describe("Word chat workspaces", () => {
+  const FIRM = "0b9e3c1e-6a43-4b5e-9a57-2f1f1d7f2c10";
+  const send = (body: Record<string, unknown>) =>
+    request(app)
+      .post("/word-chat")
+      .set(...AUTH)
+      .send({
+        messages: [{ role: "user", content: "Revise this clause" }],
+        document_id: DOCUMENT_ID,
+        model: "gemini-3-flash-preview",
+        ...body,
+      });
+  const chatInsert = () =>
+    recordedQueries.find(
+      ({ table, op }) => table === "word_chats" && op === "insert",
+    );
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    recordedQueries.length = 0;
+    resetDbState();
+    runLLMStream.mockResolvedValue({
+      events: [{ type: "content", text: "Response" }],
+      citations: [],
+    });
+  });
+
+  it("starts a chat in a team organization the caller belongs to, and runs every org-aware step in it", async () => {
+    const chatLib = await import("../../modules/chat/engine/index.js");
+    const settings = await import("../../modules/user/user.settings.js");
+    dbState.orgMember = { data: { role: "member" }, error: null };
+    dbState.chatDetail = {
+      data: { id: CHAT_ID, title: null, user_id: "u1" },
+      error: null,
+    };
+
+    const res = await send({ org_id: FIRM });
+
+    expect(res.status).toBe(200);
+    expect(chatInsert()?.payload).toMatchObject({ org_id: FIRM });
+    // Keys and models (resolveUserChatSelection), workflows, the stream
+    // (connectors, memory, generated files) and the audit row.
+    expect(settings.getUserModelSettings).toHaveBeenCalledWith(
+      "u1",
+      expect.anything(),
+      { orgId: FIRM },
+    );
+    expect(chatLib.buildWorkflowStore).toHaveBeenCalledWith(
+      "u1",
+      "u1@test.local",
+      expect.anything(),
+      FIRM,
+    );
+    expect(runLLMStream).toHaveBeenCalledWith(
+      expect.objectContaining({ orgId: FIRM }),
+    );
+    const auditJob = recordedQueries.find(({ table }) => table === "db_jobs");
+    expect(auditJob?.payload).toMatchObject({
+      kind: "audit.chat_turn",
+      payload: { base: { orgId: FIRM, surface: "word" } },
+    });
+  });
+
+  it.each([
+    ["a non-member", { data: null, error: null }, { data: null, error: null }],
+    [
+      "the caller's own (personal) organization",
+      { data: { role: "owner" }, error: null },
+      { data: { kind: "personal" }, error: null },
+    ],
+  ])("refuses to start a chat in %s", async (_label, member, organization) => {
+    dbState.orgMember = member;
+    dbState.organization = organization;
+
+    const res = await send({ org_id: FIRM });
+
+    expect(res.status).toBe(400);
+    expect(res.body.detail).toBe("You are not a member of that organization.");
+    expect(chatInsert()).toBeUndefined();
+    expect(runLLMStream).not.toHaveBeenCalled();
+  });
+
+  it("refuses a device-only chat in an organization", async () => {
+    dbState.orgMember = { data: { role: "member" }, error: null };
+
+    const res = await send({ org_id: FIRM, storage: "local" });
+
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe("word_org_chat_requires_cloud");
+    expect(runLLMStream).not.toHaveBeenCalled();
+  });
+
+  it("keeps a resumed chat in its own workspace, whatever the pane asks for", async () => {
+    dbState.chatDetail = {
+      data: { id: CHAT_ID, title: "Draft", user_id: "u1", org_id: null },
+      error: null,
+    };
+
+    const res = await send({ chat_id: CHAT_ID, org_id: FIRM });
+
+    expect(res.status).toBe(200);
+    expect(runLLMStream).toHaveBeenCalledWith(
+      expect.objectContaining({ orgId: null }),
+    );
+    expect(recordedQueries.some(({ table }) => table === "org_members")).toBe(
+      false,
+    );
+  });
+
+  it("hides an organization's chat from an author who has left it", async () => {
+    dbState.chatDetail = {
+      data: { id: CHAT_ID, user_id: "u1", org_id: FIRM },
+      error: null,
+    };
+
+    const detail = await request(app)
+      .get(`/word-chat/${CHAT_ID}?document_id=${DOCUMENT_ID}`)
+      .set(...AUTH);
+    const resume = await send({ chat_id: CHAT_ID });
+    dbState.chatList = {
+      data: [
+        { id: "personal-chat", org_id: null },
+        { id: CHAT_ID, org_id: FIRM },
+      ],
+      error: null,
+    };
+    const list = await request(app)
+      .get(`/word-chat?document_id=${DOCUMENT_ID}`)
+      .set(...AUTH);
+
+    expect(detail.status).toBe(404);
+    expect(resume.status).toBe(404);
+    expect(list.body.map((chat: { id: string }) => chat.id)).toEqual([
+      "personal-chat",
+    ]);
+  });
+
+  it.each([
+    ["personal", { column: "is:org_id", value: null }],
+    [FIRM, { column: "org_id", value: FIRM }],
+  ])("narrows the list to the %s workspace", async (workspace, filter) => {
+    dbState.orgMember = { data: { org_id: FIRM }, error: null };
+    dbState.chatList = {
+      data: [{ id: CHAT_ID, org_id: workspace === "personal" ? null : FIRM }],
+      error: null,
+    };
+
+    const res = await request(app)
+      .get(`/word-chat?document_id=${DOCUMENT_ID}&workspace=${workspace}`)
+      .set(...AUTH);
+
+    expect(res.status).toBe(200);
+    expect(res.body[0]).toMatchObject({ id: CHAT_ID });
+    expect(res.body[0]).toHaveProperty("org_id");
+    expect(
+      recordedQueries.find(({ table }) => table === "word_chats")?.filters,
+    ).toContainEqual(filter);
+  });
+
+  it("answers workspace_not_found for an organization the caller is not in", async () => {
+    const res = await request(app)
+      .get(`/word-chat?document_id=${DOCUMENT_ID}&workspace=${FIRM}`)
+      .set(...AUTH);
+
+    expect(res.status).toBe(404);
+    expect(res.body.code).toBe("workspace_not_found");
   });
 });

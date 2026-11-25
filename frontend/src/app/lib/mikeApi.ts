@@ -48,9 +48,10 @@ import { isPanelDocument } from "@/app/components/shared/types";
 import { authenticatedFetch } from "@/app/lib/authEvents";
 import { notifyTabularReviewsChanged } from "@/app/lib/tabularReviewChanges";
 import type { RouterProfileLists } from "@mike/client";
-import { reportedUpstreamMessage } from "@mike/client";
+import { reportedUpstreamMessage, workspaceOrgId } from "@mike/client";
 import {
     reportApiFailure,
+    reportGatewayLimit,
     reportError,
     reportNetworkFailure,
     trackPendingRequest,
@@ -197,15 +198,13 @@ export class MikeApiError extends Error {
 }
 
 export const INTERNAL_ERROR_MESSAGE = "Something went wrong. Please try again.";
-export const MALFORMED_ERROR_RESPONSE_MESSAGE =
+const MALFORMED_ERROR_RESPONSE_MESSAGE =
     "The request could not be completed. Please try again.";
-// The 5xx codes the server side already reported, and their fixed messages,
-// are shared with the Word add-in (packages/client); they are re-exported
-// here because API consumers know them as mikeApi's answers.
+// The fixed messages for the 5xx codes the server side already reported are
+// shared with the Word add-in (packages/client); they are re-exported here
+// because API consumers know them as mikeApi's answers.
 export {
-    SCHEMA_OUT_OF_DATE_CODE,
     SCHEMA_OUT_OF_DATE_MESSAGE,
-    UPSTREAM_UNAVAILABLE_CODE,
     UPSTREAM_UNAVAILABLE_MESSAGE,
     reportedUpstreamMessage,
 } from "@mike/client";
@@ -363,6 +362,10 @@ async function toApiError(
                 error: apiError,
                 reportingOwner: apiError.reportingOwner,
             });
+        } else if (response.status === 413 && !code) {
+            // The backend names its own size limits with a code. A 413
+            // without one was refused in front of it (see reportGatewayLimit).
+            reportGatewayLimit("payload-too-large", { path, method, status: 413, requestId });
         }
         return apiError;
     } catch {
@@ -388,6 +391,10 @@ async function toApiError(
                 error: apiError,
                 reportingOwner: apiError.reportingOwner,
             });
+        } else if (response.status === 413) {
+            // Not JSON, so not the backend's own 413: a proxy's or host's
+            // request-size cap (see reportGatewayLimit).
+            reportGatewayLimit("payload-too-large", { path, method, status: 413, requestId: apiError.requestId });
         }
         return apiError;
     }
@@ -883,6 +890,11 @@ export interface UserLookupResult {
 
 export interface AuditEvent {
     org_id?: string | null;
+    /**
+     * Current name of `org_id`'s organization, on personal activity rows
+     * only; `null` when it no longer exists. Absent for Personal rows.
+     */
+    org_name?: string | null;
     id: string;
     created_at: string;
     user_display_name: string | null;
@@ -906,6 +918,8 @@ export interface AuditEvent {
 export async function getAuditHistory(
     params: {
         orgId?: string;
+        /** Personal activity only: "personal" or an organization's id. */
+        workspace?: string;
         username?: string;
         actorUserId?: string;
         q?: string;
@@ -927,6 +941,7 @@ export async function getAuditHistory(
 }> {
     const qs = new URLSearchParams();
     if (params.orgId) qs.set("org_id", params.orgId);
+    if (params.workspace) qs.set("workspace", params.workspace);
     if (params.username) qs.set("username", params.username);
     if (params.actorUserId) qs.set("actor_user_id", params.actorUserId);
     if (params.q) qs.set("q", params.q);
@@ -2066,6 +2081,51 @@ export async function setOrgApiKeyEnabled(
     );
 }
 
+/**
+ * What an organization sets for work in its workspace: the Features and
+ * Model Preferences a person sets for themselves in Personal. Every member
+ * reads them; owners and admins change them.
+ */
+export interface OrgPreferences {
+    title_model: string | null;
+    tabular_model: string | null;
+    memory_curator_model: string | null;
+    subagent_model: string | null;
+    subagent_reasoning: NonNullable<Message["reasoning"]> | null;
+    quick_actions_visible: boolean;
+    response_details_visible: boolean;
+    web_search: WebSearchSettings;
+}
+
+/** A change to an organization's preferences; `web_search` merges. */
+export type OrgPreferencesUpdate = Partial<
+    Omit<OrgPreferences, "web_search">
+> & { web_search?: Partial<WebSearchSettings> };
+
+export async function getOrgPreferences(
+    orgId: string,
+    signal?: AbortSignal,
+): Promise<OrgPreferences> {
+    return apiRequest<OrgPreferences>(
+        "organizations.manage", `/orgs/${orgId}/preferences`,
+        { signal },
+    );
+}
+
+export async function updateOrgPreferences(
+    orgId: string,
+    update: OrgPreferencesUpdate,
+): Promise<OrgPreferences> {
+    return apiRequest<OrgPreferences>(
+        "organizations.manage", `/orgs/${orgId}/preferences`,
+        {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(update),
+        },
+    );
+}
+
 export interface OrgMemberDataPolicy {
     allow_member_exports: boolean;
     allow_member_deletes: boolean;
@@ -2415,11 +2475,6 @@ function libraryKindOf(scope: LibraryScope): LibraryKind {
 
 function libraryWorkspaceOf(scope: LibraryScope): string | undefined {
     return typeof scope === "string" ? undefined : scope.workspace;
-}
-
-/** `org_id` for an upload made in `workspace`: none in Personal. */
-function workspaceOrgId(workspace: string | undefined): string | undefined {
-    return workspace && workspace !== "personal" ? workspace : undefined;
 }
 
 /** A library route, with the scope's workspace on the query string. */
@@ -3397,8 +3452,17 @@ export async function createTabularReview(payload: {
 
 export async function getTabularReview(
     reviewId: string,
+    previous?: TabularReviewDetailOut,
 ): Promise<TabularReviewDetailOut> {
-    return apiRequest<TabularReviewDetailOut>("tabular.run", `/tabular-review/${reviewId}`);
+    const base = previous?.review.id === reviewId && previous.cell_revision ? previous : undefined;
+    const query = base ? `?cell_revision=${encodeURIComponent(base.cell_revision!)}` : "";
+    const { removed_cell_ids, ...detail } = await apiRequest<TabularReviewDetailOut & { removed_cell_ids?: string[] }>(
+        "tabular.run", `/tabular-review/${reviewId}${query}`);
+    if (!base || !removed_cell_ids) return detail;
+    const cells = new Map(base.cells.map(cell => [cell.id, cell]));
+    for (const id of removed_cell_ids) cells.delete(id);
+    for (const cell of detail.cells) cells.set(cell.id, cell);
+    return { ...detail, cells: [...cells.values()] };
 }
 
 export async function updateTabularReview(
@@ -3460,7 +3524,13 @@ export async function revokeTabularReviewAccess(
 
 export async function generateTabularColumnPrompt(
     title: string,
-    options?: { format?: string; documentName?: string; tags?: string[] },
+    options?: {
+        format?: string;
+        documentName?: string;
+        tags?: string[];
+        /** "personal" or an organization's id: whose tabular model drafts it. */
+        workspace?: string;
+    },
 ): Promise<{ prompt: string; source: "preset" | "llm" | "fallback" }> {
     return apiRequest<{
         prompt: string;
@@ -3473,6 +3543,7 @@ export async function generateTabularColumnPrompt(
             format: options?.format,
             documentName: options?.documentName,
             tags: options?.tags,
+            workspace: options?.workspace,
         }),
     });
 }

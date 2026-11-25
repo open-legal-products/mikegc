@@ -22,6 +22,8 @@ import {
 } from "../../lib/webSearch";
 import { resolveRequestTimeZone } from "../../lib/userTime";
 import { createAssistantHistoryLoader, attachPriorReasoning, buildDocContext, buildMessages, buildOrganizationPrompt, buildUserPersonalisationPrompt, devLog, enrichWithPriorEvents, loadUserMessageSentTimes, buildWorkflowStore, appendAskInputsResponseToAssistantMessage, runApprovedConnectorActions, generateSpotlightNonce, spotlight, type AskInputsResponseRequest, type ChatMessage, type SubagentDefaults } from "./engine/index";
+import type { ExternalSource } from "../../lib/sourceDocuments";
+import { registerExternalSource } from "./engine/tools/externalSources";
 import type { McpToolEvent } from "@mike/contracts";
 import { getUserModelSettings, resolveUserChatSelection } from "../user/user.service";
 import {
@@ -34,17 +36,19 @@ import { teamOrgIdOf } from "../../lib/personalOrgs";
 import { loadOrgContext } from "../../lib/orgProfile";
 import {
     DOCUMENT_WORKSPACE_MISMATCH_CODE,
-    DOCUMENT_WORKSPACE_MISMATCH_DETAIL,
+    CHAT_ATTACHMENT_WORKSPACE_MISMATCH_DETAIL,
     findNewAttachmentsOutsideWorkspace,
 } from "../../lib/documentWorkspace";
 import { hasDirectContentGrants } from "../../lib/contentAccess";
 import { can } from "../../lib/permissions";
 import { resolveEffectiveReasoningLevel } from "../../lib/modelSelection";
 import { replaysReasoning } from "../../lib/llm/registry";
+import { disownsReplayedToolRecord } from "../../lib/llm/models";
 import { beginMemoryConversationTurn, releaseMemoryConversationTurn, type MemoryConversationTurn } from "../../lib/memory/schedule";
 import { getAccessibleChat, validateAccessibleProjectId } from "./chat.access";
 import { intakeChatBrief } from "../intake/intake.service";
 import { linkChatToIntake, resolvePilledIntake } from "./chat.intake";
+import { log } from "../../lib/log";
 
 // ---------------------------------------------------------------------------
 // Pre-stream preparation for POST /chat (streaming)
@@ -308,7 +312,7 @@ export async function prepareChatStream(
                 ok: false,
                 status: 400,
                 code: DOCUMENT_WORKSPACE_MISMATCH_CODE,
-                detail: DOCUMENT_WORKSPACE_MISMATCH_DETAIL,
+                detail: CHAT_ATTACHMENT_WORKSPACE_MISMATCH_DETAIL,
             };
     } catch (error) {
         return { ok: false, internal: true, error };
@@ -427,6 +431,9 @@ export async function prepareChatStream(
     let completedTurnPersisted = true;
     let memoryTurn: MemoryConversationTurn | null = null;
     let approvalEvents: McpToolEvent[] = [];
+    // Sources carried in approved connector results, registered once the
+    // request's document context exists.
+    const approvedSources: ExternalSource[] = [];
     if (args.askInputsResponse) {
         const appendResult = await appendAskInputsResponseToAssistantMessage(
             db,
@@ -471,6 +478,7 @@ export async function prepareChatStream(
             askEventId: args.askInputsResponse.ask_event_id,
             userId,
             orgId: contentOrgId,
+            onExternalSource: (source) => approvedSources.push(source),
         });
     } else if (lastUser) {
         const { error: userMessageError } = await db
@@ -534,6 +542,9 @@ export async function prepareChatStream(
             history,
             intakeBrief?.documentIds ?? [],
         );
+        for (const source of approvedSources) {
+            registerExternalSource(source, docIndex, docStore);
+        }
         const docAvailability = Object.entries(docIndex).map(([doc_id, info]) => ({
             doc_id,
             filename: info.filename,
@@ -545,6 +556,7 @@ export async function prepareChatStream(
             ? await attachPriorReasoning(messages, chatId, db, "chat_messages", history)
             : messages;
         const timeZone = resolveRequestTimeZone(args.requestedTimeZone);
+        const recordForUser = disownsReplayedToolRecord(selectedModel);
         const enrichedMessages = await enrichWithPriorEvents(
             historyMessages,
             chatId,
@@ -553,6 +565,7 @@ export async function prepareChatStream(
             nonce,
             "chat_messages",
             timeZone,
+            recordForUser,
         );
         const {
             api_keys: apiKeys,
@@ -597,6 +610,7 @@ ${spotlight(intakeBrief.brief, nonce)}`
             nonce,
             "append",
             { timeZone, now: new Date(), userSentAt },
+            recordForUser,
         );
 
         const workflowStore = await buildWorkflowStore(userId, userEmail, db, contentOrgId);
@@ -653,7 +667,7 @@ ${spotlight(intakeBrief.brief, nonce)}`
                     turn: memoryTurn,
                 });
             } catch {
-                console.warn("[memory] chat activity release failed", {
+                log.warn("memory", "chat activity release failed", {
                     chatId,
                 });
             }
