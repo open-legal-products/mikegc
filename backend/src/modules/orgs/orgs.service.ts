@@ -36,7 +36,6 @@ export {
   getOrgApiKeySettings,
   saveOrgApiKey,
   setOrgApiKeyEnabled,
-  setOrgPersonalApiKeysAllowed,
     saveOrgRouterModels,
     normalizeOrgRouterSlug,
   type OrgApiKeySettings,
@@ -48,16 +47,31 @@ export {
     removeOrgLogo,
 } from "./orgs.logo";
 
-// Deleting an organization, or one kind of its content, needs the documents
-// and projects modules, so it lives here rather than in lib/orgs.ts.
 export {
-    deleteOrg,
-    deleteOrgData,
-    isOrgDataKind,
-    type OrgDataKind,
-} from "./orgs.deletion";
+    getOrgProfile,
+    saveOrgProfile,
+    type OrgProfileSettings,
+} from "./orgs.profile";
 
-export { deleteOrgContent } from "./orgs.dataCleanup";
+// Recovery-period suspension is separate from the trusted content-cleanup
+// primitives composed by application/organizations/purgeContent.
+export { deleteOrg } from "./orgs.deletion";
+
+export {
+    deleteOrgProjects,
+    deleteOrgWorkflows,
+    deleteOrgDocuments,
+    deleteOrgTabularReviews,
+    deleteOrgChats,
+    deleteOrgMemories,
+    deleteOrgPlaybooks,
+} from "./orgs.dataCleanup";
+export {
+    memberDataActionAllowed,
+    setOrgMemberDataPolicy,
+    type MemberDataAction,
+    type OrgMemberDataPolicy,
+} from "./orgs.memberDataPolicy";
 export {
     listDepartureArchives, listDepartures, resolveDepartureArchive, resolveDepartureArchives,
     expireDepartureArchives,

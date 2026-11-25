@@ -54,7 +54,12 @@ const mocks = vi.hoisted(() => ({
   workspace: {
     accountId: "account-a",
     workspaceId: "org-a",
-    activeOrganization: { id: "org-a" } as { id: string } | null,
+    activeOrganization: { id: "org-a" },
+  } as {
+    accountId: string;
+    workspaceId: string;
+    activeOrganization: { id: string } | null;
+    organizations?: { id: string }[] | null;
   },
 }));
 vi.mock("@/app/lib/mikeApi", () => ({
@@ -1814,7 +1819,7 @@ describe("request detail", () => {
 
   it("names MikeGC as the creator of a request it recorded, with where it came from", async () => {
     mocks.request.mockResolvedValue(
-      request({ created_by: null, created_by_name: "MikeGC", source: "email" }),
+      request({ created_by: null, created_by_name: "MikeGC", source: "gmail" }),
     );
     mocks.events.mockResolvedValue([
       event({
@@ -1835,7 +1840,7 @@ describe("request detail", () => {
     expect(marks[1]).toHaveAttribute("data-actor", "person");
     const details = screen.getByRole("complementary", { name: "Details" });
     // Plain text after the name, beside MikeGC's mark.
-    expect(details).toHaveTextContent("Created byMikeGC from email");
+    expect(details).toHaveTextContent("Created byMikeGC from Gmail");
     expect(details.querySelector('[data-actor="mikegc"]')).not.toBeNull();
     expect(
       within(details).queryByRole("img", { name: "MikeGC" }),
@@ -2735,6 +2740,27 @@ describe("request detail", () => {
     ).toBeInTheDocument();
   });
 
+  it("keeps the loaded request when a refresh fails", async () => {
+    render(detail());
+    await screen.findByRole("heading", {
+      level: 1,
+      name: "Confidential request A",
+    });
+    mocks.request.mockRejectedValue(new TypeError("offline"));
+    act(() => {
+      window.dispatchEvent(new Event("focus"));
+    });
+    await waitFor(() =>
+      expect(mocks.notify).toHaveBeenCalledWith(expect.any(TypeError), {
+        action: "refresh the request",
+      }),
+    );
+    expect(
+      screen.getByRole("heading", { level: 1, name: "Confidential request A" }),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("Unable to load request")).not.toBeInTheDocument();
+  });
+
   it("hides revoked content immediately after an uncertain 403 while retaining the command", async () => {
     const recheck = deferred<IntakeRequest>();
     mocks.request
@@ -2758,6 +2784,29 @@ describe("request detail", () => {
     await waitFor(() => expect(mocks.command).toHaveBeenCalledTimes(3));
     expect(mocks.command.mock.calls[2]).toEqual(original);
     await act(async () => recheck.reject({ status: 403 }));
+  });
+
+  it("says a request in an organization this account left can't be opened", async () => {
+    mocks.workspace = {
+      ...mocks.workspace,
+      organizations: [{ id: "org-a" }],
+    };
+    const view = render(<IntakeDetail orgId="org-b" requestId="request-a" />);
+    expect(
+      screen.getByText(
+        "This request belongs to a workspace this account can’t open.",
+      ),
+    ).toBeInTheDocument();
+    // One of theirs is opened in its workspace, which the page switches to.
+    mocks.workspace = {
+      ...mocks.workspace,
+      organizations: [{ id: "org-a" }, { id: "org-b" }],
+    };
+    view.rerender(<IntakeDetail orgId="org-b" requestId="request-a" />);
+    expect(
+      screen.getByText("Open this request in its workspace."),
+    ).toBeInTheDocument();
+    expect(mocks.request).not.toHaveBeenCalled();
   });
 
   it("does not display a late request response after the account changes", async () => {
@@ -3352,11 +3401,64 @@ describe("requester loop", () => {
         name: "Messages with the requester",
       });
       await waitFor(() => expect(log).toHaveTextContent("Sending"));
+      const before = [mocks.documents, mocks.members].map(
+        (read) => read.mock.calls.length,
+      );
       await act(async () => {
         vi.advanceTimersByTime(5_100);
       });
       await waitFor(() => expect(log).toHaveTextContent("Sent"));
       expect(activity).toHaveTextContent("Message to the requester sent.");
+      // The check reads where a delivery shows, not what it cannot change.
+      expect(
+        [mocks.documents, mocks.members].map((read) => read.mock.calls.length),
+      ).toEqual(before);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("waits for a slow check on a sending message before starting the next", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const pending = message({
+        id: "question-a",
+        kind: "question",
+        body: "Which entity signs?",
+        delivery: {
+          outbound_id: "out-1",
+          kind: "question",
+          status: "pending",
+          error: null,
+          sent_at: null,
+          message_id: "question-a",
+          documents: [],
+        },
+      });
+      const slow = deferred<IntakeRequest>();
+      mocks.request
+        .mockResolvedValueOnce(threaded())
+        .mockReturnValue(slow.promise);
+      mocks.messages
+        .mockResolvedValueOnce([pending])
+        .mockResolvedValue([
+          { ...pending, delivery: { ...pending.delivery!, status: "sent" } },
+        ]);
+      render(detail());
+      const activity = await screen.findByRole("region", { name: "Activity" });
+      await act(async () => {
+        vi.advanceTimersByTime(5_100);
+      });
+      expect(mocks.request).toHaveBeenCalledTimes(2);
+      // The first check is still loading: later ticks must not supersede it.
+      await act(async () => {
+        vi.advanceTimersByTime(10_200);
+      });
+      expect(mocks.request).toHaveBeenCalledTimes(2);
+      await act(async () => slow.resolve(threaded()));
+      await waitFor(() =>
+        expect(activity).toHaveTextContent("Message to the requester sent."),
+      );
     } finally {
       vi.useRealTimers();
     }
@@ -3405,15 +3507,16 @@ describe("requester loop", () => {
     ]);
   });
 
-  it("names an email thread's recipients, each on its own line", async () => {
+  it("names an email thread's provider alone, without its addresses", async () => {
     mocks.request.mockResolvedValue(threaded({ conversation: gmail }));
     render(detail());
     const details = await screen.findByRole("complementary", {
       name: "Details",
     });
-    expect(details).toHaveTextContent("Gmail email from intake@acme.test");
-    expect(within(details).getByText("To ana@acme.test")).toBeInTheDocument();
-    expect(within(details).getByText("Cc ben@acme.test")).toBeInTheDocument();
+    expect(details).toHaveTextContent("ConversationGmail");
+    expect(details).not.toHaveTextContent("intake@acme.test");
+    expect(details).not.toHaveTextContent("ana@acme.test");
+    expect(details).not.toHaveTextContent("ben@acme.test");
   });
 
   it("clears the New reply flag once Messages is opened to show the reply", async () => {

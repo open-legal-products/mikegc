@@ -1,1 +1,19 @@
-[]
+[
+    {
+        "ghsa": "GHSA-xcx6-jx8p-x3h5",
+        "reason": "@azure/msal-node 6.0.1 authorization-code parameter disclosure, present in word-addin only through the devDependency office-addin-debugging -> office-addin-dev-settings -> @microsoft/m365agentstoolkit-cli -> @azure/identity (`npm ls @azure/msal-node --omit=dev` is empty). That CLI signs a developer into Microsoft 365 for sideloading; the add-in has no MSAL code of its own and the production add-in image contains only the static bundle and server.mjs. The current upstream ranges require MSAL 6.x; this exception does not waive the advisory for any production dependency or other consumer. REMOVE WHEN: office-addin-debugging's declared range resolves @azure/msal-node >=7.1.0.",
+        "scopes": [
+            {
+                "workspace": "word-addin",
+                "package": "@azure/msal-node",
+                "version": "6.0.1",
+                "path": "node_modules/@azure/msal-node",
+                "dev": true,
+                "dependents": [
+                    "node_modules/@azure/identity",
+                    "node_modules/@microsoft/m365agentstoolkit-cli"
+                ]
+            }
+        ]
+    }
+]

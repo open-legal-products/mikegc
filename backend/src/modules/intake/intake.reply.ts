@@ -1,12 +1,13 @@
-import { z } from "zod";
 import type { IntakeExternalAuthor } from "@mike/contracts";
+import { mapWithConcurrency } from "../../lib/concurrency";
 import { NonRetryableJobError } from "../../lib/dbq/runner";
-import type { DbJob } from "../../lib/dbq/types";
 import { safeError } from "../../lib/safeError";
+import { loadOrgContext } from "../../lib/orgProfile";
 import type { Db } from "../../lib/supabase";
 import {
   addDocuments,
   channelAttachments,
+  noteNotAttached,
   type CandidateDownloader,
 } from "./intake.attachments";
 import {
@@ -19,18 +20,22 @@ import {
   updateLinkAddress,
   type ChannelLink,
 } from "./intake.channels";
+import { runIntakeAgent, type AgentField, type AgentRequest } from "./intake.agent";
+import type { InboundRow } from "./intake.inboundStore";
 import { MAX_CLARIFY_ROUNDS, stableId } from "./intake.clarify";
 import {
   MAX_ATTACHMENT_BYTES,
   cleanText,
   clip,
   replyPayload,
+  type AgentPlan,
   type AttachmentCandidate,
   type ReplyPayload,
   type SkippedAttachment,
 } from "./intake.inboundPayload";
 import { recordEmailMessageIds } from "./intake.mail";
 import {
+  answerRequester,
   askRequester,
   loadThreadEntries,
   settleClarify,
@@ -41,7 +46,7 @@ import {
 } from "./intake.preprocess";
 import { slackBotToken } from "./intake.secrets";
 import { loadAutomationRow, type AutomationRow } from "./intake.settingsRow";
-import { dispatchIntakeJob, intakeRpc } from "./intake.shared";
+import { intakeRpc } from "./intake.shared";
 import {
   SlackApiError,
   downloadSlackFile,
@@ -50,6 +55,7 @@ import {
   slackTextToPlain,
   slackThreadMessage,
   slackUserInfo,
+  SLACK_LOOKUPS_AT_ONCE,
 } from "./intake.slack";
 import {
   isPermanentTeamsError,
@@ -61,46 +67,19 @@ import {
   SKIPPED_REASON,
   loadTriageRules,
   resolveIntakeModel,
-  triageInbound,
-  type InboundMessage,
 } from "./intake.triage";
 
 /**
- * The intake.reply job: a requester's message in a request's thread. It is
- * recorded on the request as a reply, with its files as the request's
- * documents, and when it answers MikeGC's questions, the stage that asked
- * runs again: triage to choose a rule, or the next round of preprocessing's
- * readiness check. An answer to a lawyer's question runs no AI.
+ * The intake.agent job's reply branch: a requester's message in a request's
+ * thread. It is recorded on the request as a reply, with its files as the
+ * request's documents. An answer to the readiness check's questions runs its
+ * next round. On any other open request the intake agent reads the reply: it
+ * updates the request's details from it, chooses the rule or asks once more
+ * while the rule waits on the requester, and answers in the thread.
  */
 
-export const INTAKE_REPLY_JOB = "intake.reply";
-const JOB_ATTEMPTS = 4;
 const BODY_MAX = 20_000;
-
-const jobPayload = z.object({ inboundId: z.uuid(), orgId: z.uuid() });
-
-type ReplyRow = {
-  id: string;
-  org_id: string;
-  kind: "request" | "reply";
-  status: "pending" | "done" | "failed" | "ignored";
-  payload: unknown;
-  request_id: string | null;
-};
-
-async function loadReply(
-  db: Db,
-  ids: { inboundId: string; orgId: string },
-): Promise<ReplyRow | null> {
-  const { data, error } = await db
-    .from("intake_inbound")
-    .select("id, org_id, kind, status, payload, request_id")
-    .eq("id", ids.inboundId)
-    .eq("org_id", ids.orgId)
-    .maybeSingle();
-  if (error) throw error;
-  return (data as ReplyRow | null) ?? null;
-}
+const CLOSED_STATES = new Set(["resolved", "cancelled"]);
 
 type ReplyContent = {
   text: string;
@@ -129,15 +108,19 @@ async function slackReply(
   const ids = [...new Set([payload.user, ...mentionedUsers(raw)])].slice(0, 20);
   const names = new Map<string, string>();
   let author: { name: string | null; email: string | null } = { name: null, email: null };
-  for (const id of ids) {
+  const found = await mapWithConcurrency(ids, SLACK_LOOKUPS_AT_ONCE, async (id) => {
     try {
-      const person = await slackUserInfo(token, id);
-      if (person?.name) names.set(id, person.name);
-      if (id === payload.user && person) author = person;
+      return await slackUserInfo(token, id);
     } catch (error) {
       if (isPermanentSlackError(error)) throw error;
+      return null;
     }
-  }
+  });
+  ids.forEach((id, i) => {
+    const person = found[i];
+    if (person?.name) names.set(id, person.name);
+    if (id === payload.user && person) author = person;
+  });
   return {
     text: slackTextToPlain(raw, names, settings.slack_bot_user_id),
     author: { ...author, source: "slack", user_id: payload.user },
@@ -226,84 +209,248 @@ type ReplyResult = {
 };
 
 /**
- * Triage again over the request and its thread, now that the requester has
- * answered: ask once more while a round is left and a rule is still
- * undecided, or settle on the rule (or none) and start its preprocessing.
+ * The request as the agent reads it now, with the version, clarifying stage
+ * and round it was read at, or null once it is gone. Read again for every
+ * plan, so a plan made again after a newer reply settled the rule doesn't
+ * still treat the rule as undecided.
  */
-async function rerunRule(
+async function loadAgentRequest(
   db: Db,
-  settings: AutomationRow,
-  link: ChannelLink,
-  reply: ReplyResult,
-) {
+  orgId: string,
+  requestId: string,
+): Promise<{
+  request: AgentRequest;
+  version: number | null;
+  stage: "rule" | null;
+  round: number;
+} | null> {
   const { data, error } = await db
     .from("intake_requests")
-    .select("subject, description, requester_name, requester_email, created_at")
-    .eq("id", reply.request_id)
+    .select(
+      "subject, description, requested_by_date, state, member_edited_fields, version, clarify_stage, clarify_rounds, clarify_stopped",
+    )
+    .eq("org_id", orgId)
+    .eq("id", requestId)
     .maybeSingle();
   if (error) throw error;
-  if (!data) return;
+  if (!data) return null;
   const request = data as {
     subject: string;
     description: string;
-    requester_name: string;
-    requester_email: string | null;
-    created_at: string;
+    requested_by_date: string | null;
+    state: string;
+    member_edited_fields?: AgentField[] | null;
+    version?: number | null;
+    clarify_stage?: "rule" | "readiness" | null;
+    clarify_rounds?: number | null;
+    clarify_stopped?: boolean | null;
   };
-  const message: InboundMessage = {
-    source: link.source,
-    sender: { name: request.requester_name, email: request.requester_email },
-    sentAt: new Date(request.created_at),
-    subject: request.subject,
-    subjectHint: request.subject,
-    text: request.description,
-    candidates: [],
-    skipped: [],
-    thread: await loadThreadEntries(db, link.org_id, reply.request_id),
+  const round = request.clarify_rounds ?? 0;
+  return {
+    request: {
+      subject: request.subject,
+      description: request.description,
+      requested_by_date: request.requested_by_date,
+      state: request.state,
+      member_edited_fields: request.member_edited_fields ?? [],
+      ruleUndecided: request.clarify_stage === "rule",
+      canAsk: !request.clarify_stopped && round < MAX_CLARIFY_ROUNDS,
+    },
+    version: request.version ?? null,
+    stage: request.clarify_stage === "rule" ? "rule" : null,
+    round,
   };
-  const [rules, model] = await Promise.all([
-    loadTriageRules(db, link.org_id),
-    resolveIntakeModel(
-      db,
-      link.org_id,
-      settings.configured_by,
-      settings.triage_model,
-    ),
-  ]);
-  const plan = await triageInbound({ message, rules, model });
+}
+
+/**
+ * Change the request's details as the agent planned. A detail a member has
+ * edited since is skipped by the database; details it refuses are dropped,
+ * as the requester's words can't be trusted to fit. False when the request
+ * has changed since the plan was made from `version`: nothing is changed.
+ */
+async function updateRequest(
+  db: Db,
+  args: {
+    orgId: string;
+    requestId: string;
+    noteId: string;
+    update: NonNullable<AgentPlan["update"]>;
+    version: number | null;
+  },
+): Promise<boolean> {
+  const updated = await intakeRpc<string[]>(db, "intake_update_automated", {
+    p_org: args.orgId,
+    p_request: args.requestId,
+    p_note: args.noteId,
+    p_subject: args.update.subject,
+    p_description: args.update.description,
+    p_date: args.update.requested_by_date,
+    p_lines: args.update.lines,
+    p_version: args.version,
+  });
+  if (updated.ok || updated.kind === "not_found") return true;
+  if (updated.kind === "conflict" && updated.code === "intake_conflict") return false;
+  if (updated.kind === "validation") {
+    console.warn("[intake-reply] update refused by the database");
+    return true;
+  }
+  throw updated.kind === "error" ? updated.error : new Error(updated.detail);
+}
+
+/**
+ * Plans made for one reply, across the job's attempts, before a stale update
+ * is dropped instead.
+ */
+const MAX_PLANS = 3;
+
+/**
+ * The agent's turn on a reply: plan once, saving the plan with the stage it
+ * was made at, then update the request, at the rule stage ask once more or
+ * settle the rule, and answer the requester in the thread.
+ */
+async function runAgentOnReply(
+  db: Db,
+  args: {
+    row: InboundRow;
+    settings: AutomationRow;
+    link: ChannelLink;
+    reply: ReplyResult;
+    payload: ReplyPayload;
+    save: () => Promise<void>;
+  },
+): Promise<void> {
+  const { row, settings, link, reply, payload, save } = args;
+  const orgId = link.org_id;
+  const requestId = reply.request_id;
+  // A plan whose request has changed since it was made (a newer reply's
+  // update, a member's edit) is made again from the request as it is now,
+  // rather than overwriting the newer details with older ones.
+  for (;;) {
+    if (!payload.agent) {
+      const [loaded, thread, rules, model, organization] = await Promise.all([
+        loadAgentRequest(db, orgId, requestId),
+        loadThreadEntries(db, orgId, requestId),
+        loadTriageRules(db, orgId),
+        resolveIntakeModel(db, orgId, settings.configured_by, settings.triage_model),
+        loadOrgContext(db, orgId),
+      ]);
+      if (!loaded) return;
+      const plan = await runIntakeAgent({
+        context: { kind: "reply", channel: link.source, request: loaded.request, thread, sentAt: new Date() },
+        rules,
+        model,
+        organization,
+      });
+      // At the rule stage a model run decides: it chooses a rule (or none)
+      // or asks. One that ended with neither failed, as when its provider
+      // is down, so the job is retried rather than leave it unassigned.
+      if (loaded.stage === "rule" && model && !plan.rule && !plan.questions.length)
+        throw new Error("The intake agent didn't decide the request's rule.");
+      payload.agent = plan;
+      payload.agentStage = loaded.stage;
+      payload.agentRound = loaded.round;
+      payload.agentVersion = loaded.version ?? undefined;
+      payload.agentPlans = (payload.agentPlans ?? 0) + 1;
+      await save();
+    }
+    const update = payload.agent.update;
+    if (!update || payload.updated) break;
+    const applied = await updateRequest(db, {
+      orgId,
+      requestId,
+      noteId: stableId(`intake.agent.update:${row.id}`),
+      update,
+      version: payload.agentVersion ?? null,
+    });
+    if (!applied && (payload.agentPlans ?? 1) < MAX_PLANS) {
+      payload.agent = undefined;
+      continue;
+    }
+    if (!applied) {
+      // Still changing under every plan: the newer details stand, and the
+      // plan's answer, which says what it changed, isn't sent.
+      console.warn("[intake-reply] stale update dropped");
+      payload.agent = { ...payload.agent, answer: null };
+    }
+    payload.updated = true;
+    await save();
+    break;
+  }
+  const plan = payload.agent;
+  if (!plan) return;
+  if (payload.agentStage === "rule") {
+    const asked = await settleRule(db, { orgId, requestId, plan, payload, save });
+    if (asked) return;
+  }
+  // The agent's answer, once the rule is settled so it can say so.
+  if (plan.answer && !payload.answered) {
+    await answerRequester(db, {
+      orgId,
+      requestId,
+      seed: row.id,
+      text: plan.answer,
+    });
+    payload.answered = true;
+    await save();
+  }
+}
+
+/**
+ * At the rule stage: ask once more, or settle on the chosen rule (or none)
+ * and start its preprocessing. True when MikeGC asked.
+ */
+async function settleRule(
+  db: Db,
+  args: {
+    orgId: string;
+    requestId: string;
+    plan: AgentPlan;
+    payload: ReplyPayload;
+    save: () => Promise<void>;
+  },
+): Promise<boolean> {
+  const { orgId, requestId, plan, payload, save } = args;
+  const round = payload.agentRound ?? 0;
   if (
     plan.questions.length &&
-    !reply.clarify_stopped &&
-    reply.clarify_rounds < MAX_CLARIFY_ROUNDS &&
+    payload.ruleSettled === undefined &&
     (await askRequester(db, {
-      orgId: link.org_id,
-      requestId: reply.request_id,
-      seed: `${reply.request_id}:rule:${reply.clarify_rounds}`,
+      orgId,
+      requestId,
+      seed: `${requestId}:rule:${round}`,
       questions: plan.questions,
       stage: "rule",
       acknowledge: false,
     }))
   )
-    return;
-  // Decided, or no rounds left: a request that matches no rule stays unassigned.
-  const settled = await settleClarify(db, {
-    orgId: link.org_id,
-    requestId: reply.request_id,
-    stage: "rule",
-    assign: true,
-    assigneeId: plan.assignee_id,
-  });
-  if (settled && plan.preprocess)
-    await queueIntakePreprocess(db, {
-      orgId: link.org_id,
-      requestId: reply.request_id,
-      with: plan.preprocess.with,
-      condition: plan.preprocess.condition ?? null,
-      round: reply.clarify_rounds,
+    return true;
+  // Decided, or it can't ask again: a request that matches no rule stays unassigned.
+  if (payload.ruleSettled === undefined) {
+    payload.ruleSettled = await settleClarify(db, {
+      orgId,
+      requestId,
+      stage: "rule",
+      assign: true,
+      assigneeId: plan.rule?.assignee_id ?? null,
     });
+    await save();
+  }
+  const preprocess = plan.rule?.preprocess;
+  if (payload.ruleSettled && preprocess && !payload.preprocessQueued) {
+    await queueIntakePreprocess(db, {
+      orgId,
+      requestId,
+      with: preprocess.with,
+      condition: preprocess.condition ?? null,
+      round,
+    });
+    payload.preprocessQueued = true;
+    await save();
+  }
+  return false;
 }
 
-async function processReply(db: Db, row: ReplyRow): Promise<Record<string, unknown>> {
+async function processReply(db: Db, row: InboundRow): Promise<Record<string, unknown>> {
   const parsed = replyPayload.safeParse(row.payload);
   if (!parsed.success)
     throw new NonRetryableJobError("The received reply couldn't be read.");
@@ -357,6 +504,13 @@ async function processReply(db: Db, row: ReplyRow): Promise<Record<string, unkno
     messageId,
   });
   if (!attached) return done({ skipped: "request_gone" });
+  // A reply's files that couldn't be fetched are named on the request, once.
+  await noteNotAttached(db, {
+    orgId: row.org_id,
+    requestId: reply.request_id,
+    noteId: stableId(`intake.not-attached:${row.id}`),
+    dropped: attached,
+  });
   if (payload.kind === "mail_reply") {
     // Later replies thread on this one, the newest in the thread.
     await recordEmailMessageIds(db, row.org_id, link.id, [payload.message_id]);
@@ -364,10 +518,13 @@ async function processReply(db: Db, row: ReplyRow): Promise<Record<string, unkno
   }
   if (payload.kind === "teams_reply")
     await updateLinkAddress(db, link, { service_url: payload.service_url });
-  // An answer to MikeGC's question reruns the stage that asked.
-  if (reply.clarify_stage === "rule") await rerunRule(db, settings, link, reply);
-  else if (reply.clarify_stage === "readiness")
+  // An answer to the readiness check's questions runs its next round; on
+  // any other open request, the agent reads the reply. A plan already made
+  // is carried out even if the request has moved on since.
+  if (!payload.agent && reply.clarify_stage === "readiness")
     await queueNextIntakePreprocess(db, row.org_id, reply.request_id);
+  else if (payload.agent || !CLOSED_STATES.has(reply.state))
+    await runAgentOnReply(db, { row, settings, link, reply, payload, save });
   return done({
     request_id: reply.request_id,
     stage: reply.clarify_stage,
@@ -375,16 +532,11 @@ async function processReply(db: Db, row: ReplyRow): Promise<Record<string, unkno
   });
 }
 
-/** The job body. A reply no longer waiting is skipped. */
-export async function handleIntakeReply(
+/** A reply, waiting. Slack or Teams refusing to give it up fails it at once. */
+export async function runReply(
   db: Db,
-  job: DbJob,
+  row: InboundRow,
 ): Promise<Record<string, unknown>> {
-  const ids = jobPayload.safeParse(job.payload);
-  if (!ids.success) throw new NonRetryableJobError("intake.reply: invalid payload");
-  const row = await loadReply(db, ids.data);
-  if (!row) return { skipped: "missing" };
-  if (row.status !== "pending" || row.kind !== "reply") return { skipped: row.status };
   try {
     return await processReply(db, row);
   } catch (error) {
@@ -399,11 +551,7 @@ export async function handleIntakeReply(
 }
 
 /** When a reply's job has failed for good: settle it without its content. */
-export async function markIntakeReplyFailed(db: Db, job: DbJob): Promise<void> {
-  const ids = jobPayload.safeParse(job.payload);
-  if (!ids.success) return;
-  const row = await loadReply(db, ids.data);
-  if (!row || row.status !== "pending") return;
+export async function markReplyFailed(db: Db, row: InboundRow): Promise<void> {
   await settleInbound(
     db,
     row.id,
@@ -418,20 +566,4 @@ function channelName(payload: unknown): string {
   if (kind === "slack_reply") return CHANNEL_NAMES.slack;
   if (kind === "teams_reply") return CHANNEL_NAMES.teams;
   return "email";
-}
-
-/** Queue a stored reply's job. */
-export async function dispatchIntakeReply(
-  db: Db,
-  orgId: string,
-  inboundId: string,
-): Promise<void> {
-  await dispatchIntakeJob(db, {
-    kind: INTAKE_REPLY_JOB,
-    payload: { inboundId, orgId },
-    dedupeKey: `${INTAKE_REPLY_JOB}:${inboundId}`,
-    maxAttempts: JOB_ATTEMPTS,
-    handler: handleIntakeReply,
-    onFailure: markIntakeReplyFailed,
-  });
 }

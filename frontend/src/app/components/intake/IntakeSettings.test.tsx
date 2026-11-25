@@ -52,8 +52,8 @@ vi.mock("@/app/lib/userFacingError", async (importOriginal) => ({
   notifyError: mocks.notify,
   notifySuccess: mocks.success,
 }));
-vi.mock("@/shared/lib/errorNotifier", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("@/shared/lib/errorNotifier")>()),
+vi.mock("@mike/client", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@mike/client")>()),
   notifySuccess: mocks.success,
 }));
 vi.mock("next/navigation", () => ({
@@ -99,7 +99,6 @@ const connectedEmail = (): IntakeAutomationSettings["email"] => ({
     last_read_at: "2026-11-03T09:30:00Z",
     error: null,
   },
-  needs_reconnect: false,
 });
 /** The email block before any mailbox is connected. */
 const unconnectedEmail = (
@@ -387,15 +386,15 @@ describe("IntakeSettings", () => {
     );
   });
 
-  it("keeps a channel's help on a screen of its own, opened from the footer, keeping what was typed", async () => {
+  it("keeps a channel's help on a screen of its own, opened from the content, keeping what was typed", async () => {
     const user = userEvent.setup();
     render(<IntakeSettings orgId="org-a" />);
     await loaded();
     const dialog = await openModal(user, "Manage Slack", "Slack");
     await user.type(within(dialog).getByLabelText("Signing Secret"), "half");
     const help = within(dialog).getByRole("button", { name: "Slack help" });
-    expect(help).toHaveTextContent(/^Help$/);
-    // In the footer, before Cancel and Save.
+    expect(help).toHaveTextContent(/^Setup help$/);
+    // At the bottom of the content, before Cancel and Save.
     const save = within(dialog).getByRole("button", { name: "Save" });
     expect(
       help.compareDocumentPosition(save) & Node.DOCUMENT_POSITION_FOLLOWING,
@@ -561,9 +560,16 @@ describe("IntakeSettings", () => {
     await loaded();
     const dialog = await openModal(user, "Set up Teams", "Teams");
     // No switch until its details are saved.
-    expect(within(dialog).queryByRole("switch")).toBeNull();
+    expect(
+      within(dialog).queryByRole("switch", { name: "Record requests from Teams" }),
+    ).toBeNull();
     expect(dialog).toHaveTextContent(
       "https://api.example.test/webhooks/intake/teams/5e2a",
+    );
+    // Outlook is connected, so its app is offered first; this setup types a
+    // different one.
+    await user.click(
+      within(dialog).getByRole("switch", { name: "Use the same app as Outlook" }),
     );
     await user.type(within(dialog).getByLabelText("App ID"), "app-1");
     await user.type(within(dialog).getByLabelText("Tenant ID"), "tenant-1");
@@ -595,7 +601,76 @@ describe("IntakeSettings", () => {
     expect(within(managing).getByLabelText("App ID")).toHaveValue("app-1");
   });
 
-  it("shows a refused save in the modal and keeps what was typed", async () => {
+  it("sets up Teams with the connected Outlook app, without typing it again", async () => {
+    const user = userEvent.setup();
+    render(<IntakeSettings orgId="org-a" />);
+    await loaded();
+    const dialog = await openModal(user, "Set up Teams", "Teams");
+    expect(
+      within(dialog).getByRole("switch", { name: "Use the same app as Outlook" }),
+    ).toHaveAttribute("aria-checked", "true");
+    // Outlook's app fills the fields, which can't be edited; the secret stays masked.
+    expect(within(dialog).getByLabelText("App ID")).toHaveValue("client-1");
+    expect(within(dialog).getByLabelText("App ID")).toBeDisabled();
+    expect(within(dialog).getByLabelText("Tenant ID")).toHaveValue("tenant-1");
+    expect(within(dialog).getByLabelText("Tenant ID")).toBeDisabled();
+    const secret = within(dialog).getByLabelText("Client secret");
+    expect(secret).toBeDisabled();
+    expect(secret).toHaveAttribute("type", "password");
+    expect(secret).toHaveValue(SAVED_KEY_MASK);
+    expect(dialog).toHaveTextContent(
+      "MikeGC copies the client secret from Outlook. Changing it in Outlook later doesn't change it here.",
+    );
+    await user.click(within(dialog).getByRole("button", { name: "Save" }));
+    await waitFor(() =>
+      expect(mocks.update).toHaveBeenCalledWith("org-a", {
+        teams_use_outlook_app: true,
+        teams_enabled: true,
+      }),
+    );
+  });
+
+  it("connects Outlook with the Teams app, without typing it again", async () => {
+    const user = userEvent.setup();
+    server = settings({
+      email: unconnectedEmail(),
+      teams: {
+        ...settings().teams,
+        enabled: true,
+        configured: true,
+        app_id: "teams-app",
+        tenant_id: "teams-tenant",
+      },
+    });
+    mocks.connect.mockImplementation(async () => server);
+    render(<IntakeSettings orgId="org-a" />);
+    await loaded();
+    const dialog = await openModal(user, "Set up Outlook", "Outlook");
+    expect(
+      within(dialog).getByRole("switch", { name: "Use the same app as Teams" }),
+    ).toHaveAttribute("aria-checked", "true");
+    expect(within(dialog).getByLabelText("Client ID")).toHaveValue("teams-app");
+    expect(within(dialog).getByLabelText("Client ID")).toBeDisabled();
+    expect(within(dialog).getByLabelText("Client secret")).toBeDisabled();
+    // Turned off, the app's details are typed as before; back on to reuse it.
+    const same = within(dialog).getByRole("switch", { name: "Use the same app as Teams" });
+    await user.click(same);
+    expect(within(dialog).getByLabelText("Client ID")).toBeEnabled();
+    expect(within(dialog).getByLabelText("Client ID")).toHaveValue("");
+    expect(within(dialog).getByLabelText("Client secret")).toBeEnabled();
+    await user.click(same);
+    await user.type(within(dialog).getByLabelText("Intake address"), "intake@company.com");
+    await user.click(within(dialog).getByRole("button", { name: "Connect" }));
+    await waitFor(() =>
+      expect(mocks.connect).toHaveBeenCalledWith("org-a", {
+        provider: "graph",
+        mailbox: "intake@company.com",
+        use_teams_app: true,
+      }),
+    );
+  });
+
+  it("shows a refused save as a notice, never in the footer, and keeps what was typed", async () => {
     const user = userEvent.setup();
     const detail = "Slack didn't accept this Signing Secret.";
     server = settings({
@@ -624,11 +699,16 @@ describe("IntakeSettings", () => {
     expect(within(dialog).queryByRole("switch")).toBeNull();
     await user.type(within(dialog).getByLabelText("Signing Secret"), "s3cret");
     await user.click(within(dialog).getByRole("button", { name: "Save" }));
-    expect(await within(dialog).findByRole("alert")).toHaveTextContent(detail);
-    // Beside Help, which stays.
-    expect(
-      within(dialog).getByRole("button", { name: "Slack help" }),
-    ).toBeInTheDocument();
+    // What Slack said goes to the warning popup, never the modal's footer.
+    await waitFor(() =>
+      expect(mocks.notify).toHaveBeenCalledWith(
+        expect.objectContaining({ detail }),
+        expect.objectContaining({ action: "save the Slack settings" }),
+      ),
+    );
+    expect(within(dialog).queryByRole("alert")).toBeNull();
+    expect(dialog).not.toHaveTextContent(detail);
+    // The modal stays open with what was typed, to fix it.
     expect(within(dialog).getByLabelText("Signing Secret")).toHaveValue(
       "s3cret",
     );
@@ -636,7 +716,6 @@ describe("IntakeSettings", () => {
     expect(mocks.update).toHaveBeenCalledWith("org-a", {
       slack_signing_secret: "s3cret",
     });
-    expect(mocks.notify).not.toHaveBeenCalled();
   });
 
   it("connects an Outlook mailbox from its own modal, which then manages it", async () => {
@@ -697,7 +776,7 @@ describe("IntakeSettings", () => {
         name: "Record requests from email",
       }),
     ).toBeInTheDocument();
-    expect(within(dialog).getByText("intake@company.com")).toBeInTheDocument();
+    expect(within(dialog).getByText("Connection settings")).toBeInTheDocument();
     expect(within(dialog).getByText("company.com")).toBeInTheDocument();
     expect(within(dialog).queryByLabelText("Client secret")).toBeNull();
     // And the tile behind it shows its switch, on.
@@ -724,7 +803,7 @@ describe("IntakeSettings", () => {
     expect(within(dialog).getByLabelText("Intake address")).toHaveValue("");
   });
 
-  it("says in the modal why a mailbox couldn't connect", async () => {
+  it("says why a mailbox couldn't connect in a notice, keeping the form", async () => {
     const user = userEvent.setup();
     server = settings({ email: unconnectedEmail() });
     const detail =
@@ -743,12 +822,15 @@ describe("IntakeSettings", () => {
     await user.type(within(dialog).getByLabelText("Client ID"), "c");
     await user.type(within(dialog).getByLabelText("Client secret"), "s");
     await user.click(within(dialog).getByRole("button", { name: "Connect" }));
-    expect(await within(dialog).findByRole("alert")).toHaveTextContent(
-      "Microsoft 365 didn't accept these credentials.",
+    await waitFor(() =>
+      expect(mocks.notify).toHaveBeenCalledWith(
+        expect.objectContaining({ detail }),
+        expect.objectContaining({ action: "connect the mailbox" }),
+      ),
     );
+    expect(within(dialog).queryByRole("alert")).toBeNull();
     // The form stays, with what was typed, to correct.
     expect(within(dialog).getByLabelText("Tenant ID")).toHaveValue("t");
-    expect(mocks.notify).not.toHaveBeenCalled();
   });
 
   it("connects Gmail with the deployment's service account, its key optional", async () => {
@@ -848,11 +930,13 @@ describe("IntakeSettings", () => {
     render(<IntakeSettings orgId="org-a" />);
     await loaded();
     const dialog = await openModal(user, "Manage Outlook", "Outlook");
-    expect(dialog).toHaveTextContent("Outlook (Microsoft 365)");
-    expect(dialog).toHaveTextContent("Last read");
-    expect(dialog).toHaveTextContent("New-mail notifications renew before");
+    const openActions = () =>
+      user.click(
+        within(dialog).getByRole("button", { name: "Connection settings actions" }),
+      );
+    await openActions();
     await user.click(
-      within(dialog).getByRole("button", { name: "Send test email" }),
+      await screen.findByRole("menuitem", { name: "Send test email" }),
     );
     await waitFor(() =>
       expect(mocks.success).toHaveBeenCalledWith(
@@ -861,7 +945,8 @@ describe("IntakeSettings", () => {
     );
     expect(mocks.test).toHaveBeenCalledWith("org-a");
 
-    await user.click(within(dialog).getByRole("button", { name: "Disconnect" }));
+    await openActions();
+    await user.click(await screen.findByRole("menuitem", { name: "Disconnect" }));
     const confirm = within(dialog).getByRole("group", {
       name: "Disconnect the intake mailbox?",
     });
@@ -869,7 +954,8 @@ describe("IntakeSettings", () => {
       within(confirm).getByRole("button", { name: "Keep connected" }),
     );
     expect(mocks.disconnect).not.toHaveBeenCalled();
-    await user.click(within(dialog).getByRole("button", { name: "Disconnect" }));
+    await openActions();
+    await user.click(await screen.findByRole("menuitem", { name: "Disconnect" }));
     await user.click(
       within(
         within(dialog).getByRole("group", {

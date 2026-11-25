@@ -247,9 +247,11 @@ describe("NewWorkflowModal editing", () => {
         const next = screen.getByRole("button", { name: "Next" });
         expect(skip.parentElement).toBe(next.parentElement);
         expect(skip).toHaveClass("text-gray-500");
+        // Back is a black pill at the footer's left; the step's Next is blue.
         expect(screen.getByRole("button", { name: "Back" })).toHaveClass(
-            "bg-blue-600/90",
+            "bg-gray-950/88",
         );
+        expect(next).toHaveClass("bg-blue-600/90");
 
         await user.click(next);
         expect(

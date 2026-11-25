@@ -14,13 +14,9 @@ export const INTAKE_CHANNEL_LABELS: Record<IntakeChannel, string> = {
   teams: "Teams",
 };
 
-/**
- * Where a request came from. Requests recorded through Postmark, before
- * MikeGC read the intake mailbox itself, keep "Email".
- */
+/** Where a request came from. */
 export const INTAKE_SOURCE_LABELS: Record<IntakeSource, string> = {
   manual: "Manual",
-  email: "Email",
   ...INTAKE_CHANNEL_LABELS,
 };
 

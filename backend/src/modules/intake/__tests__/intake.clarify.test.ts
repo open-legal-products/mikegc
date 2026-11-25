@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import {
   MAX_QUESTIONS,
-  QUESTION_FRAMING,
   buildReadinessPrompt,
   questionBody,
   questionIds,
@@ -51,9 +50,18 @@ describe("MikeGC's questions to the requester", () => {
     expect(sanitizeQuestions("not a list")).toEqual([]);
     expect(sanitizeQuestions(null)).toEqual([]);
   });
-  it("frames the list in MikeGC's own words", () => {
-    expect(questionBody(["Is Acme a customer?", "What is the value?"])).toBe(
-      `${QUESTION_FRAMING}\n1. Is Acme a customer?\n2. What is the value?`,
+  it("frames the questions in MikeGC's own words, by stage and count", () => {
+    expect(questionBody(["Is Acme a customer?"], "rule")).toBe(
+      "One quick question so it gets to the right person:\nIs Acme a customer?",
+    );
+    expect(questionBody(["Is Acme a customer?", "What is the value?"], "rule")).toBe(
+      "A couple of quick questions so it gets to the right person:\n1. Is Acme a customer?\n2. What is the value?",
+    );
+    expect(questionBody(["Could you share the MSA?"], "readiness")).toBe(
+      "One thing Legal will need before they start:\nCould you share the MSA?",
+    );
+    expect(questionBody(["A?", "B?", "C?"], "readiness")).toBe(
+      "A few things Legal will need before they start:\n1. A?\n2. B?\n3. C?",
     );
   });
   it("names each round's question the same on every retry", () => {
@@ -100,6 +108,24 @@ describe("the readiness check's prompt", () => {
     expect(user).not.toContain("a".repeat(20_001));
     expect(user).toContain("--- Thread ---\nMikeGC, 2 Nov 2026, 09:00 UTC:\nWhich entity signs?");
     expect(user).toContain("Couldn't read: scan.pdf");
+  });
+  it("reads only the newest part of a very long thread", () => {
+    const { user } = buildReadinessPrompt({
+      model,
+      request: { subject: "Q", description: "D" },
+      thread: [
+        ...Array.from({ length: 49 }, () => ({ author: "Jane (requester)", at: "earlier", text: "y".repeat(20_000) })),
+        { author: "Jane (requester)", at: "now", text: "The signing entity is Acme Ltd." },
+      ],
+      documents: [],
+      unread: [],
+      condition: null,
+      workflow: null,
+      playbook: null,
+    });
+    expect(user.length).toBeLessThan(40_000);
+    expect(user).toContain("--- Thread ---\n[Earlier messages left out.]");
+    expect(user).toContain("The signing entity is Acme Ltd.");
   });
   it("reads a workflow's instructions", () => {
     const { user } = buildReadinessPrompt({

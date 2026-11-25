@@ -1,3 +1,6 @@
+/** Boundary that has taken responsibility for reporting or handling a failure. */
+export type ReportingOwner = "backend";
+
 // Authored wire contracts. No server, browser, UI or storage dependencies.
 
 export type TabularReviewHistoryStatus = {
@@ -540,6 +543,14 @@ export type AssistantEvent =
        * "invalid_api_key": the provider rejected the caller's key.
        */
       code?: AssistantErrorCode;
+      /**
+       * The server's request id for the turn that failed (also the
+       * X-Request-ID header), so a user can quote it to support. Only on the
+       * terminal error frame a route writes; never on a persisted event.
+       */
+      request_id?: string;
+      /** Reporting responsibility, not confirmation of telemetry delivery. Absent on older servers. */
+      reporting_owner?: ReportingOwner;
     };
 
 export type AssistantErrorCode = "invalid_api_key";
@@ -570,6 +581,13 @@ export type WordEditResolutionStatus = "accepted" | "rejected";
 export type GoogleWorkspaceProvider = 'gmail' | 'google-calendar';
 export interface GoogleDriveStatus {
     configured: boolean;
+    /**
+     * False when the operator switched Drive off for the deployment
+     * (GOOGLE_WORKSPACE_DISABLED_PROVIDERS): Discover does not offer it, new
+     * connections and Picker sessions are refused, and the assistant has none
+     * of its tools.
+     */
+    available: boolean;
     schemaReady?: boolean;
     connected: boolean;
     scope: string | null;
@@ -623,6 +641,23 @@ export interface GoogleWorkspaceStatus {
     grantId?: string;
     accountEmail?: string;
     redirectUri: string | null;
+}
+/** The CourtListener connector in one workspace (GET /user/integrations/courtlistener). */
+export interface CourtListenerConnectorStatus {
+    /** The workspace's on/off switch for US case law research. */
+    enabled: boolean;
+    /**
+     * Listed under Installed: switched on with a usable token here (the
+     * user's or the organization's) or the deployment's bulk index, or the
+     * user has saved their own token here. Otherwise it is offered in Discover.
+     */
+    installed: boolean;
+    /** The user saved their own token for this workspace. */
+    ownToken: boolean;
+    /** Whose token lookups run on: the user's own or their organization's. */
+    tokenSource: "user" | "org" | null;
+    /** The deployment answers lookups from its bulk index. */
+    bulkData: boolean;
 }
 /** A built-in connector tool and whether the user has switched it on. */
 export interface NativeConnectorTool {
@@ -762,12 +797,8 @@ export interface IntakeRequestSummary extends Omit<IntakeDetails, "description">
   capabilities: { assign: boolean; cancel: boolean; delete: boolean };
 }
 export interface IntakeRequestPage { requests: IntakeRequestSummary[]; next_cursor: string | null }
-/**
- * Where a request came from: typed by a member, or recorded by MikeGC from a
- * channel. "email" is a request recorded through Postmark, before MikeGC
- * read the intake mailbox itself.
- */
-export type IntakeSource = "manual" | "email" | "slack" | "outlook" | "gmail" | "teams";
+/** Where a request came from: typed by a member, or recorded by MikeGC from a channel. */
+export type IntakeSource = "manual" | "slack" | "outlook" | "gmail" | "teams";
 /** A channel MikeGC holds a conversation with the requester in. */
 export type IntakeChannel = "slack" | "outlook" | "gmail" | "teams";
 /**
@@ -938,8 +969,6 @@ export interface IntakeAutomationSettings {
       /** Why the connection isn't working, in words an admin can act on. */
       error: string | null;
     };
-    /** The organization recorded email through Postmark: it stops until a mailbox is connected. */
-    needs_reconnect: boolean;
   };
   slack: {
     enabled: boolean;
@@ -1005,6 +1034,12 @@ export interface IntakeAutomationUpdate {
   teams_tenant_id?: string;
   /** Write-only. Saving it checks the app's credentials with Microsoft. */
   teams_client_secret?: string;
+  /**
+   * Copy the connected Outlook mailbox's Entra app (tenant ID, client ID and
+   * client secret) into Teams, then check it with Microsoft as a typed one
+   * is. Not sent with teams_app_id, teams_tenant_id or teams_client_secret.
+   */
+  teams_use_outlook_app?: true;
   slack_enabled?: boolean;
   /** Write-only. Saving a bot token checks it with Slack first. */
   slack_signing_secret?: string;
@@ -1053,6 +1088,19 @@ export type IntakeMailboxConnection =
       client_id: string;
       /** Write-only; may be left out to keep the saved one. */
       client_secret?: string;
+      use_teams_app?: never;
+    }
+  | {
+      provider: "graph";
+      mailbox: string;
+      /**
+       * Connect with the Teams channel's Entra app: its tenant ID, client ID
+       * and client secret are copied to the mailbox's connection.
+       */
+      use_teams_app: true;
+      tenant_id?: never;
+      client_id?: never;
+      client_secret?: never;
     }
   | {
       provider: "gmail";

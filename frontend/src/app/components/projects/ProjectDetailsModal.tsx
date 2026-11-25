@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Users } from "lucide-react";
 import { Modal } from "@/app/components/modals/Modal";
 import { ModalSelect } from "@/app/components/modals/ModalSelect";
@@ -14,7 +14,8 @@ import type {
     Project,
 } from "@/app/components/shared/types";
 import { listOrgs, type Org } from "@/app/lib/mikeApi";
-import { userFacingApiError } from "@/app/lib/userFacingError";
+import { useAssignLatest } from "@/app/hooks/useLatestRef";
+import { notifyError } from "@/app/lib/userFacingError";
 import { ProjectPracticeField } from "./ProjectPracticeField";
 
 const PERSONAL_WORKSPACE = "__personal__";
@@ -50,7 +51,8 @@ export function ProjectDetailsModal({
     const [orgs, setOrgs] = useState<Org[]>([]);
     const [saving, setSaving] = useState(false);
     const [saved, setSaved] = useState(false);
-    const [error, setError] = useState<string | null>(null);
+    // A failed update's Retry re-runs the latest save, not the one that failed.
+    const retrySave = useRef<() => void>(() => {});
     const projectId = project?.id ?? null;
     const projectName = project?.name ?? "";
     const projectCmNumber = project?.cm_number ?? "";
@@ -65,7 +67,6 @@ export function ProjectDetailsModal({
         setPracticeDraft(projectPractice);
         setVisibilityDraft(projectVisibility);
         setSaved(false);
-        setError(null);
     }, [
         open,
         projectId,
@@ -124,13 +125,14 @@ export function ProjectDetailsModal({
         return options;
     }, [orgs, project?.org_id, project?.organization_name]);
 
+    useAssignLatest(retrySave, () => void handleSave());
+
     if (!project) return null;
 
     async function handleSave() {
         if (!canEdit || saving || !hasChanges || !trimmedName) return;
         setSaving(true);
         setSaved(false);
-        setError(null);
         try {
             await onSave({
                 name: trimmedName,
@@ -146,11 +148,13 @@ export function ProjectDetailsModal({
             });
             setSaved(true);
         } catch (err: unknown) {
-            // An intentional 4xx (a name conflict, a refusal) says something
-            // the generic line cannot; anything else still falls back to it.
-            setError(
-                userFacingApiError(err, "Could not update project details."),
-            );
+            // A notice, not footer text: an intentional 4xx (a name conflict,
+            // a refusal) says what to fix; anything else offers Retry.
+            notifyError(err, {
+                action: "update the project details",
+                onRetry: () => retrySave.current(),
+                dedupeKey: `project-details:${project?.id}`,
+            });
         } finally {
             setSaving(false);
         }
@@ -171,9 +175,7 @@ export function ProjectDetailsModal({
                     : undefined
             }
             footerStatus={
-                error ? (
-                    <span className="text-sm text-red-600">{error}</span>
-                ) : saved ? (
+                saved ? (
                     <span className="text-sm text-gray-400">Updated</span>
                 ) : null
             }
@@ -199,7 +201,6 @@ export function ProjectDetailsModal({
                         onChange={(e) => {
                             setNameDraft(e.target.value);
                             setSaved(false);
-                            setError(null);
                         }}
                         disabled={!canEdit || saving}
                         placeholder="Add project name"
@@ -217,7 +218,6 @@ export function ProjectDetailsModal({
                         onChange={(e) => {
                             setCmDraft(e.target.value);
                             setSaved(false);
-                            setError(null);
                         }}
                         disabled={!canEdit || saving}
                         placeholder="Add a CM number..."
@@ -236,7 +236,6 @@ export function ProjectDetailsModal({
                         onChange={(value) => {
                             setPracticeDraft(value);
                             setSaved(false);
-                            setError(null);
                         }}
                         disabled={!canEdit || saving}
                     />
@@ -261,7 +260,6 @@ export function ProjectDetailsModal({
                         onChange={(next) => {
                             setVisibilityDraft(next);
                             setSaved(false);
-                            setError(null);
                         }}
                         organizationName={project.organization_name}
                         resourceNoun="project"

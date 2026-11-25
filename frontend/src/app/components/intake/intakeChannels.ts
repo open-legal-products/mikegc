@@ -83,6 +83,9 @@ const MAIL_SETTINGS: IntakeHelpItem[] = [
 
 const CHAT_OVERVIEW = (where: string) =>
   `People write @MikeGC in ${where} to send a message, or the thread it's in, to Legal. MikeGC asks for missing details, posts a lawyer's questions and replies with the resolution in the same thread.`;
+/** The help for reusing the other Microsoft channel's Entra app. */
+const SAME_APP_TEXT = (other: string) =>
+  `Uses the Entra app ${other} is set up with, so its details aren't typed twice. MikeGC keeps its own copy of the client secret: changing it in ${other} later doesn't change it here. A separate app for each channel is safer, since a leaked secret then reaches only one.`;
 
 export const INTAKE_CHANNEL_GUIDES: Record<IntakeChannelId, IntakeChannelGuide> =
   {
@@ -91,19 +94,15 @@ export const INTAKE_CHANNEL_GUIDES: Record<IntakeChannelId, IntakeChannelGuide> 
       steps: [
         {
           title: "Register an Entra app",
-          text: "In Microsoft Entra ID, register an app (or reuse the Teams one) and create a client secret.",
+          text: "In Microsoft Entra ID, register an app and create a client secret, or use the app Teams is set up with.",
         },
         {
-          title: "Grant mail permissions",
-          text: "Give it the Mail.ReadWrite and Mail.Send application permissions, with admin consent.",
-        },
-        {
-          title: "Limit it to the intake mailbox",
-          text: "Add an Exchange RBAC for Applications management scope, so the app can open the intake mailbox only.",
+          title: "Give it the intake mailbox only",
+          text: "In Exchange Online PowerShell, assign the app the Application Mail.ReadWrite and Application Mail.Send roles with a management scope that holds only the intake mailbox (RBAC for Applications). Don't grant mail permissions in Entra ID: those cover every mailbox.",
         },
         {
           title: "Connect",
-          text: "Enter the intake address, tenant ID, client ID and client secret, then choose Connect.",
+          text: "Enter the intake address and the app's tenant ID, client ID and client secret, or turn on Use the same app as Teams, then choose Connect.",
         },
         ...MAIL_FINISH_STEPS,
       ],
@@ -115,6 +114,10 @@ export const INTAKE_CHANNEL_GUIDES: Record<IntakeChannelId, IntakeChannelGuide> 
         {
           title: "Tenant ID, client ID and client secret",
           text: "From the Entra app. The secret is write-only: once saved it is never shown.",
+        },
+        {
+          title: "Use the same app as Teams",
+          text: SAME_APP_TEXT("Teams"),
         },
         ...MAIL_SETTINGS,
       ],
@@ -204,13 +207,17 @@ export const INTAKE_CHANNEL_GUIDES: Record<IntakeChannelId, IntakeChannelGuide> 
         },
         {
           title: "Add its keys",
-          text: "Enter the app ID, tenant ID and client secret here, turn Teams on and save.",
+          text: "Enter the app ID, tenant ID and client secret here, or turn on Use the same app as Outlook, then save.",
         },
       ],
       settings: [
         {
           title: "Teams events URL",
           text: "The Azure Bot's messaging endpoint, where Teams sends MikeGC the messages it is mentioned in.",
+        },
+        {
+          title: "Use the same app as Outlook",
+          text: SAME_APP_TEXT("Outlook"),
         },
         {
           title: "Document access",
@@ -248,16 +255,26 @@ export type IntakeMailboxForm = {
   tenantId: string;
   clientId: string;
   clientSecret: string;
+  /**
+   * Outlook: connect with the Teams channel's Entra app instead of the IDs
+   * and secret above, which are then not sent.
+   */
+  useTeamsApp: boolean;
   /** Gmail: the service account's JSON key, as Google Cloud downloads it. */
   serviceAccountKey: string;
 };
 
 const EMAIL_SHAPE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
 
-/** The connect form for `provider`, starting from what is saved. */
+/**
+ * The connect form for `provider`, starting from what is saved. A first
+ * Outlook connection starts with the Teams app when Teams is set up, so the
+ * same app isn't typed twice; reconnecting keeps the saved details.
+ */
 export function intakeMailboxForm(
   provider: IntakeMailProvider,
   email: IntakeAutomationSettings["email"],
+  teamsConfigured = false,
 ): IntakeMailboxForm {
   const same = email.provider === provider;
   return {
@@ -266,8 +283,22 @@ export function intakeMailboxForm(
     tenantId: same ? (email.graph.tenant_id ?? "") : "",
     clientId: same ? (email.graph.client_id ?? "") : "",
     clientSecret: "",
+    useTeamsApp: provider === "graph" && !same && teamsConfigured,
     serviceAccountKey: "",
   };
+}
+
+/**
+ * The connected Outlook mailbox's Entra app, which Teams can be set up with,
+ * or null while Outlook isn't connected with all of it.
+ */
+export function intakeOutlookApp(
+  email: IntakeAutomationSettings["email"],
+): { tenantId: string; clientId: string } | null {
+  const { tenant_id, client_id, secret_set } = email.graph;
+  return email.provider === "graph" && tenant_id && client_id && secret_set
+    ? { tenantId: tenant_id, clientId: client_id }
+    : null;
 }
 
 /**
@@ -316,6 +347,7 @@ export function intakeMailboxFormProblem(
       return "Paste the service account's JSON key.";
     return null;
   }
+  if (form.useTeamsApp) return null;
   if (!form.tenantId.trim()) return "Enter the Microsoft 365 tenant ID.";
   if (!form.clientId.trim()) return "Enter the Entra app's client ID.";
   if (!form.clientSecret.trim() && !secretSaved)
@@ -332,6 +364,7 @@ export function intakeMailboxConnection(
     const key = form.serviceAccountKey.trim();
     return { provider: "gmail", mailbox, ...(key ? { service_account_key: key } : {}) };
   }
+  if (form.useTeamsApp) return { provider: "graph", mailbox, use_teams_app: true };
   const secret = form.clientSecret.trim();
   return {
     provider: "graph",

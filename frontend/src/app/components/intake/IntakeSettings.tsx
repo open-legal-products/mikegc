@@ -5,7 +5,7 @@ import type { IntakeAutomationSettings } from "@mike/contracts";
 import { getIntakeAutomation } from "@/app/lib/mikeApi";
 import { describeError } from "@/app/lib/userFacingError";
 import { EmptyState } from "@/app/components/ui/empty-state";
-import { PillButtonUI } from "@/shared/ui/PillButtonUI";
+import { PillButtonUI } from "@mike/ui";
 import { intakeModelsHref, intakeRulesHref } from "./intakeQuery";
 import {
   IntakeChannelsSection,

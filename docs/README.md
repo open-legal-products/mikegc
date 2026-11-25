@@ -13,7 +13,8 @@
 ## Features and clients
 
 - [Intake](intake.md): intake setup, access, retention and verification
-- [Automated intake](intake-automation.md): recording requests from email and Slack, with AI triage
+- [Automated intake](intake-automation.md): recording requests from email, Slack and Teams, with the intake agent
+- [Intake agent design](intake-agent-design.md): why one agent loop handles channel messages, and how it was built
 
 - [Organization offboarding](organization-offboarding.md) — member removal,
   account deletion, shared-work transfer and owner-only recovery

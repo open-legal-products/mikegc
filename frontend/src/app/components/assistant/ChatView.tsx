@@ -36,8 +36,13 @@ import { useQuickActions } from "@/app/hooks/useQuickActions";
 import { resolveDocumentViewType } from "@/app/lib/documentViewType";
 import type { ChatInputHandle } from "./ChatInput";
 import { ChatInputPrompt } from "./ChatInputPrompt";
-import { ResponseSelectionMenuUI } from "@/shared/ui/ResponseSelectionMenuUI";
-import type { MessageExcerpt } from "@/shared/lib/messageExcerpts";
+import {
+    ResponseSelectionMenuUI,
+    HeaderButtonUI,
+    HeaderButtonsUI,
+    headerButtonClassName,
+} from "@mike/ui";
+import type { MessageExcerpt } from "@mike/client";
 import { assistantSidePanelTabId } from "./AssistantSidePanel";
 import { AssistantDocumentPanelHost } from "./AssistantDocumentPanelHost";
 import {
@@ -74,11 +79,6 @@ import {
 } from "@/app/hooks/useItemWorkspace";
 import { resolvePanelDocumentVersionResult } from "./panelDocumentVersion";
 import { LIQUID_GLASS_TRANSLUCENT_ACTION_CLASS } from "@/app/components/ui/liquid-surface";
-import {
-    HeaderButtonUI,
-    HeaderButtonsUI,
-    headerButtonClassName,
-} from "@/shared/ui/HeaderButtonsUI";
 import {
     HeaderActionsMenu,
     type HeaderActionsMenuItem,
@@ -1099,6 +1099,9 @@ export function AssistantChatColumn({
         [registerPane, paneId, canWrite, chatLoading],
     );
 
+    const isDocReloading = useCallback((id: string) => reloadingDocIds.has(id), [reloadingDocIds]);
+    const isEditReloading = useCallback((id: string) => reloadingEditIds.has(id), [reloadingEditIds]);
+
     return (
         <DocumentWorkspaceScope orgId={attachmentOrgId}>
             {/* Chat column */}
@@ -1304,12 +1307,8 @@ export function AssistantChatColumn({
                                                             handleEditResolved
                                                         }
                                                         onEditError={handleEditError}
-                                                        isDocReloading={(docId) =>
-                                                            reloadingDocIds.has(docId)
-                                                        }
-                                                        isEditReloading={(editId) =>
-                                                            reloadingEditIds.has(editId)
-                                                        }
+                                                        isDocReloading={isDocReloading}
+                                                        isEditReloading={isEditReloading}
                                                         resolvedEditStatuses={
                                                             resolvedEditStatuses
                                                         }

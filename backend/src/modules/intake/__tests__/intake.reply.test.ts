@@ -2,7 +2,7 @@ import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { automatedIntakeRpc, memoryDb, type MemoryDb } from "./memoryDb";
 
 const mocks = vi.hoisted(() => ({
-  completeText: vi.fn(),
+  stream: vi.fn(),
   getEffectiveApiKeys: vi.fn(),
   envApiKeys: vi.fn(),
   createDocumentVersion: vi.fn(),
@@ -14,9 +14,9 @@ const mocks = vi.hoisted(() => ({
 }));
 vi.mock("../../../lib/llm", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../../lib/llm")>()),
-  completeText: mocks.completeText,
+  streamChatWithTools: mocks.stream,
 }));
-vi.mock("../../user/user.service", () => ({
+vi.mock("../../../lib/providerCredentials/index", () => ({
   getEffectiveApiKeys: mocks.getEffectiveApiKeys,
   envApiKeys: mocks.envApiKeys,
 }));
@@ -34,7 +34,8 @@ vi.mock("../../../lib/dbq/enqueue", () => ({ enqueueDbJob: mocks.enqueueDbJob })
 vi.mock("../../../lib/queue/conversionQueue", () => ({ enqueueConversion: mocks.enqueueConversion }));
 import type { DbJob } from "../../../lib/dbq/types";
 import { encryptString } from "../../../lib/mcp/client";
-import { handleIntakeReply, markIntakeReplyFailed } from "../intake.reply";
+import { handleIntakeAgent, markIntakeAgentFailed } from "../intake.agentJob";
+import { replyCall, ruleCall, scripted, updateCall, type ScriptedCall } from "./agentScript";
 
 const org = "00000000-0000-4000-8000-000000000001";
 const owner = "00000000-0000-4000-8000-000000000002";
@@ -44,10 +45,16 @@ const inboundId = "00000000-0000-4000-8000-0000000000e2";
 const env = { ...process.env };
 let memory: MemoryDb;
 let slackCalls: { method: string; params: Record<string, string> }[];
+let model: ReturnType<typeof scripted>;
+/** The model makes these tool calls, one list per step. */
+function modelCalls(...steps: ScriptedCall[][]) {
+  model = scripted(steps);
+  mocks.stream.mockImplementation(model.stream);
+}
 
 const job = (): DbJob => ({
   id: "job-1",
-  kind: "intake.reply",
+  kind: "intake.agent",
   payload: { inboundId, orgId: org },
   status: "running",
   attempts: 1,
@@ -56,7 +63,7 @@ const job = (): DbJob => ({
   claimed_at: "",
   finished_at: null,
   last_error: null,
-  dedupe_key: `intake.reply:${inboundId}`,
+  dedupe_key: `intake.agent:${inboundId}`,
   result: null,
   created_at: "",
 });
@@ -184,6 +191,7 @@ beforeEach(() => {
   mocks.uploadFile.mockResolvedValue(undefined);
   mocks.downloadFile.mockResolvedValue(new Uint8Array([1, 2, 3]).buffer);
   mocks.enqueueDbJob.mockResolvedValue({ id: "job-2", deduped: false });
+  modelCalls();
   stubSlack({
     ts: "1793611000.000500",
     user: "U1",
@@ -197,9 +205,9 @@ afterAll(() => {
 });
 
 describe("a requester's reply in the thread", () => {
-  it("is recorded with its author and files, and an answer to a lawyer's question runs no AI", async () => {
+  it("is recorded with its author and files, and read by the agent", async () => {
     setup({ request: { assignee_id: sam } });
-    await expect(handleIntakeReply(memory.db, job())).resolves.toMatchObject({
+    await expect(handleIntakeAgent(memory.db, job())).resolves.toMatchObject({
       request_id: requestId,
       stage: null,
       files: 1,
@@ -224,10 +232,114 @@ describe("a requester's reply in the thread", () => {
     // Back to work, with the queue's New reply flag up.
     expect(request()).toMatchObject({ state: "in_review" });
     expect(request().last_reply_at).toBeTruthy();
-    expect(mocks.completeText).not.toHaveBeenCalled();
+    expect(model.requests[0]!.tools!.map((t) => t.function.name)).toEqual([
+      "reply",
+      "record_request",
+      "update_request",
+      "choose_rule",
+    ]);
+    // A model that says nothing sends nothing.
+    expect(memory.rows("intake_messages")).toHaveLength(1);
     expect(memory.rows("intake_inbound")[0]).toMatchObject({ status: "done", payload: null });
   });
-  it("runs triage again over the thread when MikeGC asked to choose a rule, and settles on it", async () => {
+  it("updates the request's details from a reply, saying so in a note", async () => {
+    setup({ request: { assignee_id: sam, state: "in_review" } });
+    modelCalls([updateCall({ due_date: "2026-11-14", summary: "An NDA with Acme, a customer." })]);
+    await handleIntakeAgent(memory.db, job());
+    expect(model.results).toEqual([["updated the summary, the due date"]]);
+    expect(request()).toMatchObject({
+      requested_by_date: "2026-11-14",
+      // The original message stays below the new summary.
+      description: "An NDA with Acme, a customer.\n\n--- Original message ---\nPlease review.",
+    });
+    expect(memory.rows("intake_messages").find((m) => m.kind === "note")).toMatchObject({
+      automated: true,
+      body: "Updated the summary and the due date to 14 Nov 2026 from the requester's reply.",
+    });
+    expect(memory.rpcCalls.find((c) => c.name === "intake_update_automated")?.args).not.toHaveProperty("p_assignee");
+  });
+  it("never changes a detail a member has edited", async () => {
+    setup({ request: { assignee_id: sam, state: "in_review", member_edited_fields: ["requested_by_date"] } });
+    modelCalls([updateCall({ due_date: "2026-11-14", subject: "Review the Acme customer NDA" })]);
+    await handleIntakeAgent(memory.db, job());
+    expect(model.results).toEqual([["updated the subject; not changed: the due date (Legal edited it)"]]);
+    expect(model.requests[0]!.messages[0]!.content).toContain('"edited_by_legal":["the due date"]');
+    expect(request()).toMatchObject({ subject: "Review the Acme customer NDA" });
+    expect(request().requested_by_date).toBeUndefined();
+  });
+  it("plans again rather than overwrite details changed since its plan was made", async () => {
+    // A plan saved before a retry, made from version 1; a newer reply's
+    // update has since moved the request on.
+    const newer = "An NDA with Acme, a customer, needed by Friday.";
+    setup({
+      request: { assignee_id: sam, state: "in_review", version: 2, description: newer },
+      payload: {
+        ...slackReply,
+        recorded: true,
+        agent: {
+          agent: true,
+          update: { subject: null, description: "An NDA with Acme.", requested_by_date: null, lines: {} },
+        },
+        agentStage: null,
+        agentRound: 0,
+        agentVersion: 1,
+      },
+    });
+    await handleIntakeAgent(memory.db, job());
+    expect(mocks.stream).toHaveBeenCalledTimes(1);
+    expect(request()).toMatchObject({ description: newer, version: 2 });
+    expect(memory.rows("intake_messages").filter((m) => m.kind === "note")).toEqual([]);
+  });
+  it("answers in the request's thread once the rule is decided, after updating it, without making it wait", async () => {
+    setup({ request: { assignee_id: sam, state: "in_review" } });
+    modelCalls([
+      updateCall({ summary: "An NDA with Acme, a customer." }),
+      replyCall("Thanks, I've added that Acme is a customer to your request."),
+    ]);
+    await handleIntakeAgent(memory.db, job());
+    expect(memory.rows("intake_messages").filter((m) => m.kind === "answer")).toEqual([
+      expect.objectContaining({
+        automated: true,
+        author_id: null,
+        body: "Thanks, I've added that Acme is a customer to your request.",
+      }),
+    ]);
+    expect(memory.rows("intake_outbound")).toEqual([expect.objectContaining({ kind: "answer", status: "pending" })]);
+    expect(queued("intake.deliver")).toHaveLength(1);
+    expect(request()).toMatchObject({ state: "in_review", description: expect.stringMatching(/^An NDA with Acme, a customer\./) });
+  });
+  it("answers once when the job is retried, without asking the model again", async () => {
+    setup({ request: { assignee_id: sam, state: "in_review" } });
+    modelCalls([replyCall("Thanks, noted.")]);
+    let failDone = true;
+    memory.intercept = ({ table, values }) => {
+      if (table === "intake_inbound" && (values as { status?: string })?.status === "done" && failDone) {
+        failDone = false;
+        return { code: "08006", message: "connection lost" };
+      }
+      return undefined;
+    };
+    await expect(handleIntakeAgent(memory.db, job())).rejects.toMatchObject({ code: "08006" });
+    await handleIntakeAgent(memory.db, job());
+    expect(mocks.stream).toHaveBeenCalledTimes(1);
+    expect(memory.rows("intake_messages").filter((m) => m.kind === "answer")).toHaveLength(1);
+    expect(memory.rows("intake_outbound")).toHaveLength(1);
+  });
+  it("answers once the rule it waited on is chosen", async () => {
+    setup({ request: { clarify_stage: "rule", clarify_rounds: 1 } });
+    modelCalls([ruleCall(1), replyCall("Thanks, that's with Legal now.")]);
+    await handleIntakeAgent(memory.db, job());
+    expect(request()).toMatchObject({ clarify_stage: null, assignee_id: sam, state: "in_review" });
+    expect(memory.rows("intake_messages").filter((m) => m.kind === "answer")).toEqual([
+      expect.objectContaining({ body: "Thanks, that's with Legal now." }),
+    ]);
+  });
+  it("leaves a closed request alone", async () => {
+    setup({ request: { assignee_id: sam, state: "resolved" } });
+    await handleIntakeAgent(memory.db, job());
+    expect(mocks.stream).not.toHaveBeenCalled();
+  });
+  it("runs the agent over the thread when MikeGC asked to choose a rule, and settles on it", async () => {
     setup({ request: { clarify_stage: "rule", clarify_rounds: 1 }, rulePreprocess: true });
     memory.rows("intake_messages").push({
       id: "q1",
@@ -235,14 +347,16 @@ describe("a requester's reply in the thread", () => {
       request_id: requestId,
       kind: "question",
       automated: true,
-      body: "Before Legal starts, MikeGC needs:\n1. Is Acme a customer or a supplier?",
+      body: "One quick question so it gets to the right person:\nIs Acme a customer or a supplier?",
       created_at: "2026-11-02T09:15:00.000Z",
     });
-    mocks.completeText.mockResolvedValue(JSON.stringify({ subject: "x", rule: 1, questions: [] }));
-    await handleIntakeReply(memory.db, job());
-    const prompt = mocks.completeText.mock.calls[0]![0].user as string;
-    expect(prompt).toContain("--- Thread after the request ---");
-    expect(prompt).toContain("MikeGC, 2 Nov 2026, 09:15 UTC:\nBefore Legal starts, MikeGC needs:");
+    modelCalls([ruleCall(1)]);
+    await handleIntakeAgent(memory.db, job());
+    const prompt = model.requests[0]!.messages[0]!.content;
+    expect(model.requests[0]!.tools!.map((t) => t.function.name)).toContain("choose_rule");
+    expect(prompt).toContain('REQUEST: {"state":"needs_information","rule":"undecided, waiting on the requester\'s answer"}');
+    expect(prompt).toContain("--- The thread since the request was recorded ---");
+    expect(prompt).toContain("MikeGC, 2 Nov 2026, 09:15 UTC:\nOne quick question so it gets to the right person:");
     expect(prompt).toContain("Jane Business (requester)");
     expect(prompt).toContain("Acme is a customer.");
     expect(request()).toMatchObject({ clarify_stage: null, assignee_id: sam, state: "in_review" });
@@ -256,17 +370,116 @@ describe("a requester's reply in the thread", () => {
   });
   it("asks once more while a round is left, as a question rather than an acknowledgement", async () => {
     setup({ request: { clarify_stage: "rule", clarify_rounds: 1 } });
-    mocks.completeText.mockResolvedValue(JSON.stringify({ rule: null, questions: ["What is the contract value?"] }));
-    await handleIntakeReply(memory.db, job());
+    modelCalls([replyCall("What is the contract value?")]);
+    await handleIntakeAgent(memory.db, job());
     expect(request()).toMatchObject({ clarify_stage: "rule", clarify_rounds: 2, state: "needs_information" });
     expect(memory.rows("intake_outbound")).toEqual([expect.objectContaining({ kind: "question" })]);
+    expect(memory.rows("intake_messages").find((m) => m.kind === "question")).toMatchObject({
+      body: "One quick question so it gets to the right person:\nWhat is the contract value?",
+    });
     expect(queued("intake.deliver")).toHaveLength(1);
+  });
+  it("asks and settles once when the job is retried, without asking the model again", async () => {
+    setup({ request: { clarify_stage: "rule", clarify_rounds: 0 }, rulePreprocess: true });
+    modelCalls([updateCall({ due_date: "2026-11-14" }), ruleCall(1)]);
+    let failDone = true;
+    memory.intercept = ({ table, values }) => {
+      if (table === "intake_inbound" && (values as { status?: string })?.status === "done" && failDone) {
+        failDone = false;
+        return { code: "08006", message: "connection lost" };
+      }
+      return undefined;
+    };
+    await expect(handleIntakeAgent(memory.db, job())).rejects.toMatchObject({ code: "08006" });
+    await handleIntakeAgent(memory.db, job());
+    expect(mocks.stream).toHaveBeenCalledTimes(1);
+    expect(request()).toMatchObject({ clarify_stage: null, assignee_id: sam, requested_by_date: "2026-11-14" });
+    expect(memory.rows("intake_messages").filter((m) => m.kind === "note")).toHaveLength(1);
+    // Preprocessing is queued for the round the plan was made at, once.
+    expect(queued("intake.preprocess")).toEqual([
+      expect.objectContaining({ dedupeKey: `intake.preprocess:${requestId}:0` }),
+    ]);
   });
   it("leaves a request that matches no rule unassigned once the rounds are used up", async () => {
     setup({ request: { clarify_stage: "rule", clarify_rounds: 2 } });
-    mocks.completeText.mockResolvedValue(JSON.stringify({ rule: null, questions: ["Still unsure?"] }));
-    await handleIntakeReply(memory.db, job());
+    modelCalls([replyCall("Still unsure?")], [ruleCall(0)]);
+    await handleIntakeAgent(memory.db, job());
+    expect(model.results).toEqual([
+      ["refused: MikeGC can't ask again on this request: call choose_rule"],
+      ["left for Legal to assign"],
+    ]);
     expect(request()).toMatchObject({ clarify_stage: null, assignee_id: null, state: "submitted" });
+    expect(memory.rows("intake_outbound")).toEqual([]);
+  });
+  it("retries, leaving the rule waiting, when the model fails at the rule stage", async () => {
+    setup({ request: { clarify_stage: "rule", clarify_rounds: 1 } });
+    mocks.stream.mockRejectedValue(new Error("provider overloaded"));
+    await expect(handleIntakeAgent(memory.db, job())).rejects.toThrow(/didn't decide the request's rule/);
+    expect(request()).toMatchObject({ clarify_stage: "rule", assignee_id: null, state: "needs_information" });
+    expect(memory.rows("intake_inbound")[0]!.payload).not.toHaveProperty("agent");
+  });
+  /** A plan saved before a retry, at the rule stage, from version 1. */
+  const stalePlan = (fields: Record<string, unknown> = {}) => ({
+    ...slackReply,
+    recorded: true,
+    agent: {
+      agent: true,
+      answer: "Thanks, I've added that Acme is a customer to your request.",
+      update: { subject: null, description: "An NDA with Acme, a customer.", requested_by_date: null, lines: {} },
+    },
+    agentStage: null,
+    agentRound: 1,
+    agentVersion: 1,
+    agentPlans: 1,
+    ...fields,
+  });
+  /** Before each automated update, something else changes the request. */
+  function changeBeforeUpdate(change: (request: Record<string, unknown>) => void) {
+    const rpc = memory.db.rpc.bind(memory.db);
+    (memory.db as unknown as { rpc: typeof rpc }).rpc = ((name: string, args?: Record<string, unknown>) => {
+      if (name === "intake_update_automated") change(request());
+      return rpc(name, args);
+    }) as typeof rpc;
+  }
+  it("plans again from the rule as it is now, once a newer reply has settled it", async () => {
+    setup({
+      request: { clarify_stage: "rule", clarify_rounds: 1, version: 1 },
+      payload: stalePlan({ agentStage: "rule" }),
+    });
+    // A newer reply's job settles rule 1 first.
+    let settled = false;
+    changeBeforeUpdate((r) => {
+      if (settled) return;
+      settled = true;
+      Object.assign(r, { clarify_stage: null, assignee_id: sam, state: "in_review", version: 2 });
+    });
+    modelCalls([replyCall("Thanks, noted.")]);
+    await handleIntakeAgent(memory.db, job());
+    expect(model.requests[0]!.messages[0]!.content).not.toContain("undecided");
+    // Answered, not asked: the request stays with the rule's member.
+    expect(request()).toMatchObject({ clarify_stage: null, assignee_id: sam, state: "in_review" });
+    expect(memory.rows("intake_messages").filter((m) => m.kind === "question")).toEqual([]);
+    expect(memory.rows("intake_messages").filter((m) => m.kind === "answer")).toEqual([
+      expect.objectContaining({ body: "Thanks, noted." }),
+    ]);
+  });
+  it("counts its plans across retries, dropping a stale update once they are used up", async () => {
+    setup({ request: { assignee_id: sam, state: "in_review", version: 1 }, payload: stalePlan({ agentPlans: 2 }) });
+    // The request moves on before every update.
+    changeBeforeUpdate((r) => {
+      r.version = Number(r.version) + 1;
+    });
+    modelCalls([updateCall({ summary: "An NDA with Acme, a customer." })]);
+    await handleIntakeAgent(memory.db, job());
+    expect(mocks.stream).toHaveBeenCalledTimes(1);
+    expect(memory.rows("intake_messages").filter((m) => m.kind === "note")).toEqual([]);
+  });
+  it("doesn't say it changed the request when its stale update is dropped", async () => {
+    setup({ request: { assignee_id: sam, state: "in_review", version: 2 }, payload: stalePlan({ agentPlans: 3 }) });
+    await handleIntakeAgent(memory.db, job());
+    expect(mocks.stream).not.toHaveBeenCalled();
+    expect(request()).toMatchObject({ description: "An NDA with Acme.\n\n--- Original message ---\nPlease review." });
+    expect(memory.rows("intake_messages").filter((m) => ["note", "answer"].includes(String(m.kind)))).toEqual([]);
     expect(memory.rows("intake_outbound")).toEqual([]);
   });
   it("queues the next round of preprocessing after an answer to its readiness check", async () => {
@@ -279,8 +492,8 @@ describe("a requester's reply in the thread", () => {
         clarify_preprocess: { with: { kind: "playbook", id: "pb-1" }, condition: "Customer contracts" },
       },
     });
-    await handleIntakeReply(memory.db, job());
-    expect(mocks.completeText).not.toHaveBeenCalled();
+    await handleIntakeAgent(memory.db, job());
+    expect(mocks.stream).not.toHaveBeenCalled();
     // Still waiting until that round decides.
     expect(request()).toMatchObject({ state: "needs_information", clarify_stage: "readiness" });
     expect(queued("intake.preprocess")).toEqual([
@@ -312,7 +525,7 @@ describe("a requester's reply in the thread", () => {
         references: ["first@mail.acme.test"],
       },
     });
-    await handleIntakeReply(memory.db, job());
+    await handleIntakeAgent(memory.db, job());
     expect(memory.rows("intake_messages")[0]).toMatchObject({
       kind: "reply",
       body: "Supplier.\n\nNot attached:\n- logo.png: not a PDF, Word, Excel or PowerPoint file",
@@ -330,16 +543,16 @@ describe("a requester's reply in the thread", () => {
   it("settles a reply whose request was deleted, or whose message was, without content", async () => {
     setup({});
     memory.rows("intake_inbound")[0]!.request_id = null;
-    await expect(handleIntakeReply(memory.db, job())).resolves.toEqual({ skipped: "request_gone" });
+    await expect(handleIntakeAgent(memory.db, job())).resolves.toEqual({ skipped: "request_gone" });
     expect(memory.rows("intake_inbound")[0]).toMatchObject({ status: "done", payload: null });
     setup({});
     stubSlack(null);
-    await expect(handleIntakeReply(memory.db, job())).resolves.toEqual({ skipped: "message_gone" });
+    await expect(handleIntakeAgent(memory.db, job())).resolves.toEqual({ skipped: "message_gone" });
     expect(memory.rows("intake_messages")).toEqual([]);
   });
   it("says so, without content, when it fails for good", async () => {
     setup({});
-    await markIntakeReplyFailed(memory.db, job());
+    await markIntakeAgentFailed(memory.db, job());
     expect(memory.rows("intake_inbound")[0]).toMatchObject({
       status: "failed",
       payload: null,

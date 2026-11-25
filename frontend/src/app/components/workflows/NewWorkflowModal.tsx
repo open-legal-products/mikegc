@@ -20,7 +20,7 @@ import { Modal } from "../modals/Modal";
 import { ModalSegmentedToggle } from "../modals/ModalSegmentedToggle";
 import { ModalSelect } from "../modals/ModalSelect";
 import { FieldLabel, FormTextInput } from "../ui/form-field";
-import { WorkflowSlashCommandUI } from "@/shared/ui/WorkflowSlashCommandUI";
+import { WorkflowSlashCommandUI } from "@mike/ui";
 import {
     ChatSkeuoIcon,
     TabularReviewSkeuoIcon,
@@ -729,7 +729,7 @@ export function NewWorkflowModal({
                                   (isEditing && !hasChanges),
                           }
             }
-            secondaryAction={
+            backAction={
                 !isEditing && step === "assets"
                     ? {
                           label: "Back",
@@ -744,14 +744,17 @@ export function NewWorkflowModal({
                             onClick: () => setStep("details"),
                             disabled: loading,
                         }
-                      : !isEditing && step === "details" && type === "assistant"
-                        ? {
-                              label: importedSkillName ?? "Upload markdown",
-                              icon: <Upload className="h-3.5 w-3.5" />,
-                              onClick: () => markdownInputRef.current?.click(),
-                              disabled: loading,
-                          }
-                        : undefined
+                      : undefined
+            }
+            secondaryAction={
+                !isEditing && step === "details" && type === "assistant"
+                    ? {
+                          label: importedSkillName ?? "Upload markdown",
+                          icon: <Upload className="h-3.5 w-3.5" />,
+                          onClick: () => markdownInputRef.current?.click(),
+                          disabled: loading,
+                      }
+                    : undefined
             }
             cancelAction={
                 !isEditing && step === "access"

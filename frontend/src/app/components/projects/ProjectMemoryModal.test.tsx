@@ -45,6 +45,12 @@ vi.mock("@/app/lib/mikeApi", async (importOriginal) => ({
   updateProjectMemory: vi.fn(),
 }));
 
+const notify = vi.hoisted(() => vi.fn());
+vi.mock("@/app/lib/userFacingError", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/app/lib/userFacingError")>()),
+  notifyError: notify,
+}));
+
 const CURRENT = {
   enabled: true,
   content: "# Matter facts",
@@ -280,13 +286,23 @@ describe("ProjectMemoryModal", () => {
     fireEvent.change(editor, {
       target: { value: "# Matter facts unsaved" },
     });
+    // The failed save is a notice with Retry, never footer text.
+    await waitFor(
+      () =>
+        expect(notify).toHaveBeenCalledWith(
+          expect.objectContaining({
+            message: "Project memory could not be saved. Your draft has been kept.",
+          }),
+          expect.objectContaining({
+            action: "save project memory",
+            onRetry: expect.any(Function),
+          }),
+        ),
+      { timeout: 3000 },
+    );
     expect(
-      await screen.findByText(
-        "Project memory could not be saved. Your draft has been kept.",
-        {},
-        { timeout: 3000 },
-      ),
-    ).toBeVisible();
+      screen.queryByText("Project memory could not be saved. Your draft has been kept."),
+    ).toBeNull();
 
     await user.click(screen.getByRole("button", { name: "Close" }));
     expect(onClose).not.toHaveBeenCalled();

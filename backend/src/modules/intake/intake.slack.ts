@@ -1,6 +1,8 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import {
+  acknowledgementLines,
   ChannelDeliveryError,
+  DOCUMENTS_ONLY_TEXT,
   memberSender,
   type ChannelAdapter,
   type ChannelLink,
@@ -53,6 +55,9 @@ export function isPermanentSlackError(error: unknown): boolean {
   return error instanceof SlackApiError && PERMANENT.has(error.code);
 }
 /** Codes meaning the bot token itself was refused. */
+/** How many users.info lookups for one message run at a time. */
+export const SLACK_LOOKUPS_AT_ONCE = 5;
+
 export const SLACK_TOKEN_ERRORS = new Set([
   "invalid_auth",
   "not_authed",
@@ -605,20 +610,10 @@ export function slackMessageText(
   message: OutboundMessage,
   options: { fromName: string; customize: boolean },
 ): string {
-  const lines: string[] = [];
-  if (message.acknowledgement) {
-    const ack = message.acknowledgement;
-    lines.push(
-      `Logged for Legal: <${ack.link}|${slackEscape(ack.subject)}>. ` +
-        (ack.assignee
-          ? `Assigned to ${slackEscape(ack.assignee)}.`
-          : "Not assigned to a reviewer yet."),
-    );
-    if (message.text) lines.push("", slackEscape(message.text));
-    return lines.join("\n");
-  }
+  if (message.acknowledgement)
+    return acknowledgementLines(message.acknowledgement, message.text, slackEscape).join("\n");
   const text = slackEscape(
-    message.text || (message.documents.length ? "Legal sent these documents." : ""),
+    message.text || (message.documents.length ? DOCUMENTS_ONLY_TEXT : ""),
   );
   if (message.author.kind === "member" && !options.customize) {
     const who = slackEscape(memberSender(message.author.name, options.fromName));
@@ -628,7 +623,7 @@ export function slackMessageText(
 }
 
 /** A Slack ts a little before `iso`, so a search starts before the first attempt. */
-function slackTsBefore(iso: string | null): string | undefined {
+export function slackTsBefore(iso: string | null): string | undefined {
   if (!iso) return undefined;
   const ms = Date.parse(iso);
   if (!Number.isFinite(ms)) return undefined;

@@ -1,9 +1,9 @@
 "use client";
 import type { IntakeDelivery } from "@mike/contracts";
 import { notifyError } from "@/app/lib/userFacingError";
-import { notifySuccess } from "@/shared/lib/errorNotifier";
+import { notifySuccess } from "@mike/client";
 import { cn } from "@/app/lib/utils";
-import { TextButtonUI } from "@/shared/ui/TextButtonUI";
+import { TextButtonUI } from "@mike/ui";
 import { intakeDeliveryStatus } from "./intakeConversation";
 
 /**

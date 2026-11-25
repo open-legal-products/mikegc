@@ -105,4 +105,14 @@ describe("intake RPC failures", () => {
     expect(JSON.stringify(result)).not.toContain("CONFIDENTIAL INPUT");
     expect(rpc).toHaveBeenCalledTimes(code === "40P01" ? 3 : 1);
   });
+  it("keeps an unexpected database error as the cause of the one it reports", async () => {
+    const error = { code: "XX000", message: "CONFIDENTIAL INPUT" };
+    const rpc = vi.fn(async () => ({ error }));
+    const result = await intakeRpc({ rpc } as unknown as Db, "intake_submit_request", {});
+    expect(result).toMatchObject({ ok: false, kind: "error" });
+    const reported = (result as { error: Error }).error;
+    // Which operation failed, and its code: never the database's own text.
+    expect(reported.message).toBe("Intake database operation intake_submit_request failed (XX000)");
+    expect(reported.cause).toBe(error);
+  });
 });

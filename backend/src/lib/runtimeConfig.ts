@@ -144,6 +144,55 @@ export function streamChunkTimeouts(env: NodeJS.ProcessEnv = process.env): {
   };
 }
 
+const GMAIL_SHARED_MAILBOX_GRANT =
+  /^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})=((?:[^@\s=,]+)?@[^@\s=,]+\.[^@\s=,]+)$/i;
+
+/**
+ * The intake mailboxes each organization may read and send from with the
+ * deployment's shared Gmail service account (INTAKE_GMAIL_SERVICE_ACCOUNT_KEY),
+ * by organization ID. INTAKE_GMAIL_SHARED_MAILBOXES lists
+ * `<organization id>=<address>` or `<organization id>=@<domain>` entries,
+ * separated by commas or whitespace. Domain-wide delegation lets the shared
+ * account act as any user in the delegating domain, so this list is what ties
+ * a workspace to its mailboxes: an organization with no entry can't use the
+ * shared account at all, and a malformed entry grants nothing.
+ */
+export function gmailSharedMailboxGrants(
+  env: NodeJS.ProcessEnv = process.env,
+): Map<string, string[]> {
+  const grants = new Map<string, string[]>();
+  for (const entry of (env.INTAKE_GMAIL_SHARED_MAILBOXES ?? "").split(/[\s,]+/)) {
+    const match = GMAIL_SHARED_MAILBOX_GRANT.exec(entry);
+    if (!match) continue;
+    const org = match[1]!.toLowerCase();
+    grants.set(org, [...(grants.get(org) ?? []), match[2]!.toLowerCase()]);
+  }
+  return grants;
+}
+
+/**
+ * What an operator should know at boot about the shared Gmail account's
+ * grants, or [] when nothing is visibly wrong. The list denies by default,
+ * so a forgotten variable or a mistyped entry looks the same as a refusal:
+ * mailboxes quietly stop being read. Entries are counted, never printed.
+ */
+export function gmailSharedMailboxWarnings(
+  env: NodeJS.ProcessEnv = process.env,
+): string[] {
+  const entries = (env.INTAKE_GMAIL_SHARED_MAILBOXES ?? "").split(/[\s,]+/).filter(Boolean);
+  const malformed = entries.filter((entry) => !GMAIL_SHARED_MAILBOX_GRANT.test(entry)).length;
+  const warnings: string[] = [];
+  if (malformed)
+    warnings.push(
+      `INTAKE_GMAIL_SHARED_MAILBOXES has ${malformed} ${malformed === 1 ? "entry that is" : "entries that are"} not "<organization id>=<address>" or "<organization id>=@<domain>" and ${malformed === 1 ? "grants" : "grant"} nothing (docs/intake-automation.md).`,
+    );
+  if (env.INTAKE_GMAIL_SERVICE_ACCOUNT_KEY?.trim() && entries.length === malformed)
+    warnings.push(
+      "INTAKE_GMAIL_SERVICE_ACCOUNT_KEY is set but INTAKE_GMAIL_SHARED_MAILBOXES grants no organization a mailbox, so no organization can use the shared Gmail account: mailboxes that relied on it are not read or replied from until each is listed (docs/intake-automation.md).",
+    );
+  return warnings;
+}
+
 function parsedUrl(value: string, name: string, errors: string[]): URL | null {
   try {
     const url = new URL(value);
@@ -205,6 +254,59 @@ export function authHandoffEncryptionSecret(
   return secret;
 }
 
+const LOOPBACK_HOST = /^(?:localhost|127(?:\.\d{1,3}){3}|\[::1\])$/i;
+
+/**
+ * Why browsers on the deployment's public origin cannot PUT to the storage
+ * URLs this backend signs, or [] when nothing is visibly wrong. Uploads go
+ * straight from the browser to `R2_PUBLIC_ENDPOINT_URL` (falling back to
+ * `R2_ENDPOINT_URL`), so a value only this server can reach fails every
+ * upload with a bare "Failed to fetch" and nothing at boot says why
+ * (MIKE-FRONTEND-28, 3D, 2Z). A warning, not a boot failure: a reverse
+ * proxy may legitimately make an unusual value work.
+ *
+ * Checked only when FRONTEND_URL is a real host; a loopback front end
+ * (local development) has no such problem.
+ */
+export function storagePublicEndpointWarnings(
+  env: NodeJS.ProcessEnv = process.env,
+): string[] {
+  const frontendRaw = env.FRONTEND_URL?.trim();
+  const endpointRaw =
+    env.R2_PUBLIC_ENDPOINT_URL?.trim() || env.R2_ENDPOINT_URL?.trim();
+  if (!frontendRaw || !endpointRaw) return [];
+  let frontend: URL;
+  let endpoint: URL;
+  try {
+    frontend = new URL(frontendRaw);
+    endpoint = new URL(endpointRaw);
+  } catch {
+    return [];
+  }
+  if (LOOPBACK_HOST.test(frontend.hostname)) return [];
+  const name = env.R2_PUBLIC_ENDPOINT_URL?.trim()
+    ? "R2_PUBLIC_ENDPOINT_URL"
+    : "R2_ENDPOINT_URL";
+  if (LOOPBACK_HOST.test(endpoint.hostname)) {
+    return [
+      `${name} points at loopback while FRONTEND_URL does not: browsers will try to upload to their own machine. Set R2_PUBLIC_ENDPOINT_URL to the storage URL browsers can reach (docs/deployment.md).`,
+    ];
+  }
+  // A bare single-label host (`storage`, `minio`) is a container/service
+  // name that resolves only inside the server's network.
+  if (!endpoint.hostname.includes(".") && !endpoint.hostname.startsWith("[")) {
+    return [
+      `${name} is an internal service name that browsers cannot resolve. Set R2_PUBLIC_ENDPOINT_URL to the storage URL browsers can reach (docs/deployment.md).`,
+    ];
+  }
+  if (frontend.protocol === "https:" && endpoint.protocol === "http:") {
+    return [
+      `${name} uses http under an https FRONTEND_URL: browsers block the upload as mixed content. Serve storage over https (docs/deployment.md).`,
+    ];
+  }
+  return [];
+}
+
 /**
  * Fail before the HTTP listener starts when the authentication boundary is not
  * usable. This deliberately lives outside app.ts so unit tests can import the
@@ -225,6 +327,33 @@ export function validateRuntimeConfiguration(
   }
 
   if (session.url) parsedUrl(session.url, "SUPABASE_URL", errors);
+
+  // The .env.example templates contain placeholder values that satisfy a
+  // non-emptiness check. A deployment that copies the template verbatim then
+  // runs with publicly known secrets: DOWNLOAD_SIGNING_SECRET signs download
+  // and blob capability tokens, and USER_API_KEYS_ENCRYPTION_SECRET derives
+  // the AES-256-GCM key that protects user-supplied provider API keys at
+  // rest. Reject the exact placeholders and anything too short to be a real
+  // secret; leave unset values alone because the consuming code fails on
+  // first use and some local setups do not exercise those features.
+  const secretChecks: Array<[string, string]> = [
+    ["DOWNLOAD_SIGNING_SECRET", "replace-with-a-random-32-byte-hex-string"],
+    ["USER_API_KEYS_ENCRYPTION_SECRET", "your-long-random-secret"],
+  ];
+  for (const [name, placeholder] of secretChecks) {
+    const rawValue = env[name];
+    if (!rawValue) continue;
+    // Consumers use the raw value, so whitespace-only values are configured
+    // secrets, not the absent/empty values they reject on first use.
+    const value = rawValue.trim();
+    if (value === placeholder) {
+      errors.push(
+        `${name} is still set to the .env.example placeholder; generate a unique value (openssl rand -hex 32)`,
+      );
+    } else if (value.length < 32) {
+      errors.push(`${name} must contain at least 32 characters`);
+    }
+  }
 
   if (env.AUTH_HANDOFF_ENCRYPTION_SECRET?.trim()) {
     if (env.AUTH_HANDOFF_ENCRYPTION_SECRET.trim().length < 32) {

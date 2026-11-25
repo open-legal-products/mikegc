@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import request from "supertest";
+import { isReported } from "../../lib/observability/sentry";
 import { streamAiSdk } from "../../lib/llm/aiSdk";
 import {
     callStep,
@@ -1416,12 +1417,24 @@ describe("POST /chat — streaming endpoint", () => {
         const doneIndex = res.text.indexOf("data: [DONE]");
         expect(errorIndex).toBeGreaterThanOrEqual(0);
         expect(doneIndex).toBeGreaterThan(errorIndex);
+        // The database's error is logged wrapped in the AppError that names
+        // the kind (and was reported first), not as a bare PostgREST object.
         expect(errorSpy).toHaveBeenCalledWith(
             "[chat/stream] failed to save assistant response",
             expect.objectContaining({
-                message: "terminal update failed (attempt 3)",
+                kind: "chat.message_save_failed",
+                cause: expect.objectContaining({
+                    message: "terminal update failed (attempt 3)",
+                }),
             }),
         );
+        const errorFrame = JSON.parse(
+            res.text
+                .split("\n")
+                .find((line) => line.includes("could not be saved"))!
+                .replace(/^data:\s*/, ""),
+        ) as { request_id?: string };
+        expect(errorFrame.request_id).toBe(res.headers["x-request-id"]);
     expect(scheduleMemoryConsolidation).not.toHaveBeenCalled();
         errorSpy.mockRestore();
     });
@@ -1452,14 +1465,18 @@ describe("POST /chat — streaming endpoint", () => {
         expect(errorSpy).toHaveBeenCalledWith(
             "[chat/stream] failed to reserve assistant message",
             expect.objectContaining({
-                message: "assistant reservation failed",
+                kind: "chat.message_reserve_failed",
+                cause: expect.objectContaining({
+                    message: "assistant reservation failed",
+                }),
             }),
         );
         errorSpy.mockRestore();
     });
 
     it("surfaces a stream failure as an in-stream error event, not an HTTP error", async () => {
-        runLLMStream.mockRejectedValue(new Error("upstream LLM failure"));
+        const original = new Error("upstream LLM failure");
+        runLLMStream.mockRejectedValue(original);
 
         const res = await request(app)
             .post("/chat")
@@ -1471,6 +1488,20 @@ describe("POST /chat — streaming endpoint", () => {
         expect(res.status).toBe(200);
         expect(res.text).toContain('"type":"error"');
         expect(res.text).toContain("[DONE]");
+        expect(isReported(original)).toBe(true);
+        expect(res.text).toContain('"reporting_owner":"backend"');
+        // The terminal frame carries the request id (the X-Request-ID header)
+        // so the user can quote the one handle that finds this failure.
+        const errorFrame = JSON.parse(
+            res.text
+                .split("\n")
+                .filter((line) => line.includes('"type":"error"'))
+                .at(-1)!
+                .replace(/^data:\s*/, ""),
+        ) as { message: string; request_id?: string; safe_to_display?: boolean };
+        expect(errorFrame.request_id).toBe(res.headers["x-request-id"]);
+        expect(errorFrame.request_id).toMatch(/^[0-9a-f-]{36}$/);
+        expect(errorFrame.safe_to_display).toBeUndefined();
 
         const metadata = JSON.parse(
             res.text
@@ -1621,7 +1652,7 @@ describe("POST /chat — streaming endpoint", () => {
             }));
             if (decision === "approve") {
                 expect(execute).toHaveBeenCalledExactlyOnceWith(
-                    "u1", approval, expect.anything(),
+                    { userId: "u1", orgId: null }, approval, expect.anything(),
                 );
                 expect(row.content).toContainEqual(expect.objectContaining({
                     type: "mcp_tool_call", approval_id: approval.id, status: "ok",
@@ -2191,6 +2222,8 @@ function makeRbacDb(
         orgMembers?: Record<string, unknown>[];
         profiles?: Record<string, unknown>[];
         chatWriteError?: string;
+        organization?: Record<string, unknown>;
+        orgProfile?: Record<string, unknown>;
     } = {},
 ) {
     return {
@@ -2261,6 +2294,10 @@ function makeRbacDb(
                 );
             if (table === "user_profiles")
                 return tableQuery(overrides.profiles ?? [], table);
+            if (table === "organizations")
+                return tableQuery(overrides.organization ?? null, table);
+            if (table === "org_profiles")
+                return tableQuery(overrides.orgProfile ?? null, table);
             return tableQuery(null, table);
         }),
         rpc: vi.fn((fn: string, args: unknown) => {
@@ -2402,6 +2439,44 @@ describe("chat writes are gated on content.edit (org RBAC)", () => {
                 orgId: "org-1",
             }),
         );
+    });
+
+    it("tells the assistant about the organization whose workspace the chat is in, and nothing for personal work", async () => {
+        const chatLib = await import("../../modules/chat/engine/index.js");
+        await seedResolvableModel();
+        mockedCreate.mockImplementation(
+            () =>
+                makeRbacDb("member", "u1", {
+                    chat: { project_id: null, org_id: "org-1" },
+                    organization: { id: "org-1", name: "Acme LLP", kind: "team" },
+                    orgProfile: {
+                        org_id: "org-1",
+                        about: "A law firm for software companies.",
+                        industry: null,
+                    },
+                }) as never,
+        );
+
+        await request(app)
+            .post("/chat")
+            .set("Authorization", "Bearer test")
+            .send({ ...VALID_BODY, model: "gpt-6-luna", chat_id: "chat-1" });
+
+        const inOrg = vi.mocked(chatLib.buildMessages).mock.calls.at(-1)?.[2] as string;
+        expect(inOrg).toContain("ORGANIZATION:");
+        expect(inOrg).toContain('"name": "Acme LLP"');
+        expect(inOrg).toContain('"about": "A law firm for software companies."');
+        expect(inOrg).not.toContain('"industry"');
+
+        await seedResolvableModel();
+        mockedCreate.mockImplementation(() => makeRbacDb("member", "u1") as never);
+        await request(app)
+            .post("/chat")
+            .set("Authorization", "Bearer test")
+            .send({ ...VALID_BODY, model: "gpt-6-luna" });
+
+        const personal = vi.mocked(chatLib.buildMessages).mock.calls.at(-1)?.[2];
+        expect(String(personal ?? "")).not.toContain("ORGANIZATION:");
     });
 
     it("treats a chat in an organization's project as a shared audience", async () => {

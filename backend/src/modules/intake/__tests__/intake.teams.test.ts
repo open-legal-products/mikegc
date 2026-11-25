@@ -6,7 +6,9 @@ vi.mock("../../../lib/storage", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../../lib/storage")>()),
   downloadFile: mocks.downloadFile,
 }));
+import { NonRetryableJobError } from "../../../lib/dbq/runner";
 import { encryptString } from "../../../lib/mcp/client";
+import { sendChatReply } from "../intake.automationJob";
 import { handleIntakeDeliver } from "../intake.deliver";
 import { clearMicrosoftTokens } from "../intake.microsoft";
 import {
@@ -153,7 +155,7 @@ describe("replying in Teams", () => {
     expect(calls.some((c) => c.url.includes("/drives/"))).toBe(false);
     const post = calls.find((c) => c.url.endsWith("/activities"))!;
     expect((post.body as { text: string }).text).toContain(
-      "Documents from Legal: nda.docx. Ask Legal for a copy.",
+      "I couldn't share nda.docx here, so ask Legal for a copy.",
     );
     expect(memory.rows("intake_outbound")[0]).toMatchObject({ status: "sent", documents: [{ left_out: true }] });
   });
@@ -168,7 +170,7 @@ describe("when Microsoft refuses a document or a retry finds a message", () => {
     await deliver();
     const post = calls.find((c) => c.url.endsWith("/activities"))!;
     expect((post.body as { text: string }).text).toContain(
-      "Documents from Legal: nda.docx. Ask Legal for a copy.",
+      "I couldn't share nda.docx here, so ask Legal for a copy.",
     );
     expect(memory.rows("intake_outbound")[0]).toMatchObject({ status: "sent", documents: [{ left_out: true }] });
   });
@@ -205,6 +207,52 @@ describe("when Microsoft refuses a document or a retry finds a message", () => {
     expect(calls.some((c) => c.url.startsWith(`${graphThread}/replies`))).toBe(true);
     expect(calls.some((c) => c.url.endsWith("/activities"))).toBe(true);
     expect(memory.rows("intake_outbound")[0]).toMatchObject({ status: "sent", external_id: "1793611111000" });
+  });
+});
+
+describe("answering in a Teams chat without a request", () => {
+  const settings = () => memory.rows("intake_automation")[0] as unknown as AutomationRow;
+  const inbound = { id: "00000000-0000-4000-8000-0000000000e1", org_id: org, source: "teams" as const, kind: "request" as const, status: "pending" as const, payload: null, request_id: null, error: null };
+  const payload = {
+    kind: "teams" as const,
+    tenant_id: "tenant-1",
+    service_url: "https://smba.trafficmanager.net/emea/",
+    conversation_id: "19:abc@thread.tacv2;messageid=1",
+    team_id: "team-1",
+    aad_group_id: "group-1",
+    channel_id: "19:abc@thread.tacv2",
+    root_message_id: "1",
+    team_name: null,
+    channel_name: null,
+    activity_id: "3",
+    from: { id: "29:jane", aad_object_id: null, name: "Jane Business" },
+    date: "2026-11-03T10:05:00Z",
+    text: "hi there",
+    files: [],
+  };
+  it("posts MikeGC's reply in the message's thread, escaped, as MikeGC", async () => {
+    setup(false);
+    await sendChatReply(memory.db, inbound, settings(), payload as never, "Hi! What can *Legal* help with?");
+    const posts = calls.filter((c) => c.url.endsWith("/activities"));
+    expect(posts).toHaveLength(1);
+    expect(posts[0]!.url).toBe(
+      "https://smba.trafficmanager.net/emea/v3/conversations/19%3Aabc%40thread.tacv2%3Bmessageid%3D1/activities",
+    );
+    expect(posts[0]!.body).toEqual({
+      type: "message",
+      textFormat: "markdown",
+      text: "Hi! What can \\*Legal\\* help with?",
+    });
+    // Nothing is recorded or uploaded for a chat reply.
+    expect(calls.some((c) => c.url.includes("/drives/"))).toBe(false);
+  });
+  it("fails without retrying when Teams is turned off", async () => {
+    setup(false);
+    const off = { ...settings(), teams_enabled: false };
+    await expect(
+      sendChatReply(memory.db, inbound, off, payload as never, "Hi!"),
+    ).rejects.toBeInstanceOf(NonRetryableJobError);
+    expect(calls.some((c) => c.url.endsWith("/activities"))).toBe(false);
   });
 });
 
@@ -267,6 +315,16 @@ describe("reading a Teams thread for a new request", () => {
     });
     const message = await teamsInboundMessage(settings(), { ...payload, completed: [] } as never);
     expect(message.text).toMatch(/Can someone check the Acme NDA\?[\s\S]*Jane Business, .*:\nplease review it$/);
+  });
+  it("counts dates from the mention, not from when a days-old thread began", async () => {
+    setup(false, (url) => {
+      if (url === graph) return Response.json({ ...root, createdDateTime: "2026-10-24T10:00:00Z" });
+      if (url.startsWith(`${graph}/replies`)) return Response.json({ value: [] });
+      return undefined;
+    });
+    const message = await teamsInboundMessage(settings(), { ...payload, completed: [] } as never);
+    expect(message.sender.name).toBe("Ana Sales");
+    expect(message.sentAt.toISOString()).toBe("2026-11-03T10:05:00.000Z");
   });
 });
 

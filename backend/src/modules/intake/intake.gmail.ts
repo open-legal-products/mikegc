@@ -8,6 +8,7 @@ import {
   headerValue,
   htmlToText,
   mailAddress,
+  mailHtml,
   normalizeMessageId,
   parseMailbox,
   addressList,
@@ -17,6 +18,7 @@ import {
   type MailHeader,
 } from "./intake.mail";
 import { encodedSize, mailBody, type ReadMail } from "./intake.outlook";
+import { gmailSharedMailboxGrants } from "../../lib/runtimeConfig";
 import { gmailServiceAccountKey } from "./intake.secrets";
 import type { AutomationRow } from "./intake.settingsRow";
 
@@ -96,16 +98,49 @@ export function deploymentGmailServiceAccount(): GmailServiceAccount | null {
  */
 export const gmailDelegateId = (account: GmailServiceAccount) => account.client_id;
 
+/** The mailboxes and @domains the operator lets this organization use the deployment's account for. */
+export const sharedGmailGrants = (orgId: string | null | undefined): string[] =>
+  (orgId && gmailSharedMailboxGrants().get(orgId.toLowerCase())) || [];
+
 /**
- * The organization's own service account, else the deployment's. A saved key
- * that can't be read (its encryption key changed) is null, not the
- * deployment's account acting in its place.
+ * Whether the operator lets this organization use the deployment's service
+ * account for this mailbox. Without it, any workspace's admin could have the
+ * shared account act as any user in its delegating domain.
  */
-export function gmailServiceAccount(row: Partial<AutomationRow>): GmailServiceAccount | null {
+export function sharedGmailMailboxAllowed(
+  orgId: string | null | undefined,
+  mailbox: string | null | undefined,
+): boolean {
+  const address = mailbox?.trim().toLowerCase();
+  if (!address) return false;
+  const domain = address.slice(address.lastIndexOf("@"));
+  return sharedGmailGrants(orgId).some((grant) => grant === address || grant === domain);
+}
+
+/**
+ * The organization's own service account, else the deployment's when the
+ * operator has granted the organization `mailbox` (the saved one by
+ * default). A saved key that can't be read (its encryption key changed) is
+ * null, not the deployment's account acting in its place.
+ */
+export function gmailServiceAccount(
+  row: Partial<AutomationRow>,
+  mailbox: string | null | undefined = row.email_mailbox,
+): GmailServiceAccount | null {
   if (row.gmail_service_account_key_encrypted)
     return parseGmailServiceAccount(gmailServiceAccountKey(row));
-  return deploymentGmailServiceAccount();
+  return sharedGmailMailboxAllowed(row.org_id, mailbox) ? deploymentGmailServiceAccount() : null;
 }
+
+/**
+ * Why `gmailServiceAccount` gave none when the deployment has an account the
+ * operator hasn't granted this organization for the mailbox; null for any
+ * other reason (no account at all, or a saved key that can't be read).
+ */
+export const noGmailAccountSentence = (row: Partial<AutomationRow>) =>
+  !row.gmail_service_account_key_encrypted && deploymentGmailServiceAccount()
+    ? "This deployment's service account isn't available for this mailbox. Connect Gmail with your organization's own service account's JSON key."
+    : null;
 
 /** The connected Gmail intake mailbox, or null without one or an account. */
 export function gmailMailbox(row: Partial<AutomationRow>): GmailMailbox | null {
@@ -115,12 +150,13 @@ export function gmailMailbox(row: Partial<AutomationRow>): GmailMailbox | null {
 }
 
 /** Why a connected Gmail mailbox can't be read: it has no service account. */
-export const noGmailAccount = () =>
+export const noGmailAccount = (row: Partial<AutomationRow>) =>
   new GmailApiError(
     0,
     "not_configured",
     true,
-    "Gmail has no service account. Reconnect Gmail with the service account's JSON key.",
+    noGmailAccountSentence(row) ??
+      "Gmail has no service account. Reconnect Gmail with the service account's JSON key.",
   );
 
 const clients = new Map<string, JWT>();
@@ -386,7 +422,9 @@ export async function gmailMarkRecorded(mailbox: GmailMailbox, id: string) {
       json: { addLabelIds: [label] },
     });
   } catch {
-    // A missing label never stops recording.
+    // A missing label never stops recording. The remembered id may be of a
+    // label since deleted in Gmail: look it up afresh next time.
+    labelIds.delete(mailbox.address.toLowerCase());
   }
 }
 
@@ -417,6 +455,8 @@ export async function buildMime(args: {
       ...(args.autoSubmitted ? { "Auto-Submitted": "auto-generated" } : {}),
     },
     text: args.text,
+    // Mail apps reflow HTML; some show plain text at a fixed width.
+    html: mailHtml(args.text),
     attachments: args.attachments,
   });
   return new Promise((resolve, reject) =>
@@ -500,17 +540,23 @@ export const gmailAdapter: ChannelAdapter = {
     const address = mailbox.address;
     try {
       const thread = mailAddress(link);
-      const { data: ids, error } = await ctx.db
-        .from("intake_email_message_ids")
-        .select("message_id, created_at")
-        .eq("link_id", link.id)
-        .order("created_at", { ascending: false })
-        .limit(20);
-      if (error) throw error;
-      const references = ((ids ?? []) as { message_id: string }[])
-        .map((r) => r.message_id)
-        .filter((id) => !id.startsWith("sha256:"))
-        .reverse();
+      let recorded: { message_id: string }[] = [];
+      if (link.id) {
+        const { data: ids, error } = await ctx.db
+          .from("intake_email_message_ids")
+          .select("message_id, created_at")
+          .eq("link_id", link.id)
+          .order("created_at", { ascending: false })
+          .limit(20);
+        if (error) throw error;
+        recorded = (ids ?? []) as { message_id: string }[];
+      }
+      // Recorded IDs are stored bare; a message's own may still be in <>.
+      const references = (
+        recorded.length
+          ? recorded.map((r) => r.message_id).reverse()
+          : (thread.references ?? []).map((id) => normalizeMessageId(id) ?? "")
+      ).filter((id) => id && !id.startsWith("sha256:"));
       const documents = message.documents.map((d) => ({ ...d }));
       const { attached, tooLarge } = fitAttachments(documents, thread.max_attachment_bytes, encodedSize);
       const files = [];

@@ -429,12 +429,26 @@ Apply migrations before starting the new application build:
   request and its documents as MikeGC.
 - `20261103_05_intake_requester_loop.sql`, `20261103_06_intake_mailbox.sql`
   and `20261103_07_intake_teams.sql` add the requester loop, the Outlook and
-  Gmail intake mailbox (retiring Postmark) and Teams. See
+  Gmail intake mailbox and Teams. See
   [Automated intake](intake-automation.md#deployment) for what each changes.
 - `20261104_08_intake_notifications.sql` adds [notifications](#notifications):
   the `intake_notifications` table, the triggers on `intake_events`,
   `intake_messages` and `org_members` that write and clear it, and
   `intake_claim_notifications` and `intake_expire_notifications`.
+- `20261111_01_intake_agent.sql` adds what the
+  [intake agent](intake-automation.md#the-intake-agent) needs: the details a
+  member has edited (`member_edited_fields`, which MikeGC never changes),
+  `intake_update_automated`, and MikeGC's own answers in a thread with no
+  request (`intake_conversations.replies`).
+- `20261112_04_intake_update_expected_version.sql` makes
+  `intake_update_automated` take the request's version a reply's plan was
+  made from and refuse the update once the request has changed since, and
+  makes `intake_ask_automated` refuse a question to choose the rule once the
+  rule is settled.
+- `20261112_05_intake_thread_claim.sql` makes `intake_submit_automated`
+  link a Slack or Teams request's thread in the call that records it, and
+  adds `intake_follow_thread`, so a second mention in that thread stored as a
+  new request becomes the first request's reply instead of a second request.
 
 Use the existing migration runner documented in [deployment.md](deployment.md).
 Do not replay historical migrations over a fresh schema. Fresh installations use

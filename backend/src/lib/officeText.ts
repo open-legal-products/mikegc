@@ -1,16 +1,27 @@
 import JSZip from "jszip";
 
+const XML_ENTITIES: Record<string, string> = {
+  amp: "&",
+  lt: "<",
+  gt: ">",
+  quot: '"',
+  apos: "'",
+};
+
+/**
+ * Each entity is decoded once, in a single pass. Decoding "&amp;" first and
+ * the others after it turned "&amp;lt;" (the text "&lt;") into "<".
+ */
 function decodeXml(text: string) {
-  return text
-    .replace(/&amp;/g, "&")
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/&quot;/g, '"')
-    .replace(/&apos;/g, "'")
-    .replace(/&#(\d+);/g, (_, code) => String.fromCharCode(Number(code)))
-    .replace(/&#x([0-9a-f]+);/gi, (_, code) =>
-      String.fromCharCode(Number.parseInt(code, 16)),
-    );
+  return text.replace(
+    /&(?:(amp|lt|gt|quot|apos)|#(\d+)|#x([0-9a-f]+));/gi,
+    (match, name?: string, decimal?: string, hex?: string) => {
+      if (name) return XML_ENTITIES[name.toLowerCase()] ?? match;
+      return String.fromCharCode(
+        decimal ? Number(decimal) : Number.parseInt(hex!, 16),
+      );
+    },
+  );
 }
 
 function extractTagText(xml: string, tagName: string) {

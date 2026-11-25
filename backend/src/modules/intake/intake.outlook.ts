@@ -8,6 +8,7 @@ import {
   MAIL_FOOTER,
   fitAttachments,
   mailAddress,
+  mailHtml,
   parseMailbox,
   recordEmailMessageIds,
   type MailAttachmentSource,
@@ -320,9 +321,10 @@ export async function graphSendTest(credentials: GraphCredentials, to: string, f
       message: {
         subject: "MikeGC is connected to the intake mailbox",
         body: {
-          contentType: "Text",
-          content:
+          contentType: "HTML",
+          content: mailHtml(
             "MikeGC can read and send from this intake mailbox. Requests emailed here will be recorded in Intake.",
+          ),
         },
         from: { emailAddress: { address: credentials.mailbox, name: fromName } },
         toRecipients: [{ emailAddress: { address: to } }],
@@ -356,9 +358,11 @@ export function mailBody(
 ): string {
   const parts = [plainMessageText(message, { fromName: options.fromName, signMember: options.signMember })];
   if (options.tooLarge.length)
-    parts.push(options.tooLarge.map((name) => `Too large to email: ${name}. Ask Legal for a copy.`).join("\n"));
+    parts.push(
+      options.tooLarge.map((name) => `${name} was too large to email, so ask Legal for a copy.`).join("\n"),
+    );
   if (options.withheld.length)
-    parts.push(`Couldn't attach: ${options.withheld.join(", ")}. Ask Legal for a copy.`);
+    parts.push(`I couldn't attach ${options.withheld.join(", ")}, so ask Legal for a copy.`);
   parts.push(MAIL_FOOTER);
   return parts.filter(Boolean).join("\n\n");
 }
@@ -429,14 +433,17 @@ export const outlookAdapter: ChannelAdapter = {
                 },
               },
               body: {
-                contentType: "Text",
+                // HTML, which every mail app reflows to its window.
+                contentType: "HTML",
                 // Exchange may keep the mailbox's own name, so a member signs.
-                content: mailBody(message, {
-                  fromName: ctx.fromName,
-                  signMember: true,
-                  tooLarge: tooLarge.map((d) => d.name),
-                  withheld: [],
-                }),
+                content: mailHtml(
+                  mailBody(message, {
+                    fromName: ctx.fromName,
+                    signMember: true,
+                    tooLarge: tooLarge.map((d) => d.name),
+                    withheld: [],
+                  }),
+                ),
               },
               singleValueExtendedProperties: [{ id: OUTBOUND_PROPERTY, value: message.id }],
               ...(message.author.kind === "mikegc"

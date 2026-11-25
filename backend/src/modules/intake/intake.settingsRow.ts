@@ -17,8 +17,6 @@ export type AutomationRow = {
   email_webhook_id: string;
   email_last_read_at: string | null;
   email_error: string | null;
-  /** Email was recorded through Postmark, which is retired. */
-  email_reconnect_notice: boolean;
   graph_tenant_id: string | null;
   graph_client_id: string | null;
   graph_client_secret_encrypted: string | null;
@@ -66,7 +64,7 @@ export type AutomationRow = {
 
 export const AUTOMATION_COLUMNS =
   "org_id, email_enabled, email_allowed_domains, email_provider, email_mailbox, " +
-  "email_from_name, email_webhook_id, email_last_read_at, email_error, email_reconnect_notice, " +
+  "email_from_name, email_webhook_id, email_last_read_at, email_error, " +
   "graph_tenant_id, graph_client_id, graph_client_secret_encrypted, graph_client_secret_iv, " +
   "graph_client_secret_tag, graph_subscription_id, graph_subscription_expires_at, " +
   "graph_client_state_hash, graph_delta_link, gmail_history_id, " +
@@ -106,4 +104,21 @@ export async function automationByWebhook(
     .maybeSingle();
   if (error) throw error;
   return (data as AutomationRow | null) ?? null;
+}
+
+/**
+ * Whether an organization's deletion has begun. For its recovery window the
+ * organization and its intake settings still exist, but nothing of it is in
+ * use: its mailbox is not read and messages for it are not worked on. An
+ * organization with no row left counts as not deleted here; its intake rows
+ * went with it.
+ */
+export async function intakeOrgDeleted(db: Db, orgId: string): Promise<boolean> {
+  const { data, error } = await db
+    .from("organizations")
+    .select("deleted_at")
+    .eq("id", orgId)
+    .maybeSingle();
+  if (error) throw error;
+  return !!(data as { deleted_at?: string | null } | null)?.deleted_at;
 }

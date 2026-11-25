@@ -27,7 +27,7 @@ vi.mock("../intake.inboundPayload", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../intake.inboundPayload")>()),
   MAX_ATTACHMENT_BYTES: 64,
 }));
-vi.mock("../../user/user.service", () => ({
+vi.mock("../../../lib/providerCredentials/index", () => ({
   getEffectiveApiKeys: vi.fn(),
   envApiKeys: vi.fn(() => ({})),
 }));
@@ -38,7 +38,6 @@ import { intakeWebhooksRouter } from "../intake.webhooks.routes";
 const org = "00000000-0000-4000-8000-000000000001";
 const webhookId = "00000000-0000-4000-8000-0000000000aa";
 const secret = "slack-signing-secret";
-const token = "A".repeat(40) + "xyz";
 const env = { ...process.env };
 let memory: MemoryDb;
 const app = express();
@@ -165,9 +164,9 @@ describe("Slack events", () => {
     ]);
     const id = inbound()[0]!.id as string;
     expect(mocks.enqueueDbJob).toHaveBeenCalledWith(memory.db, {
-      kind: "intake.inbound",
+      kind: "intake.agent",
       payload: { inboundId: id, orgId: org },
-      dedupeKey: `intake.inbound:${id}`,
+      dedupeKey: `intake.agent:${id}`,
       maxAttempts: 4,
     });
     // Slack retries: nothing new is stored; a waiting message is queued again
@@ -229,9 +228,9 @@ describe("Slack events", () => {
     ]);
     const id = inbound()[0]!.id as string;
     expect(mocks.enqueueDbJob).toHaveBeenCalledWith(memory.db, {
-      kind: "intake.reply",
+      kind: "intake.agent",
       payload: { inboundId: id, orgId: org },
-      dedupeKey: `intake.reply:${id}`,
+      dedupeKey: `intake.agent:${id}`,
       maxAttempts: 4,
     });
     // Settings learn that message events arrive.
@@ -239,6 +238,32 @@ describe("Slack events", () => {
     // A file shared in the thread is a reply too.
     await slack(threadMessage({ ts: "1762074901.000300", subtype: "file_share" }));
     expect(inbound()).toHaveLength(2);
+  });
+  it("takes a reply without a mention in a thread where MikeGC chatted back, as a new message", async () => {
+    memory.rows("intake_conversations").push({
+      org_id: org,
+      source: "slack",
+      thread_key: "T1:C42:1762074000.000001",
+      rounds: 1,
+    });
+    expect((await slack(threadMessage({ text: "can you review our NDA?" }))).status).toBe(200);
+    // Its mention twin, if it had one, is the same message.
+    expect((await slack(threadMessage({ type: "app_mention", text: "can you review our NDA?" }))).status).toBe(200);
+    expect(inbound()).toEqual([
+      expect.objectContaining({
+        kind: "request",
+        source: "slack",
+        external_id: "C42:1762074900.000200",
+        payload: expect.objectContaining({
+          kind: "slack",
+          thread_ts: "1762074000.000001",
+          text: "can you review our NDA?",
+        }),
+      }),
+    ]);
+    // Another thread, where MikeGC never answered, still needs a mention.
+    await slack(threadMessage({ ts: "1762074999.000500", thread_ts: "1762070000.000009" }));
+    expect(inbound()).toHaveLength(1);
   });
   it("drops chatter, edits and top-level messages without storing them", async () => {
     linkThread();
@@ -271,6 +296,22 @@ describe("Slack events", () => {
     expect(inbound()).toEqual([]);
     expect(mocks.enqueueDbJob).not.toHaveBeenCalled();
   });
+  it("ignores people from another organization in a shared channel, and other workspaces", async () => {
+    memory.rows("intake_automation")[0]!.slack_team_id = "T1";
+    linkThread();
+    for (const body of [
+      mention({ user_team: "T2", team: "T2" }),
+      mention({ team: "T2" }),
+      { ...mention(), team_id: "T2" },
+      threadMessage({ user_team: "T2" }),
+    ])
+      expect((await slack(body)).status).toBe(200);
+    expect(inbound()).toEqual([]);
+    // The connected workspace's own people, named or not.
+    expect((await slack(mention({ user_team: "T1", team: "T2", ts: "1762074841.000100" }))).status).toBe(200);
+    expect((await slack(mention({ ts: "1762074842.000100" }))).status).toBe(200);
+    expect(inbound()).toHaveLength(2);
+  });
   it("asks Slack to retry when the message can't be queued", async () => {
     mocks.enqueueDbJob.mockRejectedValueOnce(new Error("db down"));
     vi.spyOn(console, "error").mockImplementation(() => undefined);
@@ -281,21 +322,14 @@ describe("Slack events", () => {
   });
 });
 
-const postEmail = (body: unknown, path = token) =>
-  request(app).post(`/webhooks/intake/email/${path}`).send(body as object);
-
-describe("the retired Postmark webhook", () => {
-  it("answers 403, which ends Postmark's retries, and records nothing", async () => {
-    const logged = vi.spyOn(console, "error").mockImplementation(() => undefined);
-    for (const path of [token, "B".repeat(43), "short"])
-      expect((await postEmail({ Subject: "NDA", MessageID: "postmark-1" }, path)).status).toBe(403);
-    expect(inbound()).toEqual([]);
-    expect(mocks.enqueueDbJob).not.toHaveBeenCalled();
-    expect(JSON.stringify(logged.mock.calls)).not.toContain(token);
-  });
-});
-
 describe("htmlToText", () => {
+  it("drops trailing spaces in linear time", () => {
+    expect(htmlToText("<p>One  \t</p><p>Two words</p>")).toBe("One\nTwo words");
+    // 60,000 spaces with no line end after them took seconds to scan.
+    const started = performance.now();
+    expect(htmlToText(`A${"&nbsp;".repeat(60_000)}B`)).toBe(`A${" ".repeat(60_000)}B`);
+    expect(performance.now() - started).toBeLessThan(1_000);
+  });
   it("reads an HTML email as text, leaving no markup even when tags are nested", () => {
     expect(
       htmlToText("<head><title>x</title></head><p>Hi &amp; thanks</p><ul><li>One</li></ul>"),

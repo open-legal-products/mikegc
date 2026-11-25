@@ -6,7 +6,7 @@ import { Modal, type ModalAction } from "@/app/components/modals/Modal";
 import { ModalTextarea } from "@/app/components/modals/ModalTextarea";
 import { TABLE_CHECKBOX_CLASS } from "@/app/components/shared/TablePrimitive";
 import { FieldLabel } from "@/app/components/ui/form-field";
-import { ToggleSwitchUI } from "@/shared/ui/ToggleSwitchUI";
+import { ToggleSwitchUI } from "@mike/ui";
 import {
   intakeAudience,
   intakeDocumentsUnavailable,
@@ -106,7 +106,9 @@ export function IntakeResolveDialog({
         onClick: onConfirm,
         disabled: locked,
       }}
-      cancelAction={{ label: "Back", onClick: onClose, disabled: locked }}
+      // Back closes the dialog; there is no separate Cancel.
+      backAction={{ label: "Back", onClick: onClose, disabled: locked }}
+      cancelAction={false}
     >
       <form
         className="space-y-4 pb-4"

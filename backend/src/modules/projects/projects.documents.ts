@@ -135,7 +135,7 @@ export type AssignOrCopyResult =
   | { ok: false; kind: "workspace_mismatch" }
   | { ok: false; kind: "update_failed" }
   | { ok: false; kind: "no_active_version" }
-  | { ok: false; kind: "read_failed" }
+  | { ok: false; kind: "read_failed"; error?: unknown }
   | { ok: false; kind: "copy_failed" }
   | { ok: false; kind: "db_error"; error: unknown };
 
@@ -210,6 +210,11 @@ export async function assignOrCopyDocument(
   }
 
   if (doc.project_id === null && !doc.workflow_id && doc.library_kind !== "template") {
+    // An intake attachment belongs to its request, not to its uploader.
+    // Moved, it would take the project's audience while the request still
+    // owns it, and deleting the request would delete the project's file.
+    if (doc.library_kind === "intake_attachment")
+      return { ok: false, kind: "doc_not_found" };
     // Standalone → assign project_id (and inherit the project's org).
     const targetOrg = await resolveContentOrgId(db, { projectId });
     if (!targetOrg.ok) return { ok: false, kind: "db_error", error: targetOrg.detail };
@@ -252,7 +257,12 @@ export async function assignOrCopyDocument(
 
     const activeVersionFilename =
       (srcV.filename as string | null)?.trim() || "Untitled document";
-    const srcBytes = await downloadFile(srcV.storage_path);
+    let srcBytes: ArrayBuffer | null;
+    try {
+      srcBytes = await downloadFile(srcV.storage_path);
+    } catch (error) {
+      return { ok: false, kind: "read_failed", error };
+    }
     if (!srcBytes) {
       return { ok: false, kind: "read_failed" };
     }

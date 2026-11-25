@@ -11,7 +11,7 @@ import type {
 } from "@mike/contracts";
 import { SETTINGS_CONTROL_CLASS } from "@/app/components/settings/SettingsTextInput";
 import { FormTextInput } from "@/app/components/ui/form-field";
-import { TextButtonUI } from "@/shared/ui/TextButtonUI";
+import { TextButtonUI } from "@mike/ui";
 import { UserAvatar } from "@/app/components/ui/user-avatar";
 import { cn } from "@/app/lib/utils";
 import {
@@ -22,7 +22,7 @@ import {
   DropdownRadioItem,
   DropdownTrigger,
   DropdownSurface,
-} from "@/shared/ui/dropdown";
+} from "@mike/ui";
 import {
   DateCalendar,
   localDateValue,
@@ -120,7 +120,7 @@ export function IntakeDetailsPanel({
   request: IntakeRequest;
   members: IntakeMember[];
   accountId: string;
-  /** Another change is being saved; menus wait for it. */
+  /** Another change is being saved; menus and fields wait for it. */
   locked: boolean;
   onSave: (patch: Partial<IntakeDetails>) => void;
   onAssign: (assigneeId: string | null) => void;
@@ -281,6 +281,7 @@ export function IntakeDetailsPanel({
                   value={request.requester_name}
                   maxLength={200}
                   check={(name) => (name ? null : "Enter who asked for this.")}
+                  disabled={locked}
                   onSave={(name) => onSave({ requester_name: name })}
                 />
                 <DetailField
@@ -294,6 +295,7 @@ export function IntakeDetailsPanel({
                       ? null
                       : "Enter an email address like name@company.com."
                   }
+                  disabled={locked}
                   onSave={(email) => onSave({ requester_email: email || null })}
                 />
               </PopoverContent>
@@ -302,6 +304,7 @@ export function IntakeDetailsPanel({
           <TargetDateField
             value={request.requested_by_date}
             overdue={overdue}
+            disabled={locked}
             onSave={(date) => onSave({ requested_by_date: date })}
           />
         </>
@@ -356,6 +359,8 @@ function parseTypedDate(text: string): string | null | undefined {
     const date = parseDateValue(trimmed);
     return date && localDateValue(date) === trimmed ? trimmed : undefined;
   }
+  // Without a year the browser guesses one ("1 Dec" reads as 2001).
+  if (!/\b\d{4}\b/.test(trimmed)) return undefined;
   const parsed = new Date(trimmed);
   return Number.isNaN(parsed.getTime()) ? undefined : localDateValue(parsed);
 }
@@ -577,8 +582,8 @@ function ClarifyNotice({
 
 /**
  * The thread the request came from, where messages to the requester go: a
- * Slack or Teams channel with a link to the thread, or the email's
- * recipients, each on its own line.
+ * Slack or Teams channel with a link to the thread, or for email just
+ * Gmail or Outlook.
  */
 function ConversationFact({
   conversation,
@@ -590,22 +595,7 @@ function ConversationFact({
   if (isEmailConversation(conversation))
     return (
       <Fact label="Conversation">
-        <span className="block">
-          {INTAKE_CHANNEL_LABELS[conversation.source]} email
-          {conversation.mailbox && (
-            <span className="text-gray-500"> from {conversation.mailbox}</span>
-          )}
-        </span>
-        {conversation.to.length > 0 && (
-          <span className="block text-xs text-gray-500">
-            To {conversation.to.join(", ")}
-          </span>
-        )}
-        {conversation.cc.length > 0 && (
-          <span className="block text-xs text-gray-500">
-            Cc {conversation.cc.join(", ")}
-          </span>
-        )}
+        {INTAKE_CHANNEL_LABELS[conversation.source]}
       </Fact>
     );
   const name =
@@ -656,8 +646,6 @@ function Fact({ label, children }: { label: string; children: ReactNode }) {
 /** Where a request came from, after its creator; a member's own has none. */
 const INTAKE_SOURCE_NOTES: Record<IntakeSource, string | null> = {
   manual: null,
-  // Recorded through Postmark, before MikeGC read the mailbox itself.
-  email: "from email",
   slack: `from ${INTAKE_SOURCE_LABELS.slack}`,
   outlook: `from ${INTAKE_SOURCE_LABELS.outlook}`,
   gmail: `from ${INTAKE_SOURCE_LABELS.gmail}`,
@@ -794,6 +782,7 @@ function DetailField({
   placeholder,
   list,
   boxed,
+  disabled,
 }: {
   label: string;
   value: string;
@@ -807,6 +796,8 @@ function DetailField({
   list?: string;
   /** A grey input, for fields inside a popover rather than the sidebar. */
   boxed?: boolean;
+  /** While another change is saving, an edit here could be lost with it. */
+  disabled?: boolean;
 }) {
   const id = useId();
   const [draft, setDraft] = useFieldDraft(value);
@@ -841,6 +832,7 @@ function DetailField({
         value={draft}
         maxLength={maxLength}
         placeholder={placeholder}
+        disabled={disabled}
         autoComplete="off"
         aria-invalid={!!problem}
         aria-describedby={described || undefined}

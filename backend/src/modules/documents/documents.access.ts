@@ -23,7 +23,19 @@ type DocRow = {
     workflow_id?: string | null;
     current_version_id?: string | null;
     archived_at?: string | null;
+    // Also always selected: an intake attachment's uploader is not its Owner
+    // (ensureDocAccess), so replace/delete guards depend on it.
+    library_kind?: string | null;
 };
+
+const ACCESS_COLUMNS = "id, user_id, project_id, org_id, workflow_id, library_kind";
+
+/** A caller's own column list, plus `library_kind` when it is missing. */
+function withLibraryKind(select: string): string {
+    return select === "*" || /\blibrary_kind\b/.test(select)
+        ? select
+        : `${select}, library_kind`;
+}
 
 /**
  * Load a document row and verify the caller can access it. Returns the row
@@ -46,7 +58,7 @@ export async function ensureDocumentAccess(
 > {
     const { data: doc, error } = await db
         .from("documents")
-        .select(opts.select ?? "id, user_id, project_id, org_id, workflow_id")
+        .select(opts.select ? withLibraryKind(opts.select) : ACCESS_COLUMNS)
         .eq("id", documentId)
         .single();
     if (error && error.code !== "PGRST116")
@@ -140,7 +152,7 @@ export async function deleteDocument(
 > {
     const { data: doc } = await db
         .from("documents")
-        .select("id, user_id, project_id, org_id, workflow_id")
+        .select(ACCESS_COLUMNS)
         .eq("id", documentId)
         .single();
     if (!doc) return { ok: false };

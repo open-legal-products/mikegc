@@ -1,7 +1,12 @@
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
-import { IntakeDescription } from "./IntakeDetailsPanel";
+import type { IntakeRequest } from "@mike/contracts";
+import {
+  IntakeDescription,
+  IntakeDetailsPanel,
+  TargetDateField,
+} from "./IntakeDetailsPanel";
 
 const DESCRIPTION = [
   "Will Chen asked for a memo.",
@@ -87,5 +92,80 @@ describe("IntakeDescription with an original message", () => {
       />,
     );
     expect(screen.getByText("Just the message.")).toBeInTheDocument();
+  });
+});
+
+describe("IntakeDetailsPanel while another change is saving", () => {
+  it("holds the requester and target date, as it does the menus", async () => {
+    const user = userEvent.setup();
+    const request: IntakeRequest = {
+      id: "request-a",
+      org_id: "org-a",
+      subject: "Review the NDA",
+      description: "Please review.",
+      requester_name: "Jane Business",
+      requester_email: "jane@business.test",
+      requester_team: null,
+      requested_by_date: null,
+      state: "in_review",
+      version: 1,
+      assignee_id: null,
+      assignee_name: null,
+      created_by: "account-a",
+      created_by_name: "Lawyer A",
+      source: "manual",
+      created_at: "2026-10-26T10:00:00Z",
+      updated_at: "2026-10-26T10:00:00Z",
+      clarify_stage: null,
+      clarify_rounds: 0,
+      clarify_max_rounds: 2,
+      last_reply_at: null,
+      new_reply: false,
+      conversation: null,
+      capabilities: {
+        delete: false,
+        edit: true,
+        assign: false,
+        note: false,
+        wait: false,
+        resume: false,
+        resolve: false,
+        cancel: false,
+        reopen: false,
+        send_to_requester: false,
+        stop_asking: false,
+      },
+    };
+    render(
+      <IntakeDetailsPanel
+        request={request}
+        members={[]}
+        accountId="account-a"
+        locked
+        onSave={vi.fn()}
+        onAssign={vi.fn()}
+        onStatus={vi.fn()}
+      />,
+    );
+    expect(screen.getByLabelText("Target date")).toBeDisabled();
+    await user.click(
+      screen.getByRole("button", { name: "Requester: Jane Business" }),
+    );
+    expect(await screen.findByLabelText("Name")).toBeDisabled();
+    expect(screen.getByLabelText("Email")).toBeDisabled();
+  });
+});
+
+describe("TargetDateField", () => {
+  it("asks for the year rather than letting the browser guess one", async () => {
+    const user = userEvent.setup();
+    const onSave = vi.fn();
+    render(<TargetDateField value={null} overdue={false} onSave={onSave} />);
+    const field = screen.getByLabelText("Target date");
+    await user.type(field, "1 Dec");
+    await user.tab();
+    expect(onSave).not.toHaveBeenCalled();
+    expect(field).toHaveAttribute("aria-invalid", "true");
+    expect(screen.getByText(/Enter a date such as/)).toBeInTheDocument();
   });
 });

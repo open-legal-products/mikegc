@@ -1,8 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 import { createClient } from "@supabase/supabase-js";
 import {
+    can,
     canManageOrgRole,
     checkProjectAccess,
+    createDocumentAccessChecker,
     checkWorkflowAccess,
     creatorScopedAllowed,
     ensureChatAccess,
@@ -2117,6 +2119,42 @@ describe("explicit private organization access", () => {
         open = false;
         expect(await ensureDocAccess(doc, "member", "member@example.test", db)).toMatchObject({ ok: true, projectRole: "viewer" });
     });
+    // The uploader is not the attachment's Owner: it belongs to the request,
+    // so a closed request's file is read-only to them like to every member.
+    describe("an intake attachment's uploader", () => {
+        const intakeDb = (open: boolean) => {
+            const db = makeDb({
+                organizations: [{ id: "org", kind: "team" }],
+                org_members: [{ org_id: "org", user_id: "uploader", role: "member" }],
+            });
+            db.rpc = vi.fn(async (name: string) => ({
+                data: name === "intake_document_editable" ? open : null,
+                error: null,
+            }));
+            return db;
+        };
+        const attachment = { id: "intake-doc", user_id: "uploader", project_id: null, workflow_id: null, org_id: "org", library_kind: "intake_attachment" };
+        const manages = (access: Awaited<ReturnType<typeof ensureDocAccess>>) =>
+            access.ok && can(access.projectRole, "content.edit") && creatorScopedAllowed(access, attachment.user_id);
+
+        it("cannot replace or delete it once the request is closed", async () => {
+            const db = intakeDb(false);
+            const access = await ensureDocAccess(attachment, "uploader", "uploader@example.test", db);
+            expect(access).toMatchObject({ ok: true, projectRole: "viewer", isCreator: true });
+            expect(manages(access)).toBe(false);
+            // Nor through a batch that already resolved one of their own
+            // library files in the same organization.
+            const check = createDocumentAccessChecker("uploader", "uploader@example.test", db);
+            expect(await check({ ...attachment, id: "library-doc", library_kind: "file" })).toMatchObject({ projectRole: "owner" });
+            expect(manages(await check(attachment))).toBe(false);
+        });
+
+        it("still can while the request is open", async () => {
+            const access = await ensureDocAccess(attachment, "uploader", "uploader@example.test", intakeDb(true));
+            expect(access).toMatchObject({ ok: true, projectRole: "editor", isCreator: true });
+            expect(manages(access)).toBe(true);
+        });
+    });
     it("includes an explicitly opened project in the accessible-ID list", async () => {
         const db = makeDb({
             organizations: [{ id: "org", kind: "team" }],
@@ -2147,4 +2185,33 @@ it("checks each project/workflow once across document batches and never shares s
         .toEqual([...docs.map(d => d.id), "own"]);
     expect(from.mock.calls.filter(([table]) => table === "projects")).toHaveLength(1);
     expect(from.mock.calls.filter(([table]) => table === "workflows")).toHaveLength(1);
+});
+
+it("bounds standalone private-document verdict concurrency and preserves per-document grants", async () => {
+    const docs = Array.from({ length: 30 }, (_, i) => ({ id: `d${i}`, user_id: "other", project_id: null, org_id: "org" }));
+    const db = makeDb({ documents: docs });
+    let active = 0, peak = 0;
+    db.rpc = vi.fn(async (_name: string, args: Record<string, unknown>) => {
+        active++; peak = Math.max(peak, active);
+        await new Promise(resolve => setTimeout(resolve, 1));
+        active--;
+        return { data: Number(String(args.p_document_id).slice(1)) % 2 === 0, error: null };
+    });
+    expect(await filterAccessibleDocumentIds(docs.map(d => d.id), "reader", null, db))
+        .toEqual(docs.filter((_, i) => i % 2 === 0).map(d => d.id));
+    expect(peak).toBeLessThanOrEqual(5);
+    // One verdict per document. A filter only asks whether each can be
+    // read, so none is also asked whether its intake request makes it
+    // editable.
+    expect(db.rpc).toHaveBeenCalledTimes(30);
+    expect(db.rpc.mock.calls.every((call: unknown[]) => call[0] === "org_private_document_access")).toBe(true);
+});
+
+it("shares only an uploader's organisation-membership verdict within one document lookup", async () => {
+    const docs = Array.from({ length: 120 }, (_, i) => ({ id: `d${i}`, user_id: "reader", project_id: null, org_id: "org" }));
+    const db = makeDb({ documents: docs, organizations: [{ id: "org", kind: "team" }], org_members: [{ org_id: "org", user_id: "reader", role: "member" }] });
+    const from = vi.spyOn(db, "from");
+    expect(await filterAccessibleDocumentIds(docs.map(d => d.id), "reader", null, db)).toEqual(docs.map(d => d.id));
+    expect(from.mock.calls.filter(([table]) => table === "organizations")).toHaveLength(1);
+    expect(from.mock.calls.filter(([table]) => table === "org_members")).toHaveLength(1);
 });

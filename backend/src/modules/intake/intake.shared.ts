@@ -1,6 +1,7 @@
 const { jsonrepair } = require("jsonrepair") as {
   jsonrepair: (text: string) => string;
 };
+import { AppError } from "../../lib/appError";
 import { enqueueDbJob } from "../../lib/dbq/enqueue";
 import { dbJobsEnabled } from "../../lib/dbq/runner";
 import type { DbJob } from "../../lib/dbq/types";
@@ -52,10 +53,15 @@ export async function intakeRpc<T>(
         "validation",
         "Check the request details and the selected member.",
       );
-    // Postgres details can contain rejected request text. Report only its code.
+    // Postgres details can contain rejected request text, so the message
+    // names only the function called (written in this module, never input)
+    // and the code; the error itself stays the cause, which the Sentry
+    // boundary reads only its SQLSTATE from (see asReportableError).
     return internalFailure(
-      new Error(
-        `Intake database operation failed (${error.code ?? "unknown"})`,
+      new AppError(
+        "db.query_failed",
+        `Intake database operation ${name} failed (${error.code ?? "unknown"})`,
+        { cause: error },
       ),
     );
   }

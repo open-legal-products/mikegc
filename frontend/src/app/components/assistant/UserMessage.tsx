@@ -7,13 +7,11 @@ import { playbookPath } from "../playbooks/PlaybookTable";
 import { FileTypeIcon } from "../shared/FileTypeIcon";
 import { IntakePill } from "./IntakePill";
 import type { MessageFile } from "../shared/types";
-import { LIQUID_GLASS_FLAT_CLASS } from "@/shared/ui/LiquidGlassUI";
+import { LIQUID_GLASS_FLAT_CLASS, ExcerptModalUI, ExcerptPillUI } from "@mike/ui";
 import {
     parseExcerpts,
     type MessageExcerpt,
-} from "@/shared/lib/messageExcerpts";
-import { ExcerptModalUI } from "@/shared/ui/ExcerptModalUI";
-import { ExcerptPillUI } from "@/shared/ui/ExcerptPillUI";
+} from "@mike/client";
 
 interface Props {
     content: string;

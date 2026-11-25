@@ -56,12 +56,43 @@ import { app } from "../../app";
 import { ConnectorSetupError } from "../../lib/mcp/errors";
 import { encryptString } from "../../lib/mcp/client";
 import { driveDb } from "../../lib/integrations/__tests__/googleDriveDb";
+
+// Connector routes act on the caller's Personal connections unless
+// `?workspace=` names an organization they belong to.
+const PERSONAL = { userId: "owner", orgId: null };
+const FIRM = "11111111-1111-4111-8111-111111111111";
+
+/** Answers the two reads resolveWorkspaceFilter makes. */
+function membershipDb(member: boolean) {
+  return {
+    from(table: string) {
+      const builder = {
+        select: () => builder,
+        is: () => builder,
+        eq: () => builder,
+        maybeSingle: async () => ({
+          data:
+            table === "org_members"
+              ? member
+                ? { org_id: FIRM }
+                : null
+              : { kind: "team" },
+          error: null,
+        }),
+      };
+      return builder;
+    },
+  };
+}
 beforeEach(() => {
   vi.clearAllMocks();
   mocks.db = {};
   mocks.auth = true;
   mocks.mfa = true;
   vi.stubEnv("API_PUBLIC_URL", "http://localhost:3000/api");
+  // The app loads backend/.env; a developer's switched-off services must not
+  // decide these tests.
+  vi.stubEnv("GOOGLE_WORKSPACE_DISABLED_PROVIDERS", "");
   vi.spyOn(console, "error").mockImplementation(() => {});
 });
 afterEach(() => {
@@ -76,7 +107,7 @@ describe("Google Workspace routes", () => {
     const response = await request(app).patch("/user/integrations/google-drive").send({ requireWriteApproval: true, readOnly: true, userId: "other-user" });
     expect(response.status).toBe(200);
     expect(response.body).toMatchObject({ requireWriteApproval: true });
-    expect(mocks.driveSettings).toHaveBeenCalledWith("owner", { enabled: undefined, requireWriteApproval: true, readOnly: true }, {});
+    expect(mocks.driveSettings).toHaveBeenCalledWith(PERSONAL, { enabled: undefined, requireWriteApproval: true, readOnly: true }, {});
   });
   it.each(["gmail", "google-calendar"])(
     "starts %s for the authenticated Mike user; the body cannot change the requested permissions",
@@ -93,7 +124,7 @@ describe("Google Workspace routes", () => {
       ).toBe(200);
       expect(mocks.start).toHaveBeenCalledWith(
         {},
-        "owner",
+        PERSONAL,
         provider,
         `http://localhost:3000/api/user/integrations/${provider}/oauth/callback`,
       );
@@ -169,7 +200,7 @@ describe("Google Workspace routes", () => {
       .send({ enabled: false, requireWriteApproval: true, readOnly: true, userId: "other" });
     expect(res.status).toBe(200);
     expect(res.body).toMatchObject({ requireWriteApproval: true });
-    expect(mocks.settings).toHaveBeenCalledWith({}, "owner", "gmail", {
+    expect(mocks.settings).toHaveBeenCalledWith({}, PERSONAL, "gmail", {
       enabled: false,
       requireWriteApproval: true,
       readOnly: true,
@@ -199,7 +230,7 @@ describe("Google Workspace routes", () => {
           .send({ enabled: false })
       ).status,
     ).toBe(200);
-    expect(mocks.tool).toHaveBeenCalledWith({}, "owner", "gmail", "gmail_send", false);
+    expect(mocks.tool).toHaveBeenCalledWith({}, PERSONAL, "gmail", "gmail_send", false);
   });
   it("no longer serves out-of-turn Google action approvals", async () => {
     expect((await request(app).get("/user/google-actions")).status).toBe(404);
@@ -303,6 +334,17 @@ describe("Google Drive picker session", () => {
     expect(res.body.code).toBe("google_drive_picker_unavailable");
   });
 
+  it("answers 404 when the operator switched Drive off, without a token", async () => {
+    connected();
+    vi.stubEnv("GOOGLE_WORKSPACE_DISABLED_PROVIDERS", "google-drive");
+    const res = await pickerSession();
+    expect(res.status).toBe(404);
+    expect(res.body).toEqual({
+      code: "connector_unavailable",
+      detail: "Google Drive is not offered on this Mike server.",
+    });
+  });
+
   it("answers 409 when Drive is not connected or is turned off", async () => {
     mocks.db = driveDb().db;
     const missing = await pickerSession();
@@ -332,5 +374,34 @@ describe("Google Drive picker session", () => {
       developerKey: "picker-key",
     });
     expect(JSON.stringify(res.body)).not.toContain("refresh-token-1");
+  });
+
+  it("acts on the connections of the organization ?workspace= names", async () => {
+    mocks.db = membershipDb(true);
+    mocks.status.mockResolvedValue({ connected: false });
+    const res = await request(app).get(`/user/integrations/gmail?workspace=${FIRM}`);
+    expect(res.status).toBe(200);
+    expect(mocks.status).toHaveBeenCalledWith(
+      mocks.db,
+      { userId: "owner", orgId: FIRM },
+      "gmail",
+    );
+  });
+
+  it("refuses a workspace the caller does not belong to, without touching connections", async () => {
+    mocks.db = membershipDb(false);
+    for (const res of [
+      await request(app).get(`/user/integrations/gmail?workspace=${FIRM}`),
+      await request(app)
+        .patch(`/user/integrations/google-drive?workspace=${FIRM}`)
+        .send({ enabled: false }),
+      await request(app).get(`/user/mcp-connectors?workspace=${FIRM}`),
+      await request(app).get(`/user/integrations/courtlistener?workspace=${FIRM}`),
+    ]) {
+      expect(res.status).toBe(404);
+      expect(res.body).toMatchObject({ code: "workspace_not_found" });
+    }
+    expect(mocks.status).not.toHaveBeenCalled();
+    expect(mocks.driveSettings).not.toHaveBeenCalled();
   });
 });

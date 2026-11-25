@@ -9,7 +9,7 @@ import {
 import { OrganizationSkeuoIcon } from "@/app/components/shared/AppSidebarSkeuoIcons";
 import { EmptyState } from "@/app/components/ui/empty-state";
 import { isOrgAdmin } from "@/app/lib/permissions";
-import { PillButtonUI } from "@/shared/ui/PillButtonUI";
+import { PillButtonUI } from "@mike/ui";
 
 /**
  * How MikeGC records requests from email and Slack: its owners' and admins'

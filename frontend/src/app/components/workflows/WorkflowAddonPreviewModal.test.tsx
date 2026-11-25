@@ -7,19 +7,19 @@ import { WorkflowAddonPreviewModal } from "./WorkflowAddonPreviewModal";
 vi.mock("../modals/Modal", () => ({
   Modal: ({
     children,
-    secondaryAction,
+    backAction,
   }: {
     children: React.ReactNode;
-    secondaryAction?: {
+    backAction?: {
       label: React.ReactNode;
       onClick?: () => void;
     };
   }) => (
     <div>
       {children}
-      {secondaryAction && (
-        <button type="button" onClick={secondaryAction.onClick}>
-          {secondaryAction.label}
+      {backAction && (
+        <button type="button" onClick={backAction.onClick}>
+          {backAction.label}
         </button>
       )}
     </div>

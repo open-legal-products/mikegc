@@ -13,6 +13,7 @@ import {
   intakeMailboxConnection,
   intakeMailboxForm,
   intakeMailboxFormProblem,
+  intakeOutlookApp,
 } from "./intakeChannels";
 import { intakeChannelChanges } from "./IntakeChannelSettings";
 
@@ -27,7 +28,6 @@ const saved = (): IntakeAutomationSettings => ({
     notification_url: "https://api.example.test/webhooks/intake/graph/1",
     gmail: { client_id: "1122", key_set: true, deployment_key: false },
     status: { subscription_expires_at: null, last_read_at: null, error: null },
-    needs_reconnect: false,
   },
   slack: {
     enabled: false,
@@ -114,9 +114,41 @@ describe("the mailbox connect form", () => {
       tenantId: "t",
       clientId: "c",
       clientSecret: "",
+      useTeamsApp: false,
       serviceAccountKey: "",
     });
+    // Reconnecting keeps the saved details, even with Teams set up.
+    expect(intakeMailboxForm("graph", email, true).useTeamsApp).toBe(false);
     expect(intakeMailboxForm("gmail", email).mailbox).toBe("");
+  });
+
+  it("starts a first Outlook connection with the Teams app when Teams is set up", () => {
+    const email = saved().email;
+    expect(intakeMailboxForm("graph", email, true).useTeamsApp).toBe(true);
+    expect(intakeMailboxForm("graph", email, false).useTeamsApp).toBe(false);
+    expect(intakeMailboxForm("gmail", email, true).useTeamsApp).toBe(false);
+    const form = intakeMailboxForm("graph", email, true);
+    // Only the address is needed, and the app's details aren't sent.
+    expect(intakeMailboxFormProblem(form, false)).toMatch(/intake address/);
+    const filled = { ...form, mailbox: " intake@firm.test ", tenantId: "t", clientSecret: "typed" };
+    expect(intakeMailboxFormProblem(filled, false)).toBeNull();
+    expect(intakeMailboxConnection(filled)).toEqual({
+      provider: "graph",
+      mailbox: "intake@firm.test",
+      use_teams_app: true,
+    });
+  });
+
+  it("offers the Outlook app to Teams only once Outlook is connected with all of it", () => {
+    const graph = { tenant_id: "t", client_id: "c", secret_set: true };
+    expect(intakeOutlookApp({ ...saved().email, provider: "graph", graph })).toEqual({
+      tenantId: "t",
+      clientId: "c",
+    });
+    expect(intakeOutlookApp({ ...saved().email, provider: "gmail", graph })).toBeNull();
+    expect(
+      intakeOutlookApp({ ...saved().email, provider: "graph", graph: { ...graph, secret_set: false } }),
+    ).toBeNull();
   });
 
   it("says what is missing, and keeps a saved secret when left empty", () => {
@@ -126,6 +158,7 @@ describe("the mailbox connect form", () => {
       tenantId: " t ",
       clientId: "c",
       clientSecret: "",
+      useTeamsApp: false,
       serviceAccountKey: "",
     };
     expect(intakeMailboxFormProblem({ ...form, mailbox: "intake" }, true)).toMatch(
@@ -160,6 +193,7 @@ describe("the Gmail service account key", () => {
     tenantId: "",
     clientId: "",
     clientSecret: "",
+    useTeamsApp: false,
     serviceAccountKey: "",
   };
 
@@ -236,6 +270,28 @@ describe("intakeChannelChanges", () => {
       teams_client_secret: "secret",
       teams_enabled: true,
     });
+  });
+
+  it("sets Teams up with the Outlook app instead of anything typed", () => {
+    const settings = saved();
+    settings.teams = { ...settings.teams, enabled: false, configured: false, app_id: null, tenant_id: null };
+    const draft = { ...intakeAutomationDraft(settings), teamsAppId: "typed", teamsSecret: "typed" };
+    // A first setup turns Teams on; typed details are never sent with it.
+    expect(intakeChannelChanges("teams", settings, draft, { useOutlookApp: true })).toEqual({
+      teams_use_outlook_app: true,
+      teams_enabled: true,
+    });
+    // Once set up, it keeps the switch as it is, unless it was changed.
+    settings.teams = { ...settings.teams, configured: true, enabled: true };
+    const setUp = intakeAutomationDraft(settings);
+    expect(intakeChannelChanges("teams", settings, setUp, { useOutlookApp: true })).toEqual({
+      teams_use_outlook_app: true,
+    });
+    expect(
+      intakeChannelChanges("teams", settings, { ...setUp, teamsEnabled: false }, { useOutlookApp: true }),
+    ).toEqual({ teams_use_outlook_app: true, teams_enabled: false });
+    // Other channels ignore it.
+    expect(intakeChannelChanges("slack", settings, setUp, { useOutlookApp: true })).toEqual({});
   });
 
   it("sends only the channel's own changed fields, with a typed domain", () => {

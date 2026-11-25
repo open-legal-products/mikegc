@@ -57,7 +57,9 @@ export function IntakeReasonModal({
         onClick: onConfirm,
         disabled: locked || !value.trim(),
       }}
-      cancelAction={{ label: "Back", onClick: onClose, disabled: locked }}
+      // Back closes the dialog; there is no separate Cancel.
+      backAction={{ label: "Back", onClick: onClose, disabled: locked }}
+      cancelAction={false}
     >
       <form
         className="space-y-2 pb-4"

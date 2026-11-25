@@ -166,3 +166,33 @@ it.each([
   expect(fake.calls.some(c => c.table === "documents" && c.op === "update")).toBe(false);
   fake.done();
 });
+
+it("refuses to move an intake request's attachment into a project", async () => {
+  mocks.docAccess.mockResolvedValue({ ok: true, projectRole: "viewer", isCreator: true, orgRole: "member" });
+  const source = { ...firmDoc, project_id: null, library_kind: "intake_attachment" };
+  const fake = scriptedDb([
+    { table: "documents", data: source },
+    { table: "documents", data: [source] },
+    { table: "organizations", data: [{ id: "firm", kind: "team" }] },
+  ]);
+  expect(await assignOrCopyDocument(fake.db, { projectId: "firm-matter", documentId: "doc", userId: "actor" }))
+    .toEqual({ ok: false, kind: "doc_not_found" });
+  // Nothing was written: the script holds no update.
+  fake.done();
+});
+
+ it("returns a typed read failure with its original cause before creating a copy", async () => {
+  mocks.projectAccess.mockResolvedValue({ ok: true, projectRole: "owner", project: { org_id: null } });
+  mocks.docAccess.mockResolvedValue({ ok: true, projectRole: "owner", isCreator: true });
+  const source = { ...firmDoc, project_id: null, org_id: null, workflow_id: "workflow" };
+  const fake = scriptedDb([
+    { table: "documents", data: source },
+    { table: "documents", data: [source] },
+    { table: "document_versions", data: { storage_path: "private-key", filename: "Private.docx" } },
+  ]);
+  const error = new Error("AccessDenied");
+  mocks.downloadFile.mockRejectedValueOnce(error);
+  expect(await assignOrCopyDocument(fake.db, { projectId: "destination", documentId: "doc", userId: "actor" }))
+    .toEqual({ ok: false, kind: "read_failed", error });
+  fake.done();
+});

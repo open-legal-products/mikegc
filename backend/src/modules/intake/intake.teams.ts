@@ -1,7 +1,9 @@
 import { z } from "zod";
 import { DbJobDeferredError } from "../../lib/dbq/types";
 import {
+  acknowledgementLines,
   ChannelDeliveryError,
+  DOCUMENTS_ONLY_TEXT,
   memberSender,
   type ChannelAdapter,
   type ChannelLink,
@@ -31,7 +33,7 @@ import {
 } from "./intake.microsoft";
 import { teamsClientSecret } from "./intake.secrets";
 import type { AutomationRow } from "./intake.settingsRow";
-import type { InboundMessage } from "./intake.triage";
+import { chatThreadText, type InboundMessage } from "./intake.triage";
 
 /**
  * Microsoft Teams through the organization's own single-tenant bot: what
@@ -381,10 +383,10 @@ export async function teamsInboundMessage(
   }
   const sent = (d: Date) =>
     `${new Intl.DateTimeFormat("en-GB", { timeZone: "UTC", day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" }).format(d)} UTC`;
-  const text =
+  const parts =
     entries.length === 1
-      ? entries[0]!.text
-      : entries.map((e) => `${e.author}, ${sent(e.at)}:\n${e.text}`).join("\n\n");
+      ? [entries[0]!.text]
+      : entries.map((e) => `${e.author}, ${sent(e.at)}:\n${e.text}`);
   const seen = new Set<string>();
   const files = entries
     .flatMap((e) => e.files)
@@ -398,10 +400,13 @@ export async function teamsInboundMessage(
   return {
     source: "teams",
     sender: { name: entries[0]!.author, email: null },
-    sentAt: entries[0]!.at,
+    // The mention's own time: "by Friday" counts from when MikeGC was asked,
+    // not from when the thread began.
+    sentAt: new Date(payload.date),
     subject: null,
     subjectHint: firstLine,
-    text: clip(text, MAX_MESSAGE_CHARS),
+    text: chatThreadText(parts, MAX_MESSAGE_CHARS),
+    parts,
     ...channelAttachments(files, "teams"),
   };
 }
@@ -468,13 +473,17 @@ export function shareId(url: string): string {
 
 const SHAREPOINT = /^https:\/\/[a-z0-9-]+(?:-my)?\.sharepoint\.(?:com|us|de|cn)\//i;
 
-/** A file shared in a channel, through Graph; null when larger than `maxBytes`. */
+/**
+ * A file shared in a channel, through Graph; null when larger than
+ * `maxBytes`, "unreadable" when it isn't in SharePoint or the app has no
+ * document access.
+ */
 export async function teamsDownloadFile(
   settings: AutomationRow,
   url: string,
   maxBytes: number,
-): Promise<ArrayBuffer | null> {
-  if (!SHAREPOINT.test(url) || settings.teams_files_access === false) return null;
+): Promise<ArrayBuffer | "unreadable" | null> {
+  if (!SHAREPOINT.test(url) || settings.teams_files_access === false) return "unreadable";
   const token = await graphToken(settings);
   const response = await microsoftResponse(
     `${GRAPH_API}/shares/${shareId(url)}/driveItem/content`,
@@ -520,14 +529,9 @@ export function teamsMessageText(
 ): string {
   const lines: string[] = [];
   if (message.acknowledgement) {
-    const ack = message.acknowledgement;
-    lines.push(
-      `Logged for Legal: [${teamsEscape(ack.subject)}](${ack.link}). ` +
-        (ack.assignee ? `Assigned to ${teamsEscape(ack.assignee)}.` : "Not assigned to a reviewer yet."),
-    );
-    if (message.text) lines.push("", ...message.text.split("\n").map(teamsEscape));
+    lines.push(...acknowledgementLines(message.acknowledgement, message.text, teamsEscape));
   } else {
-    const text = message.text || (message.documents.length ? "Legal sent these documents." : "");
+    const text = message.text || (message.documents.length ? DOCUMENTS_ONLY_TEXT : "");
     if (message.author.kind === "member") {
       const who = teamsEscape(memberSender(message.author.name, options.fromName));
       lines.push(message.kind === "question" ? `${who} asks:` : `${who}:`);
@@ -538,7 +542,7 @@ export function teamsMessageText(
   if (linked.length)
     lines.push("", `Documents: ${linked.map((f) => `[${teamsEscape(f.name)}](${f.url})`).join(" · ")}`);
   if (options.withheld.length)
-    lines.push("", `Documents from Legal: ${options.withheld.map(teamsEscape).join(", ")}. Ask Legal for a copy.`);
+    lines.push("", `I couldn't share ${options.withheld.map(teamsEscape).join(", ")} here, so ask Legal for a copy.`);
   // Teams markdown needs two spaces or a blank line for a break.
   return lines.join("  \n");
 }

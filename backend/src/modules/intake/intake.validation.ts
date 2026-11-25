@@ -162,6 +162,7 @@ export const intakeAutomationUpdate = z
     teams_app_id: z.string().trim().regex(/^[0-9a-fA-F-]{36}$/).optional(),
     teams_tenant_id: z.string().trim().regex(/^[0-9a-fA-F-]{36}$/).optional(),
     teams_client_secret: z.string().trim().min(1).max(500).optional(),
+    teams_use_outlook_app: z.literal(true).optional(),
     slack_enabled: z.boolean().optional(),
     slack_signing_secret: z.string().trim().min(1).max(300).optional(),
     slack_bot_token: z
@@ -221,9 +222,12 @@ export const intakeMailboxConnection = z.discriminatedUnion("provider", [
     .object({
       provider: z.literal("graph"),
       mailbox: z.string().trim().min(3).max(320),
-      tenant_id: z.string().trim().min(1).max(200),
-      client_id: z.string().trim().min(1).max(200),
+      // Either the app's details, or the Teams channel's app (checked by the
+      // service, which says which to send).
+      tenant_id: z.string().trim().min(1).max(200).optional(),
+      client_id: z.string().trim().min(1).max(200).optional(),
       client_secret: z.string().trim().min(1).max(500).optional(),
+      use_teams_app: z.literal(true).optional(),
     })
     .strict(),
   z

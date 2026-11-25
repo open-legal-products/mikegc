@@ -171,7 +171,7 @@ export async function validateDestinationAccess(
     const documentId = destination.document_id as string;
     const { data: document, error } = await db
       .from("documents")
-      .select("id, user_id, project_id, org_id, workflow_id")
+      .select("id, user_id, project_id, org_id, workflow_id, library_kind")
       .eq("id", documentId)
       .maybeSingle();
     if (error) return internalFailure(error);

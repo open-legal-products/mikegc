@@ -21,13 +21,13 @@ import { FileTypeIcon } from "@/app/components/shared/FileTypeIcon";
 import { IntakeUploadPrompt } from "./IntakeDocumentDropZone";
 import { LIQUID_GLASS_MODAL_ROW_HOVER_CLASS } from "@/app/components/ui/liquid-surface";
 import { DocumentSidePanel } from "@/app/components/shared/DocumentSidePanel";
-import { TextButtonUI } from "@/shared/ui/TextButtonUI";
+import { TextButtonUI } from "@mike/ui";
 import {
   Dropdown,
   DropdownContent,
   DropdownItem,
   DropdownTrigger,
-} from "@/shared/ui/dropdown";
+} from "@mike/ui";
 
 const noop = () => {};
 
@@ -130,12 +130,19 @@ export function useIntakeDocumentViewer() {
   // before it never replaces the open document's history.
   const versionRequest = useRef(0);
 
+  // Likewise the latest document asked for: a slower answer for one opened
+  // before it never replaces the one opened after.
+  const openRequest = useRef(0);
+
   async function open(documentId: string) {
+    const request = ++openRequest.current;
     try {
       setVersionId(null);
-      setViewing(await getDocument(documentId));
+      const document = await getDocument(documentId);
+      if (request === openRequest.current) setViewing(document);
     } catch (error) {
-      notifyError(error, { action: "open the document" });
+      if (request === openRequest.current)
+        notifyError(error, { action: "open the document" });
     }
   }
 
@@ -188,6 +195,8 @@ export function useIntakeDocumentViewer() {
       versionsLoading={historyLoading}
       canDelete={false}
       onClose={() => {
+        // A document still on its way must not reopen the closed panel.
+        openRequest.current++;
         setViewing(null);
         setVersionId(null);
       }}

@@ -6,7 +6,7 @@ import {
   nearestReasoningLevelForModel,
   reasoningLevelsForModel,
   type ReasoningLevel,
-} from "@/shared/ui/ModelToggleUI";
+} from "@mike/ui";
 import { isModelAvailable } from "@/app/lib/modelAvailability";
 import {
   MODELS,
@@ -16,7 +16,7 @@ import {
   type ModelOption,
   type NoModelsReason,
   type RouterSelections,
-} from "@/shared/lib/modelCatalog";
+} from "@mike/client";
 import type { ApiKeyState } from "@/app/lib/mikeApi";
 import {
   PERSONAL_WORKSPACE,
@@ -119,12 +119,10 @@ export function ModelToggle({
       (availableModels.length > 0 ? "Select model" : "No Models"));
   // In an organization workspace the keys and model lists are its admins'
   // to set, so an empty picker says who can fix it.
-  const { workspaceId, orgApiKeys } = useWorkspace();
-  const organization =
-    workspaceId !== null && workspaceId !== PERSONAL_WORKSPACE && orgApiKeys
-      ? { allowPersonalKeys: orgApiKeys.allow_personal_api_keys }
-      : null;
-  const emptyReason = noModelsReason(apiKeys, routerSelections, organization);
+  const { workspaceId } = useWorkspace();
+  const inOrganization =
+    workspaceId !== null && workspaceId !== PERSONAL_WORKSPACE;
+  const emptyReason = noModelsReason(apiKeys, routerSelections, inOrganization);
   return (
     <ModelToggleUI
       value={value}

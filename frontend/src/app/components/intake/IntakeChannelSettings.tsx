@@ -9,7 +9,15 @@ import {
   type RefObject,
 } from "react";
 import Image from "next/image";
-import { CircleHelp, Loader2, X } from "lucide-react";
+import {
+  CircleHelp,
+  Loader2,
+  Pencil,
+  Send,
+  Unplug,
+  X,
+} from "lucide-react";
+import { HeaderActionsMenu } from "@/app/components/shared/HeaderActionsMenu";
 import type {
   IntakeAutomationSettings,
   IntakeAutomationUpdate,
@@ -27,16 +35,12 @@ import {
   updateIntakeAutomation,
 } from "@/app/lib/mikeApi";
 import { useAssignLatest } from "@/app/hooks/useLatestRef";
-import {
-  describeError,
-  notifyError,
-  type UserErrorKind,
-} from "@/app/lib/userFacingError";
-import { notifySuccess } from "@/shared/lib/errorNotifier";
-import { GlassCardUI } from "@/shared/ui/GlassCardUI";
-import { PillButtonUI } from "@/shared/ui/PillButtonUI";
-import { TextButtonUI } from "@/shared/ui/TextButtonUI";
-import { ToggleSwitchUI } from "@/shared/ui/ToggleSwitchUI";
+import { notifyError } from "@/app/lib/userFacingError";
+import { notifySuccess } from "@mike/client";
+import { GlassCardUI } from "@mike/ui";
+import { PillButtonUI } from "@mike/ui";
+import { TextButtonUI } from "@mike/ui";
+import { ToggleSwitchUI } from "@mike/ui";
 import { slackIntakeManifest } from "./slackManifest";
 import {
   intakeAutomationChanges,
@@ -49,13 +53,13 @@ import {
   INTAKE_CHANNEL_GUIDES,
   INTAKE_CHANNEL_NAMES,
   INTAKE_MAIL_CHANNELS,
-  INTAKE_MAIL_PROVIDER_LABELS,
   intakeChannelMailProvider,
   intakeChannelSummary,
   intakeGmailKeyOptional,
   intakeMailboxConnection,
   intakeMailboxForm,
   intakeMailboxFormProblem,
+  intakeOutlookApp,
   intakeServiceAccountClientId,
   type IntakeChannelGuide,
   type IntakeChannelId,
@@ -107,11 +111,6 @@ const ENABLED_FIELD: Record<IntakeChannelId, keyof IntakeAutomationUpdate> = {
 };
 
 type Change = (patch: Partial<IntakeAutomationDraft>) => void;
-/** Failures the dialog's own fields can fix, so they show beside them. */
-const FIELD_PROBLEMS: ReadonlySet<UserErrorKind> = new Set([
-  "validation",
-  "conflict",
-]);
 
 /**
  * The channels MikeGC records requests from, as connector tiles: each names
@@ -262,13 +261,22 @@ const CHANNEL_FIELDS: Record<IntakeChannelId, (keyof IntakeAutomationUpdate)[]> 
  * What saving a channel's modal sends: its fields that differ from what is
  * saved. A sender domain typed but not yet added goes too, when it is one.
  * Slack and Teams show their switch only once set up, so the save that
- * completes one's setup turns it on.
+ * completes one's setup turns it on. With `useOutlookApp`, Teams is set up
+ * with the connected Outlook mailbox's app instead of typed details.
  */
 export function intakeChannelChanges(
   channel: IntakeChannelId,
   settings: IntakeAutomationSettings,
   draft: IntakeAutomationDraft,
+  { useOutlookApp = false }: { useOutlookApp?: boolean } = {},
 ): IntakeAutomationUpdate {
+  if (channel === "teams" && useOutlookApp) {
+    const changes: IntakeAutomationUpdate = { teams_use_outlook_app: true };
+    if (settings.teams.configured && draft.teamsEnabled !== settings.teams.enabled)
+      changes.teams_enabled = draft.teamsEnabled;
+    if (!settings.teams.configured) changes.teams_enabled = true;
+    return changes;
+  }
   const typed = normalizeIntakeDomain(draft.domainInput);
   const withTyped =
     typed && !intakeDomainInputError(draft) && !draft.domains.includes(typed)
@@ -335,21 +343,31 @@ function IntakeChannelModal({
     else helpButton.current?.focus();
   }, [helping, showingManifest]);
   const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   // A mail modal's connect form, while it is open: from the start until the
   // mailbox is connected on this provider, and while reconnecting.
   const [form, setForm] = useState<IntakeMailboxForm | null>(() =>
     provider && settings.email.provider !== provider
-      ? intakeMailboxForm(provider, settings.email)
+      ? intakeMailboxForm(provider, settings.email, settings.teams.configured)
       : null,
   );
+  // Teams set up with the connected Outlook mailbox's app; starts on for a
+  // first setup when there is one. Kept here, not in the draft, so only this
+  // modal's Save ever sends it.
+  const outlookApp = intakeOutlookApp(settings.email);
+  const [useOutlookApp, setUseOutlookApp] = useState(
+    () => channel === "teams" && !settings.teams.configured && !!outlookApp,
+  );
   const change: Change = (patch) => {
-    setError(null);
     setDraft((current) => ({ ...current, ...patch }));
   };
-  const pending = intakeChannelChanges(channel, settings, draft);
+  const pending = intakeChannelChanges(channel, settings, draft, {
+    useOutlookApp: useOutlookApp && !!outlookApp,
+  });
   const dirty = Object.keys(pending).length > 0;
   const connecting = !!form;
+  // Editing a live connection: Back returns to its settings.
+  const editingConnection =
+    connecting && !!provider && settings.email.provider === provider;
 
   // Retry runs this render's save or connect while the modal is open.
   const latest = useRef<{ save: () => void; connect: () => void } | null>(
@@ -362,9 +380,11 @@ function IntakeChannelModal({
     [],
   );
   /**
-   * A problem with what was typed shows beside the fields to correct it;
-   * anything else is a notice, with Retry when retrying can help. Retry once
-   * the modal is closed sends again only what failed.
+   * Every refused save or connect is a notice, never footer text: what
+   * Microsoft, Google or Slack said ("Microsoft couldn't find that mailbox")
+   * and Retry when retrying can help. The modal stays open with what was
+   * typed, to fix it. Retry once the modal is closed sends again only what
+   * failed. Repeats of one action collapse into one notice.
    */
   function failed(
     cause: unknown,
@@ -374,9 +394,7 @@ function IntakeChannelModal({
     done: string,
   ) {
     setSaving(false);
-    const described = describeError(cause, { action });
-    if (FIELD_PROBLEMS.has(described.kind) && latest.current)
-      return void setError(described.message);
+    const dedupeKey = `intake-channel:${orgId}:${channel}:${which}`;
     const retry = () => {
       if (latest.current) return latest.current[which]();
       resend().then(
@@ -384,16 +402,15 @@ function IntakeChannelModal({
           onSettings(next);
           notifySuccess(done);
         },
-        (again) => notifyError(again, { action, onRetry: retry }),
+        (again) => notifyError(again, { action, onRetry: retry, dedupeKey }),
       );
     };
-    notifyError(cause, { action, onRetry: retry });
+    notifyError(cause, { action, onRetry: retry, dedupeKey });
   }
   function save() {
     // A sender domain still being typed must be one before anything is sent.
     if (!dirty || saving || intakeDomainInputError(draft)) return;
     setSaving(true);
-    setError(null);
     const changes = pending;
     const done = `${name} settings saved`;
     updateIntakeAutomation(orgId, changes).then(
@@ -415,7 +432,6 @@ function IntakeChannelModal({
   function connect() {
     if (!form || saving) return;
     setSaving(true);
-    setError(null);
     const connection = intakeMailboxConnection(form);
     connectIntakeMailbox(orgId, connection).then(
       (next) => {
@@ -446,10 +462,17 @@ function IntakeChannelModal({
   const spinner = saving ? (
     <Loader2 className="h-4 w-4 animate-spin" />
   ) : undefined;
-  const primaryAction = showingManifest
+  // Back, at the footer's left: from the manifest or help screen, or from
+  // editing a live connection to its settings.
+  const backAction = showingManifest
     ? { label: "Back", onClick: () => setShowingManifest(false) }
     : helping
-    ? { label: "Back", onClick: () => setHelping(false) }
+      ? { label: "Back", onClick: () => setHelping(false) }
+      : editingConnection
+        ? { label: "Back", onClick: () => setForm(null), disabled: saving }
+        : undefined;
+  const primaryAction = helping
+    ? undefined
     : connecting
       ? {
           label: "Connect",
@@ -475,40 +498,17 @@ function IntakeChannelModal({
         "Intake",
         "Channels",
         name,
+        ...(editingConnection ? ["Edit connection"] : []),
         ...(helping ? ["Help"] : []),
         ...(showingManifest ? ["Manifest"] : []),
       ]}
-      footerLeading={
-        // Help at the footer's start; a save's problem beside it.
-        helping && !error ? undefined : (
-          <div className="flex min-w-0 items-center gap-3">
-            {!helping && (
-              <TextButtonUI
-                ref={helpButton}
-                size="xs"
-                className="shrink-0 gap-1"
-                aria-label={`${name} help`}
-                onClick={() => setHelping(true)}
-              >
-                <CircleHelp aria-hidden="true" className="h-3.5 w-3.5" />
-                Help
-              </TextButtonUI>
-            )}
-            {error && (
-              <p
-                role="alert"
-                className="min-w-0 text-xs text-red-600 [overflow-wrap:anywhere]"
-              >
-                {error}
-              </p>
-            )}
-          </div>
-        )
-      }
+      backAction={backAction}
       primaryAction={primaryAction}
       // Closing discards what wasn't saved; the header's Close does the same.
       cancelAction={
-        helping ? false : { label: "Cancel", onClick: onClose, disabled: saving }
+        helping || editingConnection
+          ? false
+          : { label: "Cancel", onClick: onClose, disabled: saving }
       }
     >
       {helping ? (
@@ -540,14 +540,12 @@ function IntakeChannelModal({
               orgId={orgId}
               provider={provider}
               settings={settings.email}
+              teams={settings.teams}
               draft={draft}
               form={form}
               busy={saving}
               onChange={change}
-              onForm={(next) => {
-                setError(null);
-                setForm(next);
-              }}
+              onForm={setForm}
               onSave={save}
               onSettings={(next) => {
                 onSettings(next);
@@ -565,9 +563,27 @@ function IntakeChannelModal({
             <IntakeTeamsFields
               settings={settings.teams}
               draft={draft}
+              outlookApp={outlookApp}
+              useOutlookApp={useOutlookApp && !!outlookApp}
+              busy={saving}
+              onUseOutlookApp={setUseOutlookApp}
               onChange={change}
               onSave={save}
             />
+          )}
+          {/* Where the connection is entered: a mailbox's connect form;
+              Slack's and Teams' keys are on their main screen. */}
+          {(!provider || connecting) && (
+            <TextButtonUI
+              ref={helpButton}
+              size="xs"
+              className="gap-1 px-0"
+              aria-label={`${name} help`}
+              onClick={() => setHelping(true)}
+            >
+              <CircleHelp aria-hidden="true" className="h-3.5 w-3.5" />
+              Setup help
+            </TextButtonUI>
           )}
         </div>
         )}
@@ -704,17 +720,6 @@ function SlackManifest({ eventsUrl }: { eventsUrl: string }) {
   );
 }
 
-/** A time in the settings, in the viewer's own clock. */
-function formatSettingsTime(iso: string) {
-  return new Date(iso).toLocaleString(undefined, {
-    day: "numeric",
-    month: "short",
-    year: "numeric",
-    hour: "numeric",
-    minute: "2-digit",
-  });
-}
-
 /**
  * Outlook or Gmail: connect the intake mailbox on `provider` (Microsoft 365
  * through an Entra app, or Google Workspace through the deployment's service
@@ -726,6 +731,7 @@ function IntakeEmailFields({
   orgId,
   provider,
   settings,
+  teams,
   draft,
   form,
   busy,
@@ -738,6 +744,8 @@ function IntakeEmailFields({
   /** The channel's provider; the mailbox may be connected on the other. */
   provider: IntakeMailProvider;
   settings: IntakeAutomationSettings["email"];
+  /** Teams, whose Entra app Outlook can connect with. */
+  teams: IntakeAutomationSettings["teams"];
   draft: IntakeAutomationDraft;
   form: IntakeMailboxForm | null;
   /** Saving or connecting: the fields wait. */
@@ -760,7 +768,7 @@ function IntakeEmailFields({
         setDisconnecting(false);
         onSettings(next);
         // The modal stays open on the connect form, to connect again.
-        onForm(intakeMailboxForm(provider, next.email));
+        onForm(intakeMailboxForm(provider, next.email, next.teams.configured));
       },
       (cause) => {
         setDisconnecting(false);
@@ -796,9 +804,9 @@ function IntakeEmailFields({
           <MailboxConnectFields
             form={form}
             settings={settings}
+            teams={teams}
             busy={busy}
             onChange={(patch) => onForm({ ...form, ...patch })}
-            onBack={connected ? () => onForm(null) : undefined}
           />
         )}
       </div>
@@ -815,24 +823,36 @@ function IntakeEmailFields({
         onChange={(emailEnabled) => onChange({ emailEnabled })}
       />
       <div className="space-y-2">
-        <div className="min-w-0 space-y-1">
-          <p className={ROW_LABEL_CLASS}>Intake address</p>
-          <p className="text-sm text-gray-900 [overflow-wrap:anywhere]">
-            {settings.mailbox}
-          </p>
-          <p className="text-xs text-gray-500">
-            {INTAKE_MAIL_PROVIDER_LABELS[provider]}
-          </p>
-          <p className="text-xs text-gray-500">
-            {settings.status.last_read_at
-              ? `Last read ${formatSettingsTime(settings.status.last_read_at)}`
-              : "Not read yet"}
-          </p>
-          {provider === "graph" && settings.status.subscription_expires_at && (
-            <p className="text-xs text-gray-500">
-              New-mail notifications renew before{" "}
-              {formatSettingsTime(settings.status.subscription_expires_at)}
-            </p>
+        <div className="flex items-center justify-between gap-3">
+          <p className={ROW_LABEL_CLASS}>Connection settings</p>
+          {!confirmingDisconnect && (
+            <HeaderActionsMenu
+              title="Connection settings actions"
+              items={[
+                {
+                  label: "Send test email",
+                  icon: Send,
+                  disabled: testing || busy || disconnecting,
+                  onSelect: () => sendTestEmail(orgId, setTesting),
+                },
+                {
+                  label: "Edit connection",
+                  icon: Pencil,
+                  disabled: busy || disconnecting,
+                  onSelect: () =>
+                    onForm(
+                      intakeMailboxForm(provider, settings, teams.configured),
+                    ),
+                },
+                {
+                  label: "Disconnect",
+                  icon: Unplug,
+                  variant: "danger",
+                  disabled: busy || disconnecting,
+                  onSelect: () => setConfirmingDisconnect(true),
+                },
+              ]}
+            />
           )}
         </div>
         {settings.status.error && (
@@ -840,16 +860,15 @@ function IntakeEmailFields({
             <p>{settings.status.error}</p>
           </SettingsNotice>
         )}
-        {confirmingDisconnect ? (
+        {confirmingDisconnect && (
           <div
             role="group"
             aria-label="Disconnect the intake mailbox?"
             className="space-y-2"
           >
             <p className="text-sm text-gray-700">
-              Disconnect the intake mailbox? MikeGC stops reading and replying
-              from it at once, and mail sent to it is no longer recorded.
-              Requests already recorded keep their history.
+              Disconnect? MikeGC stops reading and replying from this mailbox
+              right away. Recorded requests are kept.
             </p>
             <div className="flex flex-wrap items-center gap-2">
               <PillButtonUI
@@ -863,36 +882,6 @@ function IntakeEmailFields({
                 Disconnect
               </PillButtonUI>
             </div>
-          </div>
-        ) : (
-          <div className="flex flex-wrap items-center gap-2">
-            <PillButtonUI
-              tone="white"
-              size="sm"
-              loading={testing}
-              disabled={testing || busy || disconnecting}
-              onClick={() => sendTestEmail(orgId, setTesting)}
-            >
-              Send test email
-            </PillButtonUI>
-            <PillButtonUI
-              tone="white"
-              size="sm"
-              disabled={busy || disconnecting}
-              aria-label={`Reconnect ${INTAKE_MAIL_PROVIDER_LABELS[provider]}`}
-              onClick={() => onForm(intakeMailboxForm(provider, settings))}
-            >
-              Reconnect
-            </PillButtonUI>
-            <PillButtonUI
-              tone="danger"
-              size="sm"
-              loading={disconnecting}
-              disabled={busy || disconnecting}
-              onClick={() => setConfirmingDisconnect(true)}
-            >
-              Disconnect
-            </PillButtonUI>
           </div>
         )}
       </div>
@@ -955,29 +944,6 @@ function SenderDomains({
       <label htmlFor={id} className={LABEL_CLASS}>
         Allowed sender domains
       </label>
-      {draft.domains.length > 0 && (
-        <ul className="mb-2 space-y-1">
-          {draft.domains.map((domain) => (
-            <li
-              key={domain}
-              className="flex min-w-0 items-center justify-between gap-2 text-sm text-gray-900"
-            >
-              <span className="min-w-0 [overflow-wrap:anywhere]">{domain}</span>
-              <TextButtonUI
-                size="icon-xs"
-                aria-label={`Remove ${domain}`}
-                onClick={() =>
-                  onChange({
-                    domains: draft.domains.filter((item) => item !== domain),
-                  })
-                }
-              >
-                <X aria-hidden="true" className="h-3.5 w-3.5" />
-              </TextButtonUI>
-            </li>
-          ))}
-        </ul>
-      )}
       {/* Add sits inside the field, at its end. */}
       <div className="relative">
         <SettingsTextInput
@@ -1012,6 +978,29 @@ function SenderDomains({
           {domainError}
         </p>
       )}
+      {draft.domains.length > 0 && (
+        <ul className="mt-1.5 divide-y divide-gray-100">
+          {draft.domains.map((domain) => (
+            <li
+              key={domain}
+              className="flex min-h-9 min-w-0 items-center justify-between gap-2 pl-3 pr-1.5 text-sm text-gray-900"
+            >
+              <span className="min-w-0 [overflow-wrap:anywhere]">{domain}</span>
+              <TextButtonUI
+                size="icon-xs"
+                aria-label={`Remove ${domain}`}
+                onClick={() =>
+                  onChange({
+                    domains: draft.domains.filter((item) => item !== domain),
+                  })
+                }
+              >
+                <X aria-hidden="true" className="h-3.5 w-3.5" />
+              </TextButtonUI>
+            </li>
+          ))}
+        </ul>
+      )}
     </div>
   );
 }
@@ -1025,16 +1014,16 @@ function SenderDomains({
 function MailboxConnectFields({
   form,
   settings,
+  teams,
   busy,
   onChange,
-  onBack,
 }: {
   form: IntakeMailboxForm;
   settings: IntakeAutomationSettings["email"];
+  teams: IntakeAutomationSettings["teams"];
   busy: boolean;
   onChange: (patch: Partial<IntakeMailboxForm>) => void;
   /** While reconnecting: back to the connection that is kept. */
-  onBack?: () => void;
 }) {
   const secretSaved =
     settings.provider === "graph" && settings.graph.secret_set;
@@ -1042,11 +1031,6 @@ function MailboxConnectFields({
   const delegateTo = pastedClientId || settings.gmail.client_id;
   return (
     <div className="space-y-4">
-      {onBack && (
-        <TextButtonUI size="xs" className="px-0" disabled={busy} onClick={onBack}>
-          Keep the current connection
-        </TextButtonUI>
-      )}
       <TextField
         label="Intake address"
         type="email"
@@ -1055,7 +1039,26 @@ function MailboxConnectFields({
         maxLength={320}
         onChange={(mailbox) => onChange({ mailbox })}
       />
-      {form.provider === "graph" ? (
+      {form.provider === "graph" && teams.configured && (
+        <ToggleRow
+          bare
+          label="Use the same app as Teams"
+          checked={form.useTeamsApp}
+          disabled={busy}
+          onChange={(useTeamsApp) => onChange({ useTeamsApp })}
+        />
+      )}
+      {form.provider === "graph" && form.useTeamsApp ? (
+        <SameAppFields
+          fields={[
+            { label: "Tenant ID", value: teams.tenant_id },
+            { label: "Client ID", value: teams.app_id },
+          ]}
+          other="Teams"
+          // Outlook also needs Exchange to let the app use this mailbox.
+          extra="Exchange must also let this app use the intake mailbox."
+        />
+      ) : form.provider === "graph" ? (
         <>
           <TextField
             label="Tenant ID"
@@ -1111,6 +1114,48 @@ function MailboxConnectFields({
 }
 
 /**
+ * Which Entra app a channel will use when it reuses `other`'s: its IDs in
+ * full (they aren't secret), and that the secret is copied, never shown.
+ */
+function SameAppFields({
+  fields,
+  other,
+  extra,
+}: {
+  /** The channel's own fields, in its order, with the other channel's values. */
+  fields: { label: string; value: string | null }[];
+  other: string;
+  extra?: string;
+}) {
+  const noop = () => {};
+  return (
+    <>
+      {fields.map((field) => (
+        <TextField
+          key={field.label}
+          label={field.label}
+          value={field.value ?? ""}
+          disabled
+          onChange={noop}
+        />
+      ))}
+      <SecretField
+        label="Client secret"
+        saved
+        value=""
+        placeholder=""
+        disabled
+        onChange={noop}
+      />
+      <p className={ROW_DESCRIPTION_CLASS}>
+        {`MikeGC copies the client secret from ${other}. Changing it in ${other} later doesn't change it here.`}
+        {extra ? ` ${extra}` : ""}
+      </p>
+    </>
+  );
+}
+
+/**
  * Slack: the switch, the events URL to paste into the app, its write-only
  * Signing Secret and Bot User OAuth Token, the workspace they belong to, and
  * what to fix when the app lacks a scope.
@@ -1159,16 +1204,18 @@ function IntakeSlackFields({
         onEnter={onSave}
       />
       {settings.configured && (settings.team_name || settings.team_id) && (
-        <div>
-          <p className={LABEL_CLASS}>Connected workspace</p>
-          <p className="text-sm text-gray-900 [overflow-wrap:anywhere]">
-            {settings.team_name ?? settings.team_id}
-          </p>
-          {settings.bot_user_id && (
-            <p className="text-xs text-gray-500 [overflow-wrap:anywhere]">
-              MikeGC bot user {settings.bot_user_id}
+        <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
+          <p className={ROW_LABEL_CLASS}>Connected workspace</p>
+          <div className="min-w-0 text-right">
+            <p className="text-sm text-gray-900 [overflow-wrap:anywhere]">
+              {settings.team_name ?? settings.team_id}
             </p>
-          )}
+            {settings.bot_user_id && (
+              <p className="text-xs text-gray-500 [overflow-wrap:anywhere]">
+                MikeGC bot user {settings.bot_user_id}
+              </p>
+            )}
+          </div>
         </div>
       )}
       {settings.configured && settings.missing_scopes.length > 0 && (
@@ -1203,11 +1250,20 @@ function IntakeSlackFields({
 function IntakeTeamsFields({
   settings,
   draft,
+  outlookApp,
+  useOutlookApp,
+  busy,
+  onUseOutlookApp,
   onChange,
   onSave,
 }: {
   settings: IntakeAutomationSettings["teams"];
   draft: IntakeAutomationDraft;
+  /** The connected Outlook mailbox's app, which Teams can be set up with. */
+  outlookApp: { tenantId: string; clientId: string } | null;
+  useOutlookApp: boolean;
+  busy: boolean;
+  onUseOutlookApp: (use: boolean) => void;
   onChange: Change;
   onSave: () => void;
 }) {
@@ -1227,34 +1283,55 @@ function IntakeTeamsFields({
         name="Teams events URL"
         value={settings.events_url}
       />
-      <TextField
-        label="App ID"
-        value={draft.teamsAppId}
-        placeholder="The Entra app's Application (client) ID"
-        maxLength={100}
-        onChange={(teamsAppId) => onChange({ teamsAppId })}
-        onEnter={onSave}
-      />
-      <TextField
-        label="Tenant ID"
-        value={draft.teamsTenantId}
-        placeholder="Your Microsoft 365 tenant ID"
-        maxLength={100}
-        onChange={(teamsTenantId) => onChange({ teamsTenantId })}
-        onEnter={onSave}
-      />
-      <SecretField
-        label="Client secret"
-        saved={settings.configured}
-        value={draft.teamsSecret}
-        placeholder="The Entra app's client secret value"
-        onChange={(teamsSecret) => onChange({ teamsSecret })}
-        onEnter={onSave}
-      />
+      {outlookApp && (
+        <ToggleRow
+          bare
+          label="Use the same app as Outlook"
+          checked={useOutlookApp}
+          disabled={busy}
+          onChange={onUseOutlookApp}
+        />
+      )}
+      {useOutlookApp && outlookApp ? (
+        <SameAppFields
+          fields={[
+            { label: "App ID", value: outlookApp.clientId },
+            { label: "Tenant ID", value: outlookApp.tenantId },
+          ]}
+          other="Outlook"
+        />
+      ) : (
+        <>
+          <TextField
+            label="App ID"
+            value={draft.teamsAppId}
+            placeholder="The Entra app's Application (client) ID"
+            maxLength={100}
+            onChange={(teamsAppId) => onChange({ teamsAppId })}
+            onEnter={onSave}
+          />
+          <TextField
+            label="Tenant ID"
+            value={draft.teamsTenantId}
+            placeholder="Your Microsoft 365 tenant ID"
+            maxLength={100}
+            onChange={(teamsTenantId) => onChange({ teamsTenantId })}
+            onEnter={onSave}
+          />
+          <SecretField
+            label="Client secret"
+            saved={settings.configured}
+            value={draft.teamsSecret}
+            placeholder="The Entra app's client secret value"
+            onChange={(teamsSecret) => onChange({ teamsSecret })}
+            onEnter={onSave}
+          />
+        </>
+      )}
       {settings.configured && (
-        <div>
-          <p className={LABEL_CLASS}>Document access</p>
-          <p className="text-sm text-gray-900">
+        <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
+          <p className={ROW_LABEL_CLASS}>Document access</p>
+          <p className="text-right text-sm text-gray-900">
             {settings.files_access === null
               ? "Not checked yet"
               : settings.files_access

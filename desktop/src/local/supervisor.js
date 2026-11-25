@@ -36,11 +36,25 @@ let running = false;
 // A boot in flight, and whether a stop has asked it to give up. Quitting
 // during the first-run boot (about a minute) must still stop every child,
 // and must stop the boot from spawning more after the stop has run.
+// `bootPromise` is the promise startLocalStack handed out, so a stop can
+// wait for the in-flight step to finish and clean up after it.
 let booting = false;
+let bootPromise = null;
 let aborted = false;
 
+// A boot that a stop ended rejects with this, so the caller can tell an
+// asked-for stop (quit) from a failure worth showing the user.
+const STOPPED_DURING_BOOT = "LOCAL_STACK_STOPPED";
+function isLocalStackStopped(err) {
+  return err?.code === STOPPED_DURING_BOOT;
+}
+
+function stoppedDuringBoot() {
+  return Object.assign(new Error("local stack stopped during boot"), { code: STOPPED_DURING_BOOT });
+}
+
 function throwIfAborted() {
-  if (aborted) throw new Error("local stack stopped during boot");
+  if (aborted) throw stoppedDuringBoot();
 }
 
 function log(dirs, name) {
@@ -196,9 +210,46 @@ function findSoffice() {
 
 // --- The boot sequence ------------------------------------------------------
 
-async function startLocalStack(app, status = () => {}) {
-  if (running) return { frontendUrl: FRONTEND_URL };
-  if (booting) throw new Error("local stack is already starting");
+/**
+ * The backend runs on Electron's bundled Node (ELECTRON_RUN_AS_NODE), not on
+ * a Node the user installs, so its engines floor is checked against that
+ * Node before the backend is spawned. Without this, an Electron downgrade or
+ * major change below backend/package.json's floor would crash the backend at boot
+ * inside undici (MIKE-BACKEND-3R). The backend's own check script (staged
+ * next to its package.json) runs on the same binary and flags the backend
+ * will get, so the rule lives in one place and the Node checked is the Node
+ * the backend runs on. It runs as a child process rather than a require():
+ * its path is only known at run time (repo checkout or app bundle).
+ * `env` is merged over process.env (tests use it to fake the version).
+ */
+function assertBackendNodeSupported(backendDir, env = {}) {
+  const check = spawnSync(
+    process.execPath,
+    [path.join(backendDir, "scripts", "check-node-version.cjs")],
+    { cwd: backendDir, env: { ...process.env, ...env, ELECTRON_RUN_AS_NODE: "1" }, encoding: "utf8" },
+  );
+  if (check.status !== 0) {
+    const problem = (check.stderr || "").trim() || String(check.error || `exit ${check.status}`);
+    throw new Error(`This build runs the backend on Electron's Node. ${problem}`);
+  }
+}
+
+// Not async: the promise returned is the one a stop waits on, so the stop's
+// wait also marks it handled and an aborted boot cannot surface as an
+// unhandled rejection.
+function startLocalStack(app, status = () => {}) {
+  if (running) return Promise.resolve({ frontendUrl: FRONTEND_URL });
+  if (booting) return Promise.reject(new Error("local stack is already starting"));
+  booting = true;
+  aborted = false;
+  bootPromise = boot(app, status).finally(() => {
+    booting = false;
+    bootPromise = null;
+  });
+  return bootPromise;
+}
+
+async function boot(app, status) {
   const paths = stackPaths(app);
   const dirs = dataPaths(app);
   for (const d of [dirs.root, dirs.storage, dirs.logs]) {
@@ -206,8 +257,6 @@ async function startLocalStack(app, status = () => {}) {
   }
   const secrets = loadOrCreateSecrets(dirs.secretsFile);
 
-  booting = true;
-  aborted = false;
   try {
     // 1. Postgres
     hydratePgSymlinks(paths);
@@ -310,6 +359,7 @@ async function startLocalStack(app, status = () => {}) {
     // 6. Backend — Electron's own binary in Node mode, so no separate
     // runtime ships with the app.
     status("Starting MikeGC services…");
+    assertBackendNodeSupported(paths.backendDir);
     const soffice = findSoffice();
     spawnService("backend", process.execPath,
       [path.join(paths.backendDir, "dist", "index.js")], {
@@ -372,16 +422,27 @@ async function startLocalStack(app, status = () => {}) {
     status("Ready");
     return { frontendUrl: FRONTEND_URL };
   } catch (err) {
-    await stopLocalStack(paths);
-    throw err;
-  } finally {
-    booting = false;
+    // Also reached when a stop killed a child under a step in flight (that
+    // step then fails with its own error): report the stop, not the fallout.
+    await stopChildren();
+    throw aborted ? stoppedDuringBoot() : err;
   }
 }
 
-async function stopLocalStack(paths) {
+async function stopLocalStack() {
   running = false;
-  if (booting) aborted = true;
+  const inFlight = bootPromise;
+  if (inFlight) aborted = true;
+  // Stop what is running now, so a step blocked on a child (a query against
+  // postgres, a health probe) fails fast instead of running to completion.
+  await stopChildren();
+  // Then wait for the boot itself: whatever its in-flight step started
+  // before it noticed the stop is cleaned up by its catch, before the quit
+  // proceeds. Its rejection is the expected outcome of the stop.
+  if (inFlight) await inFlight.catch(() => {});
+}
+
+async function stopChildren() {
   if (gatewayServer) {
     try { gatewayServer.close(); } catch { /* already closed */ }
     gatewayServer = null;
@@ -419,9 +480,11 @@ function localStackActive() {
 }
 
 module.exports = {
+  assertBackendNodeSupported,
   startLocalStack,
   stopLocalStack,
   localStackRunning,
   localStackActive,
+  isLocalStackStopped,
   hasExited,
 };

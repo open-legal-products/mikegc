@@ -1,10 +1,11 @@
 "use client";
+import { BACKEND_REPORTING_OWNER } from "@mike/client";
 
 import { streamChatTurn } from "@/app/lib/mikeApi";
 import { readSseFrames } from "@/app/lib/sse";
 import { isPanelDocument } from "@/app/components/shared/types";
 import type { AssistantEvent, Citation } from "@/app/components/shared/types";
-import type { AssistantTurnHandle } from "@/app/lib/assistantTurns";
+import type { AssistantTurnHandle } from "@/app/lib/assistantTurnTypes";
 import type {
   ConnectorApprovalItem,
   WebSource,
@@ -48,7 +49,15 @@ export type TurnStreamHooks = {
    * goes. `message` is what the bubble shows; `safeToDisplay` marks a
    * configuration refusal that a re-send would repeat.
    */
-  onErrorFrame?: (frame: { message: string; safeToDisplay: boolean }) => void;
+  onErrorFrame?: (frame: {
+    message: string;
+    safeToDisplay: boolean;
+    /** The backend's failure code, when the frame named one. */
+    code: string | null;
+    /** The id of the request that produced the frame, when it carried one. */
+    requestId: string | null;
+    reportingOwner?: typeof BACKEND_REPORTING_OWNER;
+  }) => void;
 };
 
 /**
@@ -65,6 +74,7 @@ export async function chatRequestError(response: Response): Promise<Error> {
     typeof value === "string" && value.trim() ? value.trim() : null;
   let detail: string | null = null;
   let code: string | null = null;
+  let reportingOwner: typeof BACKEND_REPORTING_OWNER | undefined;
   let requestId = read(response.headers.get("x-request-id"));
   // Only a JSON error body is read: anything else (an HTML proxy page, a
   // stream that never ends) is released unread so the failure still
@@ -75,6 +85,7 @@ export async function chatRequestError(response: Response): Promise<Error> {
     const body = (await response.json()) as Record<string, unknown>;
     detail = read(body?.detail);
     code = read(body?.code);
+    reportingOwner = body?.reporting_owner === BACKEND_REPORTING_OWNER ? BACKEND_REPORTING_OWNER : undefined;
     requestId = read(body?.request_id) ?? requestId;
   } catch {
     try {
@@ -89,14 +100,11 @@ export async function chatRequestError(response: Response): Promise<Error> {
     ),
     {
       status: response.status,
+      ...(reportingOwner ? { reportingOwner } : {}),
       ...(code ? { code } : {}),
       ...(requestId ? { requestId } : {}),
     },
   );
-}
-
-export function isAbortError(error: unknown): boolean {
-  return error instanceof Error && error.name === "AbortError";
 }
 
 function readableStreamError(value: unknown, safeToDisplay: boolean): string {
@@ -479,7 +487,16 @@ export async function consumeAssistantTurnStream(
             error: message,
           }));
           turn.setLoadingCitations(false);
-          hooks.onErrorFrame?.({ message, safeToDisplay });
+          // Read defensively: the backend is adding `request_id` to error
+          // frames, and older servers send neither field.
+          hooks.onErrorFrame?.({
+            message,
+            safeToDisplay,
+            ...(data.reporting_owner === BACKEND_REPORTING_OWNER ? { reportingOwner: BACKEND_REPORTING_OWNER } : {}),
+            code: typeof data.code === "string" ? data.code : null,
+            requestId:
+              typeof data.request_id === "string" ? data.request_id : null,
+          });
           continue;
         }
 
@@ -1520,7 +1537,6 @@ export async function readAssistantTurn(args: {
       return;
     } catch (error) {
       if (
-        isAbortError(error) ||
         signal?.aborted ||
         !cursor.chatId ||
         !cursor.turnId ||

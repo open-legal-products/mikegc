@@ -113,7 +113,11 @@ async function recordDelivery(
     throw result.kind === "error" ? result.error : new Error(result.detail);
 }
 
-/** The link to a request, in the workspace the web app names it by. */
+/**
+ * The link to a request, in the workspace the web app names it by. Only the
+ * organization's members can open it, so it goes in notes for them, never in
+ * a message to a requester.
+ */
 export async function requestLink(db: Db, orgId: string, requestId: string) {
   const workspace = (await isPersonalOrg(db, orgId)) ? "personal" : orgId;
   return `${configuredFrontendUrl()}/intake/${requestId}?org=${encodeURIComponent(workspace)}`;
@@ -198,7 +202,6 @@ async function outboundMessage(
       row.kind === "acknowledgement"
         ? {
             subject: r.subject,
-            link: await requestLink(db, row.org_id, row.request_id),
             assignee: r.assignee_id ? await memberName(db, r.assignee_id) : null,
           }
         : undefined,

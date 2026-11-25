@@ -11,7 +11,7 @@ import type {
 } from "@mike/contracts";
 import { useWorkspace } from "@/app/contexts/WorkspaceContext";
 import { notifyPartialFailure, notifyError } from "@/app/lib/userFacingError";
-import { notifySuccess } from "@/shared/lib/errorNotifier";
+import { notifySuccess } from "@mike/client";
 import {
   commandIntakeRequest,
   getIntakeMembers,
@@ -48,8 +48,8 @@ import {
 import { IntakeSkeuoIcon } from "@/app/components/shared/AppSidebarSkeuoIcons";
 import { formatDate } from "@/app/components/projects/ProjectPageParts";
 import { EmptyState } from "@/app/components/ui/empty-state";
-import { PillButtonUI } from "@/shared/ui/PillButtonUI";
-import { DropdownItem, DropdownSeparator } from "@/shared/ui/dropdown";
+import { PillButtonUI } from "@mike/ui";
+import { DropdownItem, DropdownSeparator } from "@mike/ui";
 import { ConfirmPopup } from "@/app/components/popups/ConfirmPopup";
 import { discardIntakeDraft, getIntakeMemory } from "@/app/lib/intakeMemory";
 import {
@@ -60,7 +60,7 @@ import {
   type IntakeTab,
 } from "./intakeQuery";
 import { IntakePageHeader } from "./IntakePageHeader";
-import { TabPillButtonUI } from "@/shared/ui/TabPillButtonUI";
+import { TabPillButtonUI } from "@mike/ui";
 import { IntakeReasonModal } from "./IntakeReasonModal";
 import { intakeError } from "./useIntakeOperation";
 import {
@@ -265,10 +265,11 @@ export function Inbox({
   });
   // Only rows on screen can be selected: a refresh that drops one drops it
   // from the selection, so it is not selected again if it comes back.
-  if (selection.key === queryKey && rows) {
-    const shown = selection.ids.filter((id) =>
-      rows.some((row) => row.id === id),
-    );
+  if (selection.key === queryKey && rows && selection.ids.length > 0) {
+    // By set: the list grows as it is scrolled, and scanning it per selected
+    // row (and the selection per row, below) was quadratic after Select all.
+    const rowIds = new Set(rows.map((row) => row.id));
+    const shown = selection.ids.filter((id) => rowIds.has(id));
     if (shown.length !== selection.ids.length)
       setSelection({ key: queryKey, ids: shown });
   }
@@ -278,8 +279,10 @@ export function Inbox({
       key: queryKey,
       ids: update(current.key === queryKey ? current.ids : []),
     }));
+  const selectedSet = new Set(selectedIds);
   const allSelected =
-    !!rows && rows.length > 0 && rows.every((r) => selectedIds.includes(r.id));
+    !!rows && rows.length > 0 && rows.every((r) => selectedSet.has(r.id));
+  const memberById = new Map(members.map((m) => [m.user_id, m]));
 
   useEffect(() => {
     let active = true;
@@ -839,7 +842,7 @@ export function Inbox({
           <TableBody>
             {rows.map((request) => {
               const href = hrefFor(request);
-              const selected = selectedIds.includes(request.id);
+              const selected = selectedSet.has(request.id);
               const overdue = isIntakeOverdue(request);
               return (
                 <TableRow
@@ -885,11 +888,10 @@ export function Inbox({
                       <IntakePerson
                         name={request.assignee_name}
                         email={
-                          members.find((m) => m.user_id === request.assignee_id)
-                            ?.email
+                          memberById.get(request.assignee_id ?? "")?.email
                         }
                         photo={
-                          members.find((m) => m.user_id === request.assignee_id)
+                          memberById.get(request.assignee_id ?? "")
                             ?.profile_photo
                         }
                       />

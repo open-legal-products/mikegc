@@ -4,7 +4,6 @@ import { createServerSupabase } from "../../lib/supabase";
 import { sendServiceFailure } from "../../lib/serviceResult";
 import {
   receiveGraphNotification,
-  receiveInboundEmail,
   receiveSlackEvent,
   receiveTeamsActivity,
 } from "./intake.service";
@@ -85,19 +84,6 @@ intakeWebhooksRouter.post(
     if (result.kind === "refused")
       return void res.status(result.status).json({ detail: "Not accepted." });
     res.status(202).end();
-  }),
-);
-
-// The retired Postmark webhook answers 403, which tells Postmark to stop
-// retrying. Its token is never read or logged.
-intakeWebhooksRouter.post(
-  "/email/:token",
-  (req, _res, next) => {
-    req.originalUrl = req.originalUrl.replace(/(\/email\/)[^/?#]*/, "$1:token");
-    next();
-  },
-  asyncRoute(async (_req, res) => {
-    sendServiceFailure(res, await receiveInboundEmail());
   }),
 );
 

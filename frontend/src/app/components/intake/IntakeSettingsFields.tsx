@@ -7,9 +7,9 @@ import { SettingsRow } from "@/app/components/settings/SettingsRow";
 import { SettingsTextInput } from "@/app/components/settings/SettingsTextInput";
 import { notifyError } from "@/app/lib/userFacingError";
 import { cn } from "@/app/lib/utils";
-import { TextButtonUI } from "@/shared/ui/TextButtonUI";
-import { TextSlabUI } from "@/shared/ui/TextSlabUI";
-import { ToggleSwitchUI } from "@/shared/ui/ToggleSwitchUI";
+import { TextButtonUI } from "@mike/ui";
+import { TextSlabUI } from "@mike/ui";
+import { ToggleSwitchUI } from "@mike/ui";
 
 /**
  * The fields intake's settings are built from, on the page's cards and in
@@ -181,6 +181,7 @@ export function TextField({
   type = "text",
   maxLength,
   autoComplete = "off",
+  disabled = false,
   onChange,
   onEnter,
 }: {
@@ -191,6 +192,8 @@ export function TextField({
   type?: "text" | "email" | "password";
   maxLength?: number;
   autoComplete?: string;
+  /** Shown but not editable, such as a value another channel supplies. */
+  disabled?: boolean;
   onChange: (value: string) => void;
   /** Enter does this rather than submitting a form, such as saving. */
   onEnter?: () => void;
@@ -206,6 +209,7 @@ export function TextField({
         type={type}
         value={value}
         placeholder={placeholder}
+        disabled={disabled}
         maxLength={maxLength}
         autoComplete={autoComplete}
         spellCheck={false}
@@ -237,6 +241,7 @@ export function SecretField({
   saved,
   value,
   placeholder,
+  disabled = false,
   onChange,
   onEnter,
 }: {
@@ -244,13 +249,15 @@ export function SecretField({
   saved: boolean;
   value: string;
   placeholder: string;
+  /** Shown masked and not editable, such as a secret another channel supplies. */
+  disabled?: boolean;
   onChange: (value: string) => void;
   /** Enter does this rather than submitting a form, such as saving. */
   onEnter?: () => void;
 }) {
   const id = useId();
   const [editing, setEditing] = useState(false);
-  const masked = saved && !editing && !value;
+  const masked = saved && (disabled || (!editing && !value));
   return (
     <div>
       <label htmlFor={id} className={cn(ROW_LABEL_CLASS, "mb-2 block")}>
@@ -264,6 +271,7 @@ export function SecretField({
         spellCheck={false}
         value={masked ? SAVED_KEY_MASK : value}
         readOnly={masked}
+        disabled={disabled}
         placeholder={saved ? "Paste a new one to replace it" : placeholder}
         onFocus={() => setEditing(true)}
         onBlur={() => setEditing(false)}

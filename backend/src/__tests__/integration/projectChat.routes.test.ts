@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import request from "supertest";
+import { isReported } from "../../lib/observability/sentry";
 
 const {
     runLLMStream,
@@ -189,6 +190,16 @@ vi.mock("../../lib/documentWorkspace", async (importOriginal) => ({
     findNewAttachmentsOutsideWorkspace,
 }));
 
+// The organization's profile has its own tests (lib/__tests__/orgProfile.test.ts);
+// here it is only what the project's organization hands the prompt.
+const { loadOrgContext } = vi.hoisted(() => ({
+    loadOrgContext: vi.fn(async (): Promise<unknown> => null),
+}));
+vi.mock("../../lib/orgProfile", async (importOriginal) => ({
+    ...(await importOriginal<typeof import("../../lib/orgProfile")>()),
+    loadOrgContext,
+}));
+
 vi.mock("../../lib/access", () => ({
     checkProjectAccess: (...args: unknown[]) => checkProjectAccess(...args),
     ensureDocAccess: vi.fn(async () => ({ ok: true, isCreator: true })),
@@ -315,6 +326,31 @@ describe("POST /projects/:projectId/chat", () => {
         },
     );
 
+    it("carries the request id on the terminal error frame when the stream fails", async () => {
+        runLLMStream.mockRejectedValueOnce(new Error("upstream LLM failure"));
+        const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+        const res = await request(app)
+            .post("/projects/p1/chat")
+            .set("Authorization", "Bearer test")
+            .send(VALID_BODY);
+
+        expect(res.status).toBe(200);
+        const errorFrame = JSON.parse(
+            res.text
+                .split("\n")
+                .filter((line) => line.includes('"type":"error"'))
+                .at(-1)!
+                .replace(/^data:\s*/, ""),
+        ) as { message: string; request_id?: string };
+        expect(errorFrame.message).toBe(
+            "The response could not be completed. Please try again.",
+        );
+        expect(errorFrame.request_id).toBe(res.headers["x-request-id"]);
+        expect(res.text).toContain("data: [DONE]");
+        errorSpy.mockRestore();
+    });
+
     it("streams SSE on the happy path with project access granted", async () => {
         const res = await request(app)
             .post("/projects/p1/chat")
@@ -416,6 +452,35 @@ describe("POST /projects/:projectId/chat", () => {
             "u1",
             expect.anything(),
             { orgId: "org-1" },
+        );
+    });
+
+    it("tells the assistant about the project's organization, before the user's own profile", async () => {
+        checkProjectAccess.mockResolvedValue({
+            ok: true,
+            isCreator: true,
+            orgRole: "member",
+            projectRole: "owner",
+            project: { id: "p1", user_id: "u1", org_id: "org-1" },
+        });
+        loadOrgContext.mockResolvedValueOnce({
+            name: "Acme LLP",
+            profile: { industry: "Legal services" },
+        });
+
+        const res = await request(app)
+            .post("/projects/p1/chat")
+            .set("Authorization", "Bearer test")
+            .send(VALID_BODY);
+
+        expect(res.status).toBe(200);
+        expect(loadOrgContext).toHaveBeenCalledWith(expect.anything(), "org-1");
+        const systemPromptExtra = buildMessages.mock.calls[0]?.[2] as string;
+        expect(systemPromptExtra).toContain('"name": "Acme LLP"');
+        expect(systemPromptExtra).toContain('"industry": "Legal services"');
+        expect(systemPromptExtra.indexOf("ORGANIZATION:")).toBeGreaterThan(0);
+        expect(systemPromptExtra.indexOf("ORGANIZATION:")).toBeLessThan(
+            systemPromptExtra.indexOf("USER PERSONALISATION"),
         );
     });
 
@@ -708,7 +773,8 @@ describe("POST /projects/:projectId/chat", () => {
     });
 
     it("surfaces a stream failure as an in-stream error event, not an HTTP error", async () => {
-        runLLMStream.mockRejectedValue(new Error("upstream LLM failure"));
+        const original = new Error("upstream LLM failure");
+        runLLMStream.mockRejectedValue(original);
 
         const res = await request(app)
             .post("/projects/p1/chat")
@@ -718,6 +784,8 @@ describe("POST /projects/:projectId/chat", () => {
         expect(res.status).toBe(200);
         expect(res.text).toContain('"type":"error"');
         expect(res.text).toContain("[DONE]");
+        expect(isReported(original)).toBe(true);
+        expect(res.text).toContain('"reporting_owner":"backend"');
     expect(releaseMemoryConversationTurn).toHaveBeenCalledWith({
       db: expect.anything(),
       surface: "chat",

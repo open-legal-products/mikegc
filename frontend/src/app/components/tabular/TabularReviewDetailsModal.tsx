@@ -1,11 +1,13 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Modal } from "../modals/Modal";
 import { ModalSelect } from "../modals/ModalSelect";
 import { FieldLabel, FormTextInput } from "../ui/form-field";
-import { ToggleSwitchUI } from "@/shared/ui/ToggleSwitchUI";
+import { ToggleSwitchUI } from "@mike/ui";
 import type { Project, TabularReview } from "../shared/types";
+import { useAssignLatest } from "@/app/hooks/useLatestRef";
+import { notifyError } from "@/app/lib/userFacingError";
 
 interface TabularReviewDetailsModalProps {
     open: boolean;
@@ -34,7 +36,8 @@ export function TabularReviewDetailsModal({
     const [selectedProjectId, setSelectedProjectId] = useState("");
     const [saving, setSaving] = useState(false);
     const [saved, setSaved] = useState(false);
-    const [error, setError] = useState<string | null>(null);
+    // A failed save's Retry re-runs the latest save, not the one that failed.
+    const retrySave = useRef<() => void>(() => {});
 
     useEffect(() => {
         if (!open || !review) return;
@@ -43,7 +46,6 @@ export function TabularReviewDetailsModal({
         setSelectedProjectId(review.project_id ?? "");
         setSaving(false);
         setSaved(false);
-        setError(null);
     }, [open, review]);
 
     const trimmedTitle = titleDraft.trim();
@@ -68,6 +70,8 @@ export function TabularReviewDetailsModal({
         );
     }, [nextProjectId, review, trimmedTitle]);
 
+    useAssignLatest(retrySave, () => void handleSave());
+
     if (!review) return null;
 
     async function handleSave() {
@@ -82,15 +86,20 @@ export function TabularReviewDetailsModal({
         }
         setSaving(true);
         setSaved(false);
-        setError(null);
         try {
             await onSave({
                 title: trimmedTitle,
                 projectId: nextProjectId,
             });
             setSaved(true);
-        } catch {
-            setError("Could not update tabular review details.");
+        } catch (err: unknown) {
+            // A notice, not footer text: a refusal says what to fix; anything
+            // else offers Retry.
+            notifyError(err, {
+                action: "update the tabular review details",
+                onRetry: () => retrySave.current(),
+                dedupeKey: `tabular-review-details:${review?.id}`,
+            });
         } finally {
             setSaving(false);
         }
@@ -106,9 +115,7 @@ export function TabularReviewDetailsModal({
                 "Details",
             ]}
             footerStatus={
-                error ? (
-                    <span className="text-sm text-red-600">{error}</span>
-                ) : saved ? (
+                saved ? (
                     <span className="text-sm text-gray-400">Updated</span>
                 ) : null
             }
@@ -139,7 +146,6 @@ export function TabularReviewDetailsModal({
                         onChange={(event) => {
                             setTitleDraft(event.target.value);
                             setSaved(false);
-                            setError(null);
                         }}
                         placeholder="Review name"
                         variant="minimal"
@@ -159,7 +165,6 @@ export function TabularReviewDetailsModal({
                                 setUnderProject(next);
                                 if (!next) setSelectedProjectId("");
                                 setSaved(false);
-                                setError(null);
                             }}
                         >
                             Move under a project
@@ -173,7 +178,6 @@ export function TabularReviewDetailsModal({
                                 onChange={(value) => {
                                     setSelectedProjectId(value);
                                     setSaved(false);
-                                    setError(null);
                                 }}
                                 placeholder="Select project..."
                                 disabled={

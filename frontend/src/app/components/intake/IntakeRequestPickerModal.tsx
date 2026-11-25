@@ -11,7 +11,7 @@ import {
 import { useWorkspace } from "@/app/contexts/WorkspaceContext";
 import { listIntakeRequests } from "@/app/lib/mikeApi";
 import { notifyError } from "@/app/lib/userFacingError";
-import { TextButtonUI } from "@/shared/ui/TextButtonUI";
+import { TextButtonUI } from "@mike/ui";
 import { intakeStateLabel } from "./intakeLabels";
 
 /** A request picked to process: `orgId` is its workspace, or "personal". */

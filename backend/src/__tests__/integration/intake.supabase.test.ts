@@ -349,7 +349,7 @@ describe.skipIf(!url || !key || !anon)(
       const requestId = randomUUID();
       const commandId = randomUUID();
       const { handleAccountDelete } = await import(
-        "../../modules/user/user.accountJobs.js"
+        "../../application/jobs/accountDelete.js"
       );
       const { setStorageAdapter } = await import("../../lib/storage.js");
       const { createFilesystemStorageAdapter } = await import(
@@ -709,10 +709,10 @@ describe.skipIf(!url || !key || !anon)(
     });
     it("keeps intake out of new account exports and still checks older intake manifests", async () => {
       const { startUserExport, loadUserExportArtifact } = await import(
-        "../../modules/user/user.export.js"
+        "../../application/exports/requestExport.js"
       );
       const { handleExportBuild } = await import(
-        "../../modules/user/user.exportJobs.js"
+        "../../application/jobs/exportBuild.js"
       );
       const { processClaimedJob } = await import("../../lib/dbq/runner.js");
       const legacyId = randomUUID();

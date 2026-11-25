@@ -1,7 +1,8 @@
 import type { IntakeChannel } from "@mike/contracts";
-import { internalFailure, ok, type ServiceResult } from "../../lib/serviceResult";
+import { internalFailure, ok } from "../../lib/serviceResult";
 import type { Db } from "../../lib/supabase";
 import type { AutomationRow } from "./intake.settingsRow";
+import { insertInbound, type InboundStoreResult } from "./intake.inboundStore";
 import { intakeRpc } from "./intake.shared";
 
 /**
@@ -38,8 +39,12 @@ export type OutboundMessage = {
   text: string;
   /** The request's subject, which an email's subject and a Teams folder follow. */
   requestSubject: string;
-  /** An acknowledgement's link to the request and who it went to. */
-  acknowledgement?: { subject: string; link: string; assignee: string | null };
+  /**
+   * What an acknowledgement names: the request and who it went to. It carries
+   * no link to the request, whose page only the organization's members can
+   * open; the requester follows the request in its thread.
+   */
+  acknowledgement?: { subject: string; assignee: string | null };
   documents: OutboundDocument[];
 };
 
@@ -124,6 +129,28 @@ export function memberSender(name: string, fromName: string): string {
   return `${name} (${fromName})`.slice(0, 80);
 }
 
+/** What MikeGC says when a resolution sends documents without a message. */
+export const DOCUMENTS_ONLY_TEXT = "Here are the documents from Legal.";
+
+/**
+ * An acknowledgement as lines of text, each passed through the channel's
+ * `escape`: thanks, who will pick the request up, and any questions, whose
+ * framing follows on the first line. While MikeGC asks before choosing who
+ * gets the request, it doesn't promise that someone will.
+ */
+export function acknowledgementLines(
+  ack: NonNullable<OutboundMessage["acknowledgement"]>,
+  questions: string,
+  escape: (value: string) => string = (value) => value,
+): string[] {
+  let first = "Thanks, I've passed this to Legal.";
+  if (ack.assignee) first += ` ${escape(ack.assignee)} will pick it up.`;
+  else if (!questions) first += " Someone from the team will pick it up soon.";
+  if (!questions) return [first];
+  const [framing = "", ...rest] = questions.split("\n");
+  return [`${first} ${escape(framing)}`, ...rest.map(escape)];
+}
+
 /**
  * A message as plain text, for channels that cannot change the sender of
  * one message: a member's question reads "Emma Chen (Legal) asks: …".
@@ -133,17 +160,9 @@ export function plainMessageText(
   message: OutboundMessage,
   options: { fromName: string; signMember: boolean },
 ): string {
-  const lines: string[] = [];
-  if (message.acknowledgement) {
-    const ack = message.acknowledgement;
-    lines.push(
-      `Logged for Legal: ${ack.subject} (${ack.link}). ` +
-        (ack.assignee ? `Assigned to ${ack.assignee}.` : "Not assigned to a reviewer yet."),
-    );
-    if (message.text) lines.push("", message.text);
-    return lines.join("\n");
-  }
-  const text = message.text || (message.documents.length ? "Legal sent these documents." : "");
+  if (message.acknowledgement)
+    return acknowledgementLines(message.acknowledgement, message.text).join("\n");
+  const text = message.text || (message.documents.length ? DOCUMENTS_ONLY_TEXT : "");
   if (options.signMember && message.author.kind === "member") {
     const who = memberSender(message.author.name, options.fromName);
     return message.kind === "question" ? `${who} asks:\n${text}` : `${who}:\n${text}`;
@@ -249,7 +268,7 @@ export async function updateLinkAddress(
 
 /**
  * Store a message in a request's thread as a reply, once, and queue the
- * intake.reply job for it. Its content is kept only until the job has put it
+ * intake.agent job for it. Its content is kept only until the job has put it
  * on the request. A delivery seen before is not stored again; one still
  * waiting is queued again in case the first delivery couldn't queue it.
  */
@@ -263,23 +282,23 @@ export async function routeThreadMessage(
     payload: Record<string, unknown>;
     dispatch: (db: Db, orgId: string, inboundId: string) => Promise<void>;
   },
-): Promise<ServiceResult<"received" | "duplicate">> {
-  const { data, error } = await db
-    .from("intake_inbound")
-    .insert({
-      org_id: args.orgId,
-      source: args.source,
-      kind: "reply",
-      external_id: args.externalId,
-      status: "pending",
-      request_id: args.requestId,
-      payload: args.payload,
-    })
-    .select("id")
-    .single();
-  let inboundId: string | null = null;
+): Promise<InboundStoreResult<"received" | "duplicate">> {
+  const stored = await insertInbound(db, {
+    org_id: args.orgId,
+    source: args.source,
+    kind: "reply",
+    external_id: args.externalId,
+    status: "pending",
+    request_id: args.requestId,
+    payload: args.payload,
+  });
+  if (!stored.ok) return stored;
+  // Ownership follows the INSERT, not whether its subsequent job dispatch
+  // succeeds. A duplicate's newly staged payload was never stored.
+  const payloadOwnership = stored.payloadOwnership;
+  let inboundId = stored.data;
   let status: "received" | "duplicate" = "received";
-  if (error && (error as { code?: string }).code === "23505") {
+  if (inboundId === null) {
     status = "duplicate";
     const existing = await db
       .from("intake_inbound")
@@ -288,20 +307,81 @@ export async function routeThreadMessage(
       .eq("source", args.source)
       .eq("external_id", args.externalId)
       .maybeSingle();
-    if (existing.error) return internalFailure(existing.error);
+    if (existing.error) return Object.assign(internalFailure(existing.error), { payloadOwnership });
     const row = existing.data as { id: string; status: string } | null;
     if (row?.status === "pending") inboundId = row.id;
-  } else if (error || !data) {
-    return internalFailure(error);
-  } else {
-    inboundId = (data as { id: string }).id;
   }
   if (inboundId) {
     try {
       await args.dispatch(db, args.orgId, inboundId);
     } catch (cause) {
-      return internalFailure(cause);
+      return Object.assign(internalFailure(cause), { payloadOwnership });
     }
   }
-  return ok(status);
+  return Object.assign(ok(status), { payloadOwnership });
+}
+
+/** Where MikeGC can answer instead of recording: chats and email threads. */
+export type ConversationSource = "slack" | "teams" | "gmail" | "outlook";
+
+/** One of MikeGC's answers in a thread with no request, as it was sent. */
+export type ConversationReply = { at: string; text: string };
+/** Answers kept per thread; MikeGC records the next message after a few. */
+const KEPT_REPLIES = 5;
+
+/**
+ * A chat or email thread where MikeGC answered instead of recording a
+ * request: how many times it has answered there and what it said, or null
+ * when it never has.
+ */
+export async function findConversation(
+  db: Db,
+  orgId: string,
+  source: ConversationSource,
+  threadKey: string,
+): Promise<{ rounds: number; replies: ConversationReply[] } | null> {
+  const { data, error } = await db
+    .from("intake_conversations")
+    .select("rounds, replies")
+    .eq("org_id", orgId)
+    .eq("source", source)
+    .eq("thread_key", threadKey)
+    .maybeSingle();
+  if (error) throw error;
+  if (!data) return null;
+  const row = data as { rounds: number; replies?: unknown };
+  const replies = (Array.isArray(row.replies) ? row.replies : []).filter(
+    (r): r is ConversationReply =>
+      !!r && typeof (r as ConversationReply).at === "string" && typeof (r as ConversationReply).text === "string",
+  );
+  return { rounds: row.rounds, replies };
+}
+
+/** Count one more of MikeGC's answers in a chat or email thread, keeping what it said. */
+export async function rememberConversation(
+  db: Db,
+  orgId: string,
+  source: ConversationSource,
+  threadKey: string,
+  reply: ConversationReply,
+): Promise<void> {
+  const existing = await findConversation(db, orgId, source, threadKey);
+  const updated_at = new Date().toISOString();
+  const said = { at: reply.at, text: reply.text.slice(0, 1000) };
+  const { error } = existing
+    ? await db
+        .from("intake_conversations")
+        .update({
+          rounds: existing.rounds + 1,
+          replies: [...existing.replies, said].slice(-KEPT_REPLIES),
+          updated_at,
+        })
+        .eq("org_id", orgId)
+        .eq("source", source)
+        .eq("thread_key", threadKey)
+    : await db
+        .from("intake_conversations")
+        .insert({ org_id: orgId, source, thread_key: threadKey, rounds: 1, replies: [said], updated_at });
+  // Two answers at once in a new thread: the other one remembered it.
+  if (error && (error as { code?: string }).code !== "23505") throw error;
 }

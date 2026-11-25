@@ -4,6 +4,7 @@ import type {
 } from "@mike/contracts";
 import crypto from "node:crypto";
 import type { Db } from "../supabase";
+import { type ConnectorOwner, workspaceFilter } from "../connectorOwner";
 import {
   base64Url,
   encryptString,
@@ -11,8 +12,13 @@ import {
   stateHash,
 } from "../mcp/client";
 import { googleDriveOAuthEnv } from "./googleDrive";
+import {
+  googleServiceUnavailableMessage,
+  isGoogleServiceAvailable,
+} from "./googleAvailability";
 import { ConnectorSetupError } from "../mcp/errors";
 import { googleDriveRequest } from "./googleDriveHttp";
+import { AppError, type ErrorKind } from "../appError";
 import {
   connectorSettingsPatch,
   toggleDisabledTool,
@@ -35,38 +41,30 @@ export const GOOGLE_PROVIDERS = {
     write: ["https://www.googleapis.com/auth/calendar.events"],
   },
 } as const;
-export class GoogleWorkspaceError extends Error {}
+/**
+ * A Gmail/Calendar failure with a fixed, user-facing message. The message is
+ * for the user; the `kind` is what Sentry gets: `google.api_failed` unless the
+ * thrower says otherwise (`google.auth_failed` for a grant that could not be
+ * used or refreshed, `google.user_error` for something only the user can fix).
+ */
+export class GoogleWorkspaceError extends AppError {
+  constructor(
+    message: string,
+    options: { kind?: ErrorKind; cause?: unknown } = {},
+  ) {
+    super(options.kind ?? "google.api_failed", message, { cause: options.cause });
+  }
+}
 /** The operator has switched this service off for the whole deployment. */
 export class GoogleWorkspaceUnavailableError extends GoogleWorkspaceError {}
-/**
- * Services the operator has switched off with
- * GOOGLE_WORKSPACE_DISABLED_PROVIDERS, a comma-separated list of provider
- * ids ("gmail", "google-calendar"). A hosted deployment uses it to offer only
- * the services whose Google scopes its Cloud project has verified, so the
- * consent screen, the Console and the running code keep requesting the same
- * scopes. Unknown ids are reported and ignored rather than disabling nothing
- * silently or taking every service down.
- */
-export function disabledWorkspaceProviders(): GoogleProvider[] {
-  const ids = (process.env.GOOGLE_WORKSPACE_DISABLED_PROVIDERS ?? "")
-    .split(",")
-    .map((id) => id.trim())
-    .filter(Boolean);
-  const unknown = ids.filter((id) => !(id in GOOGLE_PROVIDERS));
-  if (unknown.length)
-    console.error("[google-workspace] unknown provider ids in GOOGLE_WORKSPACE_DISABLED_PROVIDERS", {
-      unknown,
-      known: Object.keys(GOOGLE_PROVIDERS),
-    });
-  return ids.filter((id): id is GoogleProvider => id in GOOGLE_PROVIDERS);
-}
+/** See GOOGLE_WORKSPACE_DISABLED_PROVIDERS in ./googleAvailability. */
 export function isWorkspaceProviderAvailable(provider: GoogleProvider): boolean {
-  return !disabledWorkspaceProviders().includes(provider);
+  return isGoogleServiceAvailable(provider);
 }
 export function assertWorkspaceProviderAvailable(provider: GoogleProvider): void {
   if (!isWorkspaceProviderAvailable(provider))
     throw new GoogleWorkspaceUnavailableError(
-      `${GOOGLE_PROVIDERS[provider].name} is not offered on this Mike server.`,
+      googleServiceUnavailableMessage(provider),
     );
 }
 export function googleWorkspaceSetupInstructions(
@@ -153,21 +151,23 @@ export async function workspaceRequest(
 ): Promise<Response> {
   try {
     return await googleDriveRequest(url, init, 8 * 1024 * 1024);
-  } catch {
+  } catch (error) {
     throw new GoogleWorkspaceError(
       "Google did not return a complete response within the request limits. Try a smaller request.",
+      { cause: error },
     );
   }
 }
 export async function loadWorkspaceGrant(
   db: Db,
-  userId: string,
+  owner: ConnectorOwner,
   provider: GoogleProvider,
 ) {
   const { data, error } = await db
     .from("user_google_workspace_tokens")
     .select("*")
-    .eq("user_id", userId)
+    .eq("user_id", owner.userId)
+    .filter(...workspaceFilter(owner))
     .eq("provider", provider)
     .maybeSingle();
   if (error) throw error;
@@ -175,17 +175,18 @@ export async function loadWorkspaceGrant(
 }
 export async function workspaceStatus(
   db: Db,
-  userId: string,
+  owner: ConnectorOwner,
   provider: GoogleProvider,
 ): Promise<Omit<GoogleWorkspaceStatus, "redirectUri" | "tools">> {
   const env = googleWorkspaceEnv();
   const configured = !!(env.clientId && env.clientSecret);
   try {
-    const row = await loadWorkspaceGrant(db, userId, provider);
+    const row = await loadWorkspaceGrant(db, owner, provider);
     const { error } = await db
       .from("google_workspace_oauth_states")
       .select("id")
-      .eq("user_id", userId)
+      .eq("user_id", owner.userId)
+      .filter(...workspaceFilter(owner))
       .eq("provider", provider)
       .limit(1);
     if (error) throw error;
@@ -220,7 +221,7 @@ export async function workspaceStatus(
 /** Settings live on the grant row, so they exist only while connected. */
 export async function updateWorkspaceSettings(
   db: Db,
-  userId: string,
+  owner: ConnectorOwner,
   provider: GoogleProvider,
   settings: NativeConnectorSettings,
 ) {
@@ -229,7 +230,8 @@ export async function updateWorkspaceSettings(
   const { data, error } = await db
     .from("user_google_workspace_tokens")
     .update(patch)
-    .eq("user_id", userId)
+    .eq("user_id", owner.userId)
+    .filter(...workspaceFilter(owner))
     .eq("provider", provider)
     .select("user_id")
     .maybeSingle();
@@ -237,19 +239,21 @@ export async function updateWorkspaceSettings(
   if (!data)
     throw new GoogleWorkspaceError(
       `Connect ${GOOGLE_PROVIDERS[provider].name} first.`,
+      { kind: "google.user_error" },
     );
 }
 export async function setWorkspaceToolEnabled(
   db: Db,
-  userId: string,
+  owner: ConnectorOwner,
   provider: GoogleProvider,
   toolName: string,
   enabled: boolean,
 ) {
-  const row = await loadWorkspaceGrant(db, userId, provider);
+  const row = await loadWorkspaceGrant(db, owner, provider);
   if (!row)
     throw new GoogleWorkspaceError(
       `Connect ${GOOGLE_PROVIDERS[provider].name} first.`,
+      { kind: "google.user_error" },
     );
   const next = toggleDisabledTool(
     Array.isArray(row.disabled_tools) ? (row.disabled_tools as string[]) : [],
@@ -259,14 +263,15 @@ export async function setWorkspaceToolEnabled(
   const { error } = await db
     .from("user_google_workspace_tokens")
     .update({ disabled_tools: next })
-    .eq("user_id", userId)
+    .eq("user_id", owner.userId)
+    .filter(...workspaceFilter(owner))
     .eq("provider", provider)
     .eq("grant_id", row.grant_id);
   if (error) throw error;
 }
 export async function startWorkspaceOAuth(
   db: Db,
-  userId: string,
+  owner: ConnectorOwner,
   provider: GoogleProvider,
   redirectUri: string,
 ) {
@@ -278,13 +283,15 @@ export async function startWorkspaceOAuth(
   const { error: cleanupError } = await db
     .from("google_workspace_oauth_states")
     .delete()
-    .eq("user_id", userId)
+    .eq("user_id", owner.userId)
+    .filter(...workspaceFilter(owner))
     .lt("expires_at", new Date().toISOString());
   if (cleanupError) throw cleanupError;
   const state = base64Url(crypto.randomBytes(24));
   const verifier = base64Url(crypto.randomBytes(32));
   const { error } = await db.from("google_workspace_oauth_states").insert({
-    user_id: userId,
+    user_id: owner.userId,
+    org_id: owner.orgId,
     provider,
     state_hash: stateHash(state),
     ...encryptFields("state_config", JSON.stringify({ verifier, redirectUri })),
@@ -326,6 +333,7 @@ function tokenPatch(
   if (!GOOGLE_PROVIDERS[provider].read.every((s) => scopes.includes(s)))
     throw new GoogleWorkspaceError(
       "Required Google permissions were not granted. Reconnect and grant the requested access.",
+      { kind: "google.scope_missing" },
     );
   return {
     ...encryptFields("access_token", token.access_token),
@@ -356,6 +364,7 @@ export async function completeWorkspaceOAuth(
   if (!data)
     throw new GoogleWorkspaceError(
       "Authorization expired or was cancelled. Connect again.",
+      { kind: "google.user_error" },
     );
   const config = JSON.parse(decryptFields(data, "state_config")) as {
     verifier: string;
@@ -386,6 +395,7 @@ export async function completeWorkspaceOAuth(
   )
     throw new GoogleWorkspaceError(
       "Google authorization did not provide offline access. Reconnect.",
+      { kind: response.status >= 500 ? "google.api_failed" : "google.auth_failed", cause: { status: response.status } },
     );
   const patch = tokenPatch(token, provider);
   const identityResponse = await workspaceRequest(
@@ -401,6 +411,7 @@ export async function completeWorkspaceOAuth(
   )
     throw new GoogleWorkspaceError(
       "Could not verify the selected Google account. Connect again.",
+      { kind: identityResponse.status >= 500 ? "google.api_failed" : "google.auth_failed", cause: { status: identityResponse.status } },
     );
   const { data: saved, error: saveError } = await db.rpc(
     "complete_google_workspace_oauth",
@@ -418,50 +429,56 @@ export async function completeWorkspaceOAuth(
   if (!saved)
     throw new GoogleWorkspaceError(
       "Authorization expired or was cancelled. Connect again.",
+      { kind: "google.user_error" },
     );
 }
 export async function cancelWorkspaceOAuth(
   db: Db,
-  userId: string,
+  owner: ConnectorOwner,
   provider: GoogleProvider,
   state: string,
 ) {
   const { error } = await db
     .from("google_workspace_oauth_states")
     .delete()
-    .eq("user_id", userId)
+    .eq("user_id", owner.userId)
+    .filter(...workspaceFilter(owner))
     .eq("provider", provider)
     .eq("state_hash", stateHash(state));
   if (error) throw error;
 }
 export async function disconnectWorkspace(
   db: Db,
-  userId: string,
+  owner: ConnectorOwner,
   provider: GoogleProvider,
 ) {
   // Google revocation affects other grants for the same OAuth client. Remove
   // this local connection only; users can revoke all access in Google settings.
   const { error } = await db.rpc("disconnect_google_workspace", {
-    p_user_id: userId,
+    p_user_id: owner.userId,
     p_provider: provider,
+    p_org_id: owner.orgId,
   });
   if (error) throw error;
 }
 export async function workspaceAccessToken(
   db: Db,
-  userId: string,
+  owner: ConnectorOwner,
   provider: GoogleProvider,
 ): Promise<string> {
-  const row = await loadWorkspaceGrant(db, userId, provider);
+  const row = await loadWorkspaceGrant(db, owner, provider);
   if (!row)
     throw new GoogleWorkspaceError(
       "Google connection changed or is disconnected. Reconnect it in Settings → Connectors.",
+      { kind: "google.auth_failed" },
     );
   if (Date.parse(String(row.expires_at)) - Date.now() > 60_000)
     return decryptFields(row, "access_token");
   const env = googleWorkspaceEnv();
   if (!env.clientId || !env.clientSecret)
-    throw new GoogleWorkspaceError("Google OAuth is not configured.");
+    throw new GoogleWorkspaceError("Google OAuth is not configured.", {
+      kind: "google.auth_failed",
+    });
   const response = await workspaceRequest(
     "https://oauth2.googleapis.com/token",
     {
@@ -480,19 +497,22 @@ export async function workspaceAccessToken(
       const { error } = await db
         .from("user_google_workspace_tokens")
         .delete()
-        .eq("user_id", userId)
+        .eq("user_id", owner.userId)
+        .filter(...workspaceFilter(owner))
         .eq("provider", provider)
         .eq("grant_id", row.grant_id);
       if (error) throw error;
     }
     throw new GoogleWorkspaceError(
       "Google access could not be refreshed. Reconnect this integration.",
+      { kind: response.status >= 500 ? "google.api_failed" : "google.auth_failed", cause: { status: response.status } },
     );
   }
   const { data: saved, error } = await db
     .from("user_google_workspace_tokens")
     .update(tokenPatch(token, provider, row))
-    .eq("user_id", userId)
+    .eq("user_id", owner.userId)
+    .filter(...workspaceFilter(owner))
     .eq("provider", provider)
     .eq("grant_id", row.grant_id)
     .eq("encrypted_access_token", row.encrypted_access_token)
@@ -500,7 +520,7 @@ export async function workspaceAccessToken(
     .maybeSingle();
   if (error) throw error;
   if (!saved) {
-    const current = await loadWorkspaceGrant(db, userId, provider);
+    const current = await loadWorkspaceGrant(db, owner, provider);
     if (
       current &&
       current.grant_id === row.grant_id &&
@@ -509,6 +529,7 @@ export async function workspaceAccessToken(
       return decryptFields(current, "access_token");
     throw new GoogleWorkspaceError(
       "Google connection changed. Please try again.",
+      { kind: "google.auth_failed" },
     );
   }
   return token.access_token as string;

@@ -20,6 +20,7 @@ vi.mock("@/app/components/shared/DocumentSidePanel", () => ({
     versions: { id: string }[];
     versionsLoading: boolean;
     onLoadVersions: (id: string) => void;
+    onClose: () => void;
   }) => {
     const { doc, onLoadVersions } = props;
     useEffect(() => {
@@ -31,6 +32,9 @@ vi.mock("@/app/components/shared/DocumentSidePanel", () => ({
         <p>open: {doc?.id ?? "none"}</p>
         <p>versions: {props.versions.map((v) => v.id).join(",") || "none"}</p>
         <p>loading: {String(props.versionsLoading)}</p>
+        <button type="button" onClick={props.onClose}>
+          close
+        </button>
       </div>
     );
   },
@@ -76,5 +80,69 @@ describe("useIntakeDocumentViewer", () => {
       first.resolve({ current_version_id: "a1", versions: [{ id: "a1" }] }),
     );
     expect(screen.getByText("versions: b1")).toBeInTheDocument();
+  });
+
+  it("keeps the document opened last when an earlier one loads late", async () => {
+    type Viewer = ReturnType<typeof useIntakeDocumentViewer>;
+    const held: { viewer: Viewer | null } = { viewer: null };
+    function Harness() {
+      const viewer = useIntakeDocumentViewer();
+      useEffect(() => {
+        held.viewer = viewer;
+      });
+      return viewer.panel;
+    }
+    const slow = deferred<{ id: string }>();
+    mocks.getDocument.mockImplementation((id: string) =>
+      id === "doc-a" ? slow.promise : Promise.resolve({ id }),
+    );
+    mocks.listDocumentVersions.mockResolvedValue({ current_version_id: null, versions: [] });
+    render(<Harness />);
+
+    let first!: Promise<void>;
+    act(() => {
+      first = held.viewer!.open("doc-a");
+    });
+    await act(() => held.viewer!.open("doc-b"));
+    expect(screen.getByText("open: doc-b")).toBeInTheDocument();
+
+    await act(async () => {
+      slow.resolve({ id: "doc-a" });
+      await first;
+    });
+    expect(screen.getByText("open: doc-b")).toBeInTheDocument();
+  });
+
+  it("stays closed when a document asked for before closing arrives after", async () => {
+    type Viewer = ReturnType<typeof useIntakeDocumentViewer>;
+    const held: { viewer: Viewer | null } = { viewer: null };
+    function Harness() {
+      const viewer = useIntakeDocumentViewer();
+      useEffect(() => {
+        held.viewer = viewer;
+      });
+      return viewer.panel;
+    }
+    const slow = deferred<{ id: string }>();
+    mocks.getDocument.mockImplementation((id: string) =>
+      id === "doc-b" ? slow.promise : Promise.resolve({ id }),
+    );
+    mocks.listDocumentVersions.mockResolvedValue({ current_version_id: null, versions: [] });
+    render(<Harness />);
+
+    await act(() => held.viewer!.open("doc-a"));
+    expect(screen.getByText("open: doc-a")).toBeInTheDocument();
+    let second!: Promise<void>;
+    act(() => {
+      second = held.viewer!.open("doc-b");
+    });
+    act(() => screen.getByRole("button", { name: "close" }).click());
+    expect(screen.getByText("open: none")).toBeInTheDocument();
+
+    await act(async () => {
+      slow.resolve({ id: "doc-b" });
+      await second;
+    });
+    expect(screen.getByText("open: none")).toBeInTheDocument();
   });
 });

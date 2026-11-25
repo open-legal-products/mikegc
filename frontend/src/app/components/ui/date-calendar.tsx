@@ -17,8 +17,8 @@ import {
   DropdownContent,
   DropdownItem,
   DropdownTrigger,
-} from "@/shared/ui/dropdown";
-import { TextButtonUI } from "@/shared/ui/TextButtonUI";
+} from "@mike/ui";
+import { TextButtonUI } from "@mike/ui";
 import { cn } from "@/app/lib/utils";
 
 /** A date as YYYY-MM-DD in the browser's timezone. */

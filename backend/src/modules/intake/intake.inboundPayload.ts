@@ -41,60 +41,100 @@ const candidate = z.object({
 });
 export type AttachmentCandidate = z.infer<typeof candidate>;
 
+/** A rule's preprocessing: the workflow or playbook to follow, and its condition. */
+const preprocessPlan = z.object({
+  with: z
+    .object({ kind: z.enum(["workflow", "playbook"]), id: z.string() })
+    .nullable(),
+  /** The rule's condition, which the readiness check reads. */
+  condition: z.string().nullable().default(null),
+});
+
 /**
- * The request triage decided on, saved before it is recorded so a retry
- * records the same request without asking the model again.
+ * What the intake agent decided for one message, saved before any of it is
+ * done so a retry does the same without asking the model again. Every value
+ * here was checked by the tool that set it.
  */
-export const triagePlan = z.object({
-  subject: z.string(),
-  description: z.string(),
-  requester_name: z.string(),
-  requester_email: z.string().nullable(),
-  requested_by_date: z.string().nullable(),
-  assignee_id: z.string().nullable(),
+export const agentPlan = z.object({
+  /** Whether a model shaped the plan, or the safe defaults did. */
+  agent: z.boolean(),
+  /** MikeGC's answer in a thread with no request; nothing is recorded. */
+  reply: z.string().nullable().default(null),
+  /** MikeGC's questions on the request, so its rule can be chosen. */
+  questions: z.array(z.string()).default([]),
   /**
-   * AI preprocessing, when the rule that assigned the request asks for it,
-   * with the workflow or playbook to follow, if any.
+   * MikeGC's answer to the requester in a recorded request's thread: what it
+   * took from their message, or a reply to it. The request doesn't wait.
    */
-  preprocess: z
+  answer: z.string().nullable().default(null),
+  /** The request to record, for a message that has none yet. */
+  record: z
     .object({
-      with: z
-        .object({ kind: z.enum(["workflow", "playbook"]), id: z.string() })
-        .nullable(),
-      /** The rule's condition, which the readiness check reads. */
-      condition: z.string().nullable().default(null),
+      subject: z.string(),
+      description: z.string(),
+      requester_name: z.string(),
+      requester_email: z.string().nullable(),
+      requested_by_date: z.string().nullable(),
+      /** Indexes into `candidates` of the attachments to add. */
+      attachments: z.array(z.number().int().nonnegative()),
     })
     .nullable()
     .default(null),
   /**
-   * What MikeGC asks the requester before choosing a rule. With questions,
-   * the request is recorded unassigned and waits on the requester.
+   * The rule chosen, once decided: its member (null when no rule fits) and
+   * its preprocessing. Null while the rule is undecided.
    */
-  questions: z.array(z.string()).default([]),
-  /** Indexes into `candidates` of the attachments to add. */
-  attachments: z.array(z.number().int().nonnegative()),
-  candidates: z.array(candidate),
-  /** Whether a model shaped the request, or the safe defaults did. */
-  triaged: z.boolean(),
+  rule: z
+    .object({
+      assignee_id: z.string().nullable(),
+      preprocess: preprocessPlan.nullable(),
+    })
+    .nullable()
+    .default(null),
+  /**
+   * Details to change on the request a reply is about, each with the words
+   * MikeGC's note uses for it, by field.
+   */
+  update: z
+    .object({
+      subject: z.string().nullable(),
+      description: z.string().nullable(),
+      requested_by_date: z.string().nullable(),
+      lines: z.record(z.string(), z.string()),
+    })
+    .nullable()
+    .default(null),
+  candidates: z.array(candidate).default([]),
 });
-export type TriagePlan = z.infer<typeof triagePlan>;
+export type AgentPlan = z.infer<typeof agentPlan>;
 
 /** Each attachment's document, named before it is made so it is made once. */
 const documentEntry = z.object({
   document_id: z.string(),
   version_id: z.string(),
   done: z.boolean(),
+  /** Why it was left off when its file couldn't be fetched, so a retry still names it. */
+  dropped: skippedReason.optional(),
 });
 export type DocumentEntry = z.infer<typeof documentEntry>;
 
 const progress = {
-  plan: triagePlan.optional(),
+  agent: agentPlan.optional(),
   documents: z.record(z.string(), documentEntry).optional(),
   /**
    * Set once the request is recorded. The message's link to it is cleared if
    * the request is deleted, and this tells that apart from never recorded.
    */
   recorded: z.boolean().optional(),
+  /**
+   * When MikeGC first tried that answer, saved before sending, so a retry
+   * looks for an earlier send that landed rather than answering twice.
+   */
+  conversing: z.string().optional(),
+  /** Set once MikeGC answered in the chat instead of recording a request. */
+  conversed: z.boolean().optional(),
+  /** Set once that answer is counted against the thread's rounds. */
+  remembered: z.boolean().optional(),
   /** Set once the Slack thread had MikeGC's answer, before the outbox. */
   replied: z.boolean().optional(),
   /** Set once the request is linked to its thread. */
@@ -121,26 +161,6 @@ export const slackInboundPayload = z.object({
   ...progress,
 });
 export type SlackInboundPayload = z.infer<typeof slackInboundPayload>;
-
-export const emailInboundPayload = z.object({
-  kind: z.literal("email"),
-  from: z.object({ name: z.string().nullable(), email: z.string().nullable() }),
-  subject: z.string().nullable(),
-  /** When it was sent, ISO 8601. */
-  date: z.string(),
-  text: z.string(),
-  attachments: z.array(
-    z.object({
-      name: z.string(),
-      file_type: z.string(),
-      size: z.number(),
-      key: z.string(),
-    }),
-  ),
-  skipped: z.array(skipped),
-  ...progress,
-});
-export type EmailInboundPayload = z.infer<typeof emailInboundPayload>;
 
 const stagedAttachment = z.object({
   name: z.string(),
@@ -230,7 +250,6 @@ export type TeamsInboundPayload = z.infer<typeof teamsInboundPayload>;
 
 export const inboundPayload = z.discriminatedUnion("kind", [
   slackInboundPayload,
-  emailInboundPayload,
   mailInboundPayload,
   teamsInboundPayload,
 ]);
@@ -241,6 +260,25 @@ const replyProgress = {
   documents: z.record(z.string(), documentEntry).optional(),
   /** Set once the reply is on the request. */
   recorded: z.boolean().optional(),
+  /**
+   * The agent's plan for the reply, with the request as the agent read it:
+   * whether its rule was undecided, and MikeGC's rounds of questions so far.
+   */
+  agent: agentPlan.optional(),
+  agentStage: z.enum(["rule"]).nullable().optional(),
+  agentRound: z.number().int().nonnegative().optional(),
+  /** The request's version the plan was made from, which its update requires. */
+  agentVersion: z.number().int().optional(),
+  /** Plans made for the reply so far, across the job's attempts. */
+  agentPlans: z.number().int().nonnegative().optional(),
+  /** Set once the plan's changes to the request's details are made. */
+  updated: z.boolean().optional(),
+  /** Set once the rule stage is settled: true when it was still waiting. */
+  ruleSettled: z.boolean().optional(),
+  /** Set once the chosen rule's preprocessing is queued. */
+  preprocessQueued: z.boolean().optional(),
+  /** Set once MikeGC's answer is in the request's thread. */
+  answered: z.boolean().optional(),
 };
 
 /** A requester's message in a linked Slack thread: read from Slack when handled. */
@@ -296,6 +334,17 @@ export function cleanText(value: string): string {
   return value
     .replace(/\u0000/g, "")
     .replace(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g, "");
+}
+
+/**
+ * The last `max` UTF-16 units at most, never splitting a surrogate pair. A
+ * chat thread is written oldest first, so its end is the message being acted
+ * on: shorten one from the front.
+ */
+export function clipStart(value: string, max: number): string {
+  if (value.length <= max) return value;
+  const start = value.length - max;
+  return value.slice(/[\uDC00-\uDFFF]/.test(value.charAt(start)) ? start + 1 : start);
 }
 
 /** At most `max` UTF-16 units, never splitting a surrogate pair. */

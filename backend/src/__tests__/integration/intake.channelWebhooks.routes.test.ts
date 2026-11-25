@@ -138,7 +138,7 @@ describe("the Teams webhook", () => {
         }),
       }),
     ]);
-    expect(mocks.enqueueDbJob).toHaveBeenCalledWith(memory.db, expect.objectContaining({ kind: "intake.inbound" }));
+    expect(mocks.enqueueDbJob).toHaveBeenCalledWith(memory.db, expect.objectContaining({ kind: "intake.agent" }));
   });
   it("records any person's message in a request's thread as its reply, once, and drops the rest", async () => {
     memory.rows("intake_channel_links").push({

@@ -1,6 +1,6 @@
 {
-    "$schema": "https://developer.microsoft.com/en-us/json-schemas/teams/v1.17/MicrosoftTeams.schema.json",
-    "manifestVersion": "1.17",
+    "$schema": "https://developer.microsoft.com/en-us/json-schemas/teams/v1.25/MicrosoftTeams.schema.json",
+    "manifestVersion": "1.25",
     "version": "1.0.0",
     "id": "YOUR-ENTRA-APP-ID",
     "developer": {
@@ -22,6 +22,7 @@
         "color": "color.png"
     },
     "accentColor": "#1F2937",
+    "supportsChannelFeatures": "tier1",
     "bots": [
         {
             "botId": "YOUR-ENTRA-APP-ID",

@@ -3,12 +3,15 @@ import {
   failure,
   internalFailure,
   ok,
-  type ServiceFailure,
   type ServiceResult,
 } from "../../lib/serviceResult";
 import type { Db } from "../../lib/supabase";
-import { dispatchIntakeInbound } from "./intake.automationJob";
-import { findThreadLink, routeThreadMessage } from "./intake.channels";
+import { dispatchIntakeAgent } from "./intake.agentJob";
+import {
+  findConversation,
+  findThreadLink,
+  routeThreadMessage,
+} from "./intake.channels";
 import {
   MAX_MESSAGE_CHARS,
   cleanText,
@@ -16,7 +19,7 @@ import {
   type SlackInboundPayload,
   type TeamsInboundPayload,
 } from "./intake.inboundPayload";
-import { dispatchIntakeReply } from "./intake.reply";
+import { insertInbound, type InboundInsert } from "./intake.inboundStore";
 import { slackSigningSecret } from "./intake.secrets";
 import { automationByWebhook, type AutomationRow } from "./intake.settingsRow";
 import { verifySlackSignature } from "./intake.slack";
@@ -49,33 +52,6 @@ const NOT_FOUND = failure("not_found", "Not found.");
 
 export type InboundReceipt = { status: "received" | "duplicate" | "ignored" };
 
-type InboundInsert = {
-  id?: string;
-  org_id: string;
-  source: "email" | "slack" | "outlook" | "gmail" | "teams";
-  kind?: "request" | "reply";
-  external_id: string;
-  status: "pending" | "ignored";
-  payload: Record<string, unknown> | null;
-  request_id?: string | null;
-  error?: string | null;
-};
-
-/** Store a message once: the new row's id, or null if it was stored before. */
-export async function insertInbound(
-  db: Db,
-  row: InboundInsert,
-): Promise<ServiceResult<string | null>> {
-  const { data, error } = await db
-    .from("intake_inbound")
-    .insert({ ...row, error: row.error ?? null })
-    .select("id")
-    .single();
-  if (error && (error as { code?: string }).code === "23505") return ok(null);
-  if (error || !data) return internalFailure(error);
-  return ok((data as { id: string }).id);
-}
-
 /**
  * Hand a stored message to its job. If that fails the sender is answered
  * with an error, so it delivers the message again and that delivery queues it.
@@ -86,7 +62,7 @@ async function queue(
   inboundId: string,
 ): Promise<ServiceResult<null>> {
   try {
-    await dispatchIntakeInbound(db, orgId, inboundId);
+    await dispatchIntakeAgent(db, orgId, inboundId);
     return ok(null);
   } catch (cause) {
     return internalFailure(cause);
@@ -169,6 +145,9 @@ const slackMessageEvent = z.object({
   thread_ts: z.string().regex(SLACK_TS).optional(),
   channel: z.string().regex(SLACK_ID),
   files: z.array(z.unknown()).optional(),
+  /** The sender's own workspace, which Slack adds in a channel shared with another one. */
+  user_team: z.string().max(40).optional(),
+  team: z.string().max(40).optional(),
 });
 
 function slackFiles(files: unknown[] | undefined): SlackInboundPayload["files"] {
@@ -265,9 +244,20 @@ export async function receiveSlackEvent(
     message.user === settings.slack_bot_user_id
   )
     return ok({});
+  // Only the connected workspace's people: in a channel shared with another
+  // organization (Slack Connect), its people's messages name their own
+  // workspace, and are dropped. A payload that names none is from the
+  // connected workspace, as is every event before Slack Connect.
+  const saved = settings.slack_team_id;
+  const senderTeam = message.user_team ?? message.team;
+  if (saved && ((envelope.data.team_id && envelope.data.team_id !== saved) || (senderTeam && senderTeam !== saved)))
+    return ok({});
   const team = envelope.data.team_id ?? settings.slack_team_id ?? "";
   const externalId = `${message.channel}:${message.ts}`;
   const inThread = !!message.thread_ts && message.thread_ts !== message.ts;
+  // A thread where MikeGC answered without recording a request: replies
+  // there reach it without a mention.
+  let conversing = false;
   if (inThread) {
     let link;
     try {
@@ -296,13 +286,25 @@ export async function receiveSlackEvent(
           thread_ts: message.thread_ts,
           user: message.user,
         },
-        dispatch: dispatchIntakeReply,
+        dispatch: dispatchIntakeAgent,
       });
       return routed.ok ? ok({}) : routed;
     }
+    if (message.type === "message") {
+      try {
+        conversing = !!(await findConversation(
+          db,
+          settings.org_id,
+          "slack",
+          `${team}:${message.channel}:${message.thread_ts}`,
+        ));
+      } catch (error) {
+        return internalFailure(error);
+      }
+    }
   }
-  // Only a mention of MikeGC starts a request.
-  if (message.type !== "app_mention") return ok({});
+  // Only a mention of MikeGC starts a request, or a reply in its conversation.
+  if (message.type !== "app_mention" && !conversing) return ok({});
   const payload: SlackInboundPayload = {
     kind: "slack",
     team_id: team || null,
@@ -391,11 +393,20 @@ export async function receiveTeamsActivity(
         text: clip(text, MAX_MESSAGE_CHARS),
         files,
       },
-      dispatch: dispatchIntakeReply,
+      dispatch: dispatchIntakeAgent,
     });
     return routed.ok ? ok({ status: routed.data }) : routed;
   }
-  if (!teamsMentionsBot(activity, settings.teams_app_id)) return ok({ status: "ignored" });
+  if (!teamsMentionsBot(activity, settings.teams_app_id)) {
+    // Unless MikeGC answered in this thread without recording a request.
+    let conversing;
+    try {
+      conversing = await findConversation(db, settings.org_id, "teams", `${tenant}:${conversationId}`);
+    } catch (error) {
+      return internalFailure(error);
+    }
+    if (!conversing) return ok({ status: "ignored" });
+  }
   const channelData = activity.channelData ?? {};
   const payload: TeamsInboundPayload = {
     kind: "teams",
@@ -417,16 +428,4 @@ export async function receiveTeamsActivity(
     files,
   };
   return storeRequest(db, settings.org_id, "teams", activity.id, payload);
-}
-
-/**
- * The retired Postmark webhook. Email is read from the intake mailbox now;
- * 403 tells Postmark to stop retrying, so a forwarding rule left in place
- * fails fast. Mail Postmark delivered earlier is still processed.
- */
-export async function receiveInboundEmail(): Promise<ServiceFailure> {
-  return failure(
-    "forbidden",
-    "Email intake reads the organization's mailbox now. Connect it in Intake settings.",
-  );
 }

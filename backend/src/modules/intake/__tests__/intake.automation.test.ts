@@ -26,7 +26,7 @@ vi.mock("../../playbooks/playbooks.service", () => ({
 vi.mock("../../workflows/workflows.service", () => ({
   getWorkflowDetail: mocks.getWorkflowDetail,
 }));
-vi.mock("../../user/user.service", () => ({
+vi.mock("../../../lib/providerCredentials/index", () => ({
   getEffectiveApiKeys: mocks.getEffectiveApiKeys,
   envApiKeys: mocks.envApiKeys,
 }));
@@ -94,6 +94,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   clearMicrosoftTokens();
   delete process.env.INTAKE_GMAIL_SERVICE_ACCOUNT_KEY;
+  delete process.env.INTAKE_GMAIL_SHARED_MAILBOXES;
   mocks.enqueueDbJob.mockResolvedValue({ id: "job-1", deduped: false });
   process.env.MCP_CONNECTORS_ENCRYPTION_SECRET = "test-encryption-secret-for-intake";
   process.env.API_PUBLIC_URL = "https://app.example.com/api/";
@@ -149,7 +150,6 @@ describe("who manages automated intake", () => {
           notification_url: `https://app.example.com/api/webhooks/intake/graph/${row().email_webhook_id}`,
           gmail: { client_id: null, key_set: false, deployment_key: false },
           status: { subscription_expires_at: null, last_read_at: null, error: null },
-          needs_reconnect: false,
         },
         slack: {
           enabled: false,
@@ -477,6 +477,7 @@ describe("the intake mailbox", () => {
       private_key: "-----BEGIN PRIVATE KEY-----",
       client_id: "1234567890",
     });
+    process.env.INTAKE_GMAIL_SHARED_MAILBOXES = `${org}=intake@firm.test`;
     mocks.gmailProfile.mockResolvedValue({ emailAddress: "intake@firm.test", historyId: "9001" });
     const result = await connectIntakeMailbox(
       memory.db,
@@ -514,6 +515,74 @@ describe("the intake mailbox", () => {
       await updateIntakeAutomation(memory.db, scope(owner), { email_enabled: true }),
     ).toMatchObject({ ok: false, kind: "validation" });
   });
+  it("won't connect a mailbox with the deployment's service account the operator hasn't granted the organization", async () => {
+    process.env.INTAKE_GMAIL_SERVICE_ACCOUNT_KEY = JSON.stringify({
+      client_email: "mikegc@project.iam.gserviceaccount.com",
+      private_key: "-----BEGIN PRIVATE KEY-----",
+      client_id: "1234567890",
+    });
+    // Another organization's domain, and this one's grant for a different address.
+    process.env.INTAKE_GMAIL_SHARED_MAILBOXES = `${outsider}=@firm.test ${org}=intake@own.test`;
+    mocks.gmailProfile.mockResolvedValue({ emailAddress: "ceo@firm.test", historyId: "9001" });
+    expect(
+      await connectIntakeMailbox(memory.db, scope(owner), { provider: "gmail", mailbox: "ceo@firm.test" }),
+    ).toMatchObject({ ok: false, kind: "validation", detail: expect.stringMatching(/own service account/) });
+    expect(mocks.gmailProfile).not.toHaveBeenCalled();
+    expect(row()).toMatchObject({ email_provider: null, email_mailbox: null });
+    // Nor is the shared account offered to an organization with no grant.
+    process.env.INTAKE_GMAIL_SHARED_MAILBOXES = `${outsider}=@firm.test`;
+    expect(await getIntakeAutomation(memory.db, scope(owner))).toMatchObject({
+      ok: true,
+      data: { email: { gmail: { client_id: null, deployment_key: false } } },
+    });
+  });
+  it("refuses the shared account by default, and stops a connected mailbox's test email once its grant goes", async () => {
+    process.env.INTAKE_GMAIL_SERVICE_ACCOUNT_KEY = JSON.stringify({
+      client_email: "mikegc@project.iam.gserviceaccount.com",
+      private_key: "-----BEGIN PRIVATE KEY-----",
+      client_id: "1234567890",
+    });
+    // The key alone grants nobody: the list is unset.
+    mocks.gmailProfile.mockResolvedValue({ emailAddress: "intake@firm.test", historyId: "9001" });
+    expect(
+      await connectIntakeMailbox(memory.db, scope(owner), { provider: "gmail", mailbox: "intake@firm.test" }),
+    ).toMatchObject({ ok: false, kind: "validation", detail: expect.stringMatching(/own service account/) });
+    expect(mocks.gmailProfile).not.toHaveBeenCalled();
+    expect(await getIntakeAutomation(memory.db, scope(owner))).toMatchObject({
+      ok: true,
+      data: { email: { gmail: { client_id: null, deployment_key: false } } },
+    });
+    // Granted, it connects; an address in different case is the same mailbox.
+    process.env.INTAKE_GMAIL_SHARED_MAILBOXES = `${org.toUpperCase()}=Intake@Firm.test`;
+    expect(
+      await connectIntakeMailbox(
+        memory.db,
+        { ...scope(owner), userEmail: "olive@firm.test" },
+        { provider: "gmail", mailbox: "intake@firm.test" },
+      ),
+    ).toMatchObject({ ok: true });
+    expect(row()).toMatchObject({ email_provider: "gmail", email_mailbox: "intake@firm.test" });
+    // Moving it to an address the grant doesn't cover is refused, and the
+    // connected mailbox stays as it was.
+    mocks.gmailProfile.mockClear();
+    expect(
+      await connectIntakeMailbox(memory.db, scope(owner), { provider: "gmail", mailbox: "ceo@firm.test" }),
+    ).toMatchObject({ ok: false, kind: "validation" });
+    expect(mocks.gmailProfile).not.toHaveBeenCalled();
+    expect(row().email_mailbox).toBe("intake@firm.test");
+    // The grant withdrawn: the saved mailbox can no longer send, even a test.
+    mocks.gmailSendTest.mockClear();
+    delete process.env.INTAKE_GMAIL_SHARED_MAILBOXES;
+    expect(
+      await sendIntakeMailboxTest(memory.db, { ...scope(owner), userEmail: "olive@firm.test" }),
+    ).toMatchObject({ ok: false });
+    expect(mocks.gmailSendTest).not.toHaveBeenCalled();
+    // Restored, it sends again without reconnecting.
+    process.env.INTAKE_GMAIL_SHARED_MAILBOXES = `${org}=@firm.test`;
+    expect(
+      await sendIntakeMailboxTest(memory.db, { ...scope(owner), userEmail: "olive@firm.test" }),
+    ).toEqual({ ok: true, data: { sent_to: "olive@firm.test" } });
+  });
   it("ends the Outlook subscription when the mailbox moves to Google Workspace", async () => {
     await getIntakeAutomation(memory.db, scope(owner));
     const secret = encryptString("graph-secret");
@@ -533,6 +602,7 @@ describe("the intake mailbox", () => {
       client_email: "mikegc@project.iam.gserviceaccount.com",
       private_key: "-----BEGIN PRIVATE KEY-----",
     });
+    process.env.INTAKE_GMAIL_SHARED_MAILBOXES = `${org}=@firm.test`;
     mocks.gmailProfile.mockResolvedValue({ emailAddress: "intake@firm.test", historyId: "9001" });
     const calls: { url: string; method: string }[] = [];
     vi.stubGlobal(
@@ -647,13 +717,6 @@ describe("the intake mailbox", () => {
     ).toMatchObject({ ok: false, kind: "validation", detail: "Paste the service account's JSON key." });
     expect(mocks.gmailProfile).not.toHaveBeenCalled();
   });
-  it("tells an organization that used Postmark to connect its mailbox", async () => {
-    memory.tables.intake_automation = [{ ...row(), org_id: org }];
-    await getIntakeAutomation(memory.db, scope(owner));
-    row().email_reconnect_notice = true;
-    const result = await getIntakeAutomation(memory.db, scope(owner));
-    expect(result.ok && result.data.email.needs_reconnect).toBe(true);
-  });
 });
 
 describe("Teams", () => {
@@ -715,6 +778,112 @@ describe("Teams", () => {
       kind: "validation",
     });
     expect(row().teams_enabled).toBe(false);
+  });
+});
+
+describe("one Entra app for Outlook and Teams", () => {
+  const app = {
+    tenant: "22222222-2222-4222-8222-222222222222",
+    client: "11111111-1111-4111-8111-111111111111",
+    secret: "shared-secret",
+  };
+  /** Microsoft: tokens for anyone, and an Outlook mailbox that opens. */
+  const tokenRequests: URLSearchParams[] = [];
+  const stubMicrosoft = () => {
+    tokenRequests.length = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string | URL, init?: RequestInit) => {
+        const target = String(url);
+        if (target.startsWith("https://login.microsoftonline.com/")) {
+          tokenRequests.push(new URLSearchParams(String(init?.body)));
+          return Response.json({ access_token: msToken(), expires_in: 3600 });
+        }
+        if (target.includes("/mailFolders/inbox")) return Response.json({ id: "inbox" });
+        if (target.includes("/messages/delta"))
+          return Response.json({ value: [], "@odata.deltaLink": "https://graph.microsoft.com/v1.0/delta?token=1" });
+        if (target.endsWith("/subscriptions"))
+          return Response.json({ id: "sub-1", expirationDateTime: "2026-11-06T10:00:00Z" });
+        if (target.endsWith("/sendMail")) return new Response(null, { status: 202 });
+        return Response.json({}, { status: 404 });
+      }),
+    );
+  };
+
+  it("connects Outlook with the Teams app, keeping its own encrypted copy of the secret", async () => {
+    stubMicrosoft();
+    await updateIntakeAutomation(memory.db, scope(owner), {
+      teams_app_id: app.client,
+      teams_tenant_id: app.tenant,
+      teams_client_secret: app.secret,
+    });
+    tokenRequests.length = 0;
+    const result = await connectIntakeMailbox(memory.db, scope(owner), {
+      provider: "graph",
+      mailbox: "intake@firm.test",
+      use_teams_app: true,
+    });
+    expect(result).toMatchObject({
+      ok: true,
+      data: { email: { provider: "graph", graph: { tenant_id: app.tenant, client_id: app.client, secret_set: true } } },
+    });
+    // Checked with the Teams app's own credentials.
+    expect(tokenRequests[0]!.get("client_id")).toBe(app.client);
+    expect(tokenRequests[0]!.get("client_secret")).toBe(app.secret);
+    // Its own ciphertext, so changing Teams later doesn't change Outlook.
+    expect(row().graph_client_secret_encrypted).toBeTruthy();
+    expect(row().graph_client_secret_encrypted).not.toBe(row().teams_client_secret_encrypted);
+    expect(JSON.stringify(memory.tables)).not.toContain(app.secret);
+  });
+
+  it("won't reuse a Teams app that isn't set up, or mix it with typed details", async () => {
+    stubMicrosoft();
+    expect(
+      await connectIntakeMailbox(memory.db, scope(owner), { provider: "graph", mailbox: "intake@firm.test", use_teams_app: true }),
+    ).toMatchObject({ ok: false, kind: "validation", detail: "Set up Teams first, or enter the Entra app's details." });
+    expect(
+      await connectIntakeMailbox(memory.db, scope(owner), {
+        provider: "graph",
+        mailbox: "intake@firm.test",
+        use_teams_app: true,
+        client_secret: "typed",
+      }),
+    ).toMatchObject({ ok: false, kind: "validation", detail: expect.stringMatching(/not both/) });
+    expect(row().email_provider).toBeNull();
+  });
+
+  it("sets Teams up with the connected Outlook app, checked and turned on", async () => {
+    stubMicrosoft();
+    await connectIntakeMailbox(memory.db, scope(owner), {
+      provider: "graph",
+      mailbox: "intake@firm.test",
+      tenant_id: app.tenant,
+      client_id: app.client,
+      client_secret: app.secret,
+    });
+    tokenRequests.length = 0;
+    const result = await updateIntakeAutomation(memory.db, scope(owner), { teams_use_outlook_app: true });
+    expect(result).toMatchObject({
+      ok: true,
+      data: { teams: { configured: true, enabled: true, app_id: app.client, tenant_id: app.tenant } },
+    });
+    // Checked with Microsoft as typed credentials are.
+    expect(tokenRequests.some((r) => r.get("client_id") === app.client && r.get("client_secret") === app.secret)).toBe(true);
+    expect(row().teams_client_secret_encrypted).not.toBe(row().graph_client_secret_encrypted);
+    expect(JSON.stringify(memory.tables)).not.toContain(app.secret);
+  });
+
+  it("won't copy an Outlook app that isn't connected, or mix it with typed details", async () => {
+    stubMicrosoft();
+    expect(await updateIntakeAutomation(memory.db, scope(owner), { teams_use_outlook_app: true })).toMatchObject({
+      ok: false,
+      kind: "validation",
+      detail: "Connect Outlook first, or enter the Teams app's details.",
+    });
+    expect(
+      await updateIntakeAutomation(memory.db, scope(owner), { teams_use_outlook_app: true, teams_app_id: app.client }),
+    ).toMatchObject({ ok: false, kind: "validation", detail: expect.stringMatching(/not both/) });
+    expect(row().teams_app_id).toBeNull();
   });
 });
 
@@ -910,8 +1079,6 @@ describe("automation routes", () => {
     // Triage can't be switched off: it runs whenever a model is available.
     const off = await request(app).patch(path).send({ triage_enabled: false });
     expect(off.status).toBe(400);
-    // The Postmark webhook generator is gone.
-    expect((await request(app).post(`${path}/email-webhook`)).status).toBe(404);
     const bad = await request(app).post(`${path}/mailbox`).send({ provider: "imap", mailbox: "x@y.test" });
     expect(bad.status).toBe(400);
   });

@@ -1,8 +1,7 @@
 "use client";
 
 import type { ButtonHTMLAttributes, ReactNode } from "react";
-import { ModalUI, type ModalUISize } from "@/shared/ui/ModalUI";
-import { PillButtonUI } from "@/shared/ui/PillButtonUI";
+import { ModalUI, type ModalUISize, PillButtonUI } from "@mike/ui";
 import { cn } from "@/app/lib/utils";
 
 export type ModalAction = Omit<
@@ -25,9 +24,15 @@ interface ModalProps {
   footerStatus?: ReactNode;
   /** Custom leading footer control, such as a document-source dropdown. */
   footerLeading?: ReactNode;
+  /** The footer's main action, at its right: a blue pill. */
   primaryAction?: ModalAction;
   secondaryAction?: ModalAction;
   cancelAction?: ModalAction | false;
+  /**
+   * Back to the previous step or screen: a black pill, first at the
+   * footer's left. Use it for every "Back", never a cancel or primary action.
+   */
+  backAction?: ModalAction;
   /**
    * Keep the modal (and its children's state) mounted while closed,
    * rendering it hidden instead of unmounting. Lets content like loaded
@@ -49,6 +54,7 @@ export function Modal({
   primaryAction,
   secondaryAction,
   cancelAction,
+  backAction,
   keepMounted = false,
 }: ModalProps) {
   const lastBreadcrumb = breadcrumbs?.at(-1);
@@ -74,6 +80,11 @@ export function Modal({
           />
         ) : undefined)
       }
+      backAction={
+        backAction ? (
+          <ModalActionButton action={backAction} fallbackVariant="back" />
+        ) : undefined
+      }
       cancelAction={
         cancelAction ? (
           <ModalActionButton action={cancelAction} fallbackVariant="cancel" />
@@ -96,7 +107,7 @@ function ModalActionButton({
   fallbackVariant,
 }: {
   action: ModalAction;
-  fallbackVariant: "primary" | "secondary" | "danger" | "cancel";
+  fallbackVariant: "primary" | "secondary" | "danger" | "cancel" | "back";
 }) {
   const {
     label,
@@ -117,16 +128,22 @@ function ModalActionButton({
     );
   }
 
+  // Back is always a black pill; the primary action is blue (red when it
+  // destroys something).
   const tone =
-    variant === "danger"
-      ? "danger"
-      : variant === "blue"
-        ? "blue"
-        : fallbackVariant === "secondary" && variant === "secondary"
+    fallbackVariant === "back"
+      ? "black"
+      : variant === "danger"
+        ? "danger"
+        : variant === "blue"
           ? "blue"
-          : variant === "primary"
-            ? "black"
-            : "white";
+          : fallbackVariant === "primary" && variant === "primary"
+            ? "blue"
+            : fallbackVariant === "secondary" && variant === "secondary"
+              ? "blue"
+              : variant === "primary"
+                ? "black"
+                : "white";
 
   return (
     <PillButtonUI tone={tone} size="normal" {...props}>

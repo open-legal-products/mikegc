@@ -42,17 +42,12 @@ export {
 export {
   receiveSlackEvent,
   receiveTeamsActivity,
-  receiveInboundEmail,
 } from "./intake.inbound";
-export {
-  handleIntakeInbound,
-  markIntakeInboundFailed,
-} from "./intake.automationJob";
+export { handleIntakeAgent, markIntakeAgentFailed } from "./intake.agentJob";
 export {
   handleIntakePreprocess,
   markIntakePreprocessFailed,
 } from "./intake.preprocess";
-export { handleIntakeReply, markIntakeReplyFailed } from "./intake.reply";
 export {
   handleIntakeDeliver,
   markIntakeDeliverFailed,

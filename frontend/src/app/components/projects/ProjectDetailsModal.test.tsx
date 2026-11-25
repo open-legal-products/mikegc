@@ -1,13 +1,20 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { MikeApiError, listOrgs } from "@/app/lib/mikeApi";
 import type { Project } from "@/app/components/shared/types";
 import { ProjectDetailsModal } from "./ProjectDetailsModal";
 
+const notify = vi.hoisted(() => vi.fn());
+
 vi.mock("@/app/lib/mikeApi", async (importOriginal) => ({
     ...(await importOriginal<typeof import("@/app/lib/mikeApi")>()),
     listOrgs: vi.fn(),
+}));
+
+vi.mock("@/app/lib/userFacingError", async (importOriginal) => ({
+    ...(await importOriginal<typeof import("@/app/lib/userFacingError")>()),
+    notifyError: notify,
 }));
 
 vi.mock("./ProjectPracticeField", () => ({
@@ -84,22 +91,19 @@ describe("ProjectDetailsModal", () => {
         expect(organisation).not.toHaveTextContent("org-1");
     });
 
-    it("reports what an intentional refusal said instead of a generic line", async () => {
+    it("reports a refused update in a notice, not the footer", async () => {
         const user = userEvent.setup();
+        const refusal = new MikeApiError({
+            status: 409,
+            message: "A project with that CM number exists.",
+        });
         render(
             <ProjectDetailsModal
                 open
                 project={project}
                 canEdit
                 onClose={vi.fn()}
-                onSave={vi
-                    .fn()
-                    .mockRejectedValue(
-                        new MikeApiError({
-                            status: 409,
-                            message: "A project with that CM number exists.",
-                        }),
-                    )}
+                onSave={vi.fn().mockRejectedValue(refusal)}
             />,
         );
 
@@ -107,9 +111,21 @@ describe("ProjectDetailsModal", () => {
         await user.type(screen.getByLabelText("Project name"), "Renamed");
         await user.click(screen.getByRole("button", { name: "Update" }));
 
+        // The notice classifies the refusal, so what the server said is shown.
+        await waitFor(() =>
+            expect(notify).toHaveBeenCalledWith(
+                refusal,
+                expect.objectContaining({
+                    action: "update the project details",
+                    onRetry: expect.any(Function),
+                }),
+            ),
+        );
         expect(
-            await screen.findByText("A project with that CM number exists."),
-        ).toBeInTheDocument();
+            screen.queryByText("A project with that CM number exists."),
+        ).toBeNull();
+        // What was typed stays, to fix it.
+        expect(screen.getByLabelText("Project name")).toHaveValue("Renamed");
     });
 
     // Whether a project is public or private is one of its details. Public

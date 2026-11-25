@@ -17,8 +17,16 @@ import {
   slicePath,
 } from "./IntakeDashboard";
 
-const mocks = vi.hoisted(() => ({ dashboard: vi.fn(), push: vi.fn() }));
+const mocks = vi.hoisted(() => ({
+  dashboard: vi.fn(),
+  push: vi.fn(),
+  notifyError: vi.fn(),
+}));
 vi.mock("@/app/lib/mikeApi", () => ({ getIntakeDashboard: mocks.dashboard }));
+vi.mock("@/app/lib/userFacingError", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/app/lib/userFacingError")>()),
+  notifyError: mocks.notifyError,
+}));
 vi.mock("next/navigation", () => ({ useRouter: () => ({ push: mocks.push }) }));
 vi.mock("next/link", () => ({
   default: (props: AnchorHTMLAttributes<HTMLAnchorElement>) => <a {...props} />,
@@ -122,6 +130,30 @@ describe("IntakeDashboard", () => {
       await screen.findByRole("button", { name: "Created period: Last 7 days" }),
     ).toBeInTheDocument();
     expect(screen.getByText("17")).not.toHaveAttribute("aria-busy");
+  });
+
+  it("keeps the dashboard and its period when a change of period fails", async () => {
+    const user = userEvent.setup();
+    render(<IntakeDashboard orgId="org-a" />);
+    const menu = await screen.findByRole("button", {
+      name: "Created period: Last 30 days",
+    });
+    const failure = new Error("offline");
+    mocks.dashboard.mockRejectedValueOnce(failure);
+    await user.click(menu);
+    await user.click(screen.getByRole("menuitemradio", { name: "Last 7 days" }));
+    await waitFor(() =>
+      expect(mocks.notifyError).toHaveBeenCalledWith(failure, {
+        action: "load the dashboard",
+      }),
+    );
+    expect(screen.queryByText("Unable to load the dashboard")).toBeNull();
+    expect(screen.getByText("6")).not.toHaveAttribute("aria-busy");
+    expect(
+      screen.getByRole("button", { name: "Created period: Last 30 days" }),
+    ).toBeInTheDocument();
+    // The periods on screen are not read again.
+    expect(mocks.dashboard).toHaveBeenCalledTimes(2);
   });
 
   it("reads each period figure over the period chosen from its own menu", async () => {

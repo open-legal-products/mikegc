@@ -42,8 +42,8 @@ vi.mock("@/app/contexts/WorkspaceContext", () => ({
     setWorkspace: mocks.setWorkspace,
   }),
 }));
-vi.mock("@/shared/lib/toastStore", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("@/shared/lib/toastStore")>()),
+vi.mock("@mike/client", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@mike/client")>()),
   showToast: mocks.showToast,
 }));
 vi.mock("./OrganizationProviderKeys", () => ({
@@ -97,12 +97,13 @@ beforeEach(() => {
 });
 
 describe("the sections each role is offered", () => {
-  it("offers an owner General, Members, Model Preferences, Bring Your Own Keys, Intake and Privacy & Data", async () => {
+  it("offers an owner General, Profile, Members, Model Preferences, Bring Your Own Keys, Intake and Privacy & Data", async () => {
     mocks.role = "owner";
     renderShell();
     await screen.findByText("section for Elite Law LLP");
     expect(sections()).toEqual([
       "General",
+      "Profile",
       "Members",
       "Audit log",
       "Model Preferences",
@@ -112,12 +113,13 @@ describe("the sections each role is offered", () => {
     ]);
   });
 
-  it("offers an admin General, Members, Model Preferences, Bring Your Own Keys and Intake, not Privacy & Data", async () => {
+  it("offers an admin General, Profile, Members, Model Preferences, Bring Your Own Keys and Intake, not Privacy & Data", async () => {
     mocks.role = "admin";
     renderShell();
     await screen.findByText("section for Elite Law LLP");
     expect(sections()).toEqual([
       "General",
+      "Profile",
       "Members",
       "Audit log",
       "Model Preferences",

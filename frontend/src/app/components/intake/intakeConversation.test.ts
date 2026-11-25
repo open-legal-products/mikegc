@@ -162,9 +162,9 @@ describe("intakeConversationLink", () => {
 });
 
 describe("source labels", () => {
-  it("keeps Email for requests recorded through Postmark", () => {
-    expect(INTAKE_SOURCE_LABELS).toMatchObject({
-      email: "Email",
+  it("names every source", () => {
+    expect(INTAKE_SOURCE_LABELS).toEqual({
+      manual: "Manual",
       outlook: "Outlook",
       gmail: "Gmail",
       teams: "Teams",

@@ -9,6 +9,7 @@
 // is delicate. Only the pre-stream preparation lives here.
 
 import type { Db } from "../../lib/supabase";
+import { loadOrgContext } from "../../lib/orgProfile";
 import {
     webSearchPlanFor,
     type WebSearchPlan,
@@ -19,6 +20,7 @@ import {
     buildProjectDocContext,
     buildMessages,
     buildUserPersonalisationPrompt,
+    buildOrganizationPrompt,
     buildWorkflowStore,
     attachPriorReasoning,
     enrichWithPriorEvents,
@@ -458,6 +460,11 @@ export async function prepareProjectChatStream(
     // the conversation turn opened above: the route's finally block only runs
     // once this function has returned it. Release on the way out instead.
     try {
+        // Read alongside the document context below; it never rejects.
+        const organization = loadOrgContext(
+            db,
+            projectAccess.project.org_id ?? null,
+        );
         const { docIndex, docStore, folderPaths } = await buildProjectDocContext(
             projectId,
             userId,
@@ -543,6 +550,15 @@ export async function prepareProjectChatStream(
             title_model: titleModel,
             personalisation,
         } = modelSettings;
+        // The project's organization, when it is a team's, before the
+        // user's own profile: the broader background first.
+        const organizationPrompt = buildOrganizationPrompt(
+            await organization,
+            nonce,
+        );
+        if (organizationPrompt) {
+            systemPromptExtra += `\n\n${organizationPrompt}`;
+        }
         const personalisationPrompt = buildUserPersonalisationPrompt(
             personalisation,
             nonce,

@@ -6,7 +6,7 @@ import { DbJobDeferredError, type DbJob } from "../../lib/dbq/types";
 import { configuredApiPublicUrl } from "../../lib/runtimeConfig";
 import { safeError } from "../../lib/safeError";
 import type { Db } from "../../lib/supabase";
-import { dispatchIntakeInbound } from "./intake.automationJob";
+import { dispatchIntakeAgent } from "./intake.agentJob";
 import {
   findThreadLink,
   loadLinkById,
@@ -29,7 +29,7 @@ import {
   clip,
   type MailInboundPayload,
 } from "./intake.inboundPayload";
-import { insertInbound } from "./intake.inbound";
+import { insertInbound } from "./intake.inboundStore";
 import {
   discardStaged,
   isAutomaticMail,
@@ -55,8 +55,12 @@ import {
   graphSubscribe,
   type ReadMail,
 } from "./intake.outlook";
-import { dispatchIntakeReply } from "./intake.reply";
-import { automationByWebhook, loadAutomationRow, type AutomationRow } from "./intake.settingsRow";
+import {
+  automationByWebhook,
+  intakeOrgDeleted,
+  loadAutomationRow,
+  type AutomationRow,
+} from "./intake.settingsRow";
 import { dispatchIntakeJob } from "./intake.shared";
 
 /**
@@ -112,7 +116,7 @@ export function graphNotificationUrl(webhookId: string): string {
  * Record one email from the mailbox: once, by its Message-ID. A message in
  * a request's thread from someone on that thread is a reply; from anyone
  * else at an accepted domain it becomes a new request, with a note on the
- * other. A new email addressed to the intake address from an accepted,
+ * other. A new email delivered to the intake mailbox from an accepted,
  * authenticated domain is a request. Automatic mail, and mail the mailbox
  * sent itself, is recorded as ignored or skipped.
  */
@@ -126,11 +130,11 @@ export async function recordMail(
   const source = mailSource(mail.provider);
   const externalId =
     normalizeMessageId(mail.internetMessageId) ?? `${mail.provider}:${mail.providerId}`;
-  type Seen = { id: string; status: string; kind: string };
+  type Seen = { id: string; status: string };
   const lookup = async (): Promise<Seen | null> => {
     const { data, error } = await db
       .from("intake_inbound")
-      .select("id, status, kind")
+      .select("id, status")
       .eq("org_id", settings.org_id)
       .eq("source", source)
       .eq("external_id", externalId)
@@ -142,11 +146,7 @@ export async function recordMail(
   // again, in case its job never was (deduplicated while one is live).
   const requeue = async (row: Seen | null): Promise<MailReceipt> => {
     if (row?.status === "pending")
-      await (row.kind === "reply" ? dispatchIntakeReply : dispatchIntakeInbound)(
-        db,
-        settings.org_id,
-        row.id,
-      );
+      await dispatchIntakeAgent(db, settings.org_id, row.id);
     return "duplicate";
   };
   const seen = await lookup();
@@ -208,9 +208,9 @@ export async function recordMail(
         text: clip(cleanText(stripQuotedReply(text)), MAX_MESSAGE_CHARS),
         ...staged,
       },
-      dispatch: dispatchIntakeReply,
+      dispatch: dispatchIntakeAgent,
     });
-    if (!routed.ok || routed.data === "duplicate")
+    if (routed.payloadOwnership === "unowned")
       await discardStaged(staged.attachments.map((a) => a.key));
     if (!routed.ok) throw failureError(routed);
     if (routed.data === "duplicate") return requeue(await lookup());
@@ -218,9 +218,12 @@ export async function recordMail(
     return routed.data;
   }
 
-  // A new request.
-  const addressed = [...mail.to, ...mail.cc].includes(mailbox) || !!link;
-  if (!addressed) return ignored("It wasn't addressed to the intake address, so no request was recorded.");
+  // A new request. Everything read here was delivered to the mailbox's
+  // Inbox, so it may name an alias, a distribution list or a group instead
+  // of the intake address, or have been Bcc'd: none of these can be told
+  // apart from the headers, and the domain and authentication checks below
+  // apply to all of them. Mail that doesn't name the intake address is
+  // answered to its sender alone (see mailThread), so a Bcc isn't revealed.
   const allowed = settings.email_allowed_domains ?? [];
   if (allowed.length === 0)
     return ignored("No sender domains are accepted yet. Add one in Intake settings.");
@@ -249,11 +252,11 @@ export async function recordMail(
     status: "pending",
     payload,
   });
-  if (!stored.ok || stored.data === null)
+  if (stored.payloadOwnership === "unowned")
     await discardStaged(staged.attachments.map((a) => a.key));
   if (!stored.ok) throw failureError(stored);
   if (stored.data === null) return requeue(await lookup());
-  await dispatchIntakeInbound(db, settings.org_id, stored.data);
+  await dispatchIntakeAgent(db, settings.org_id, stored.data);
   await markRecorded(settings, mail);
   return "received";
 }
@@ -355,7 +358,7 @@ async function pollGraph(db: Db, settings: AutomationRow, renew: boolean) {
 async function pollGmail(db: Db, settings: AutomationRow) {
   if (!settings.email_mailbox) return;
   const mailbox = gmailMailbox(settings);
-  if (!mailbox) throw noGmailAccount();
+  if (!mailbox) throw noGmailAccount(settings);
   let start = settings.gmail_history_id;
   if (!start) {
     start = (await gmailProfile(mailbox)).historyId;
@@ -401,6 +404,9 @@ export async function handleIntakeMailboxPoll(
   const settings = await loadAutomationRow(db, ids.data.orgId);
   if (!settings?.email_enabled || !settings.email_provider || !settings.email_mailbox)
     return { stopped: true };
+  // A deleted organization's mailbox is left unread through its recovery
+  // window; the sweep starts the poll again and it reads once restored.
+  if (await intakeOrgDeleted(db, settings.org_id)) return { stopped: true };
   const provider = settings.email_provider;
   let problem: string | null = null;
   try {
@@ -467,7 +473,17 @@ export async function ensureIntakeMailboxPolls(db: Db): Promise<number> {
     .not("email_provider", "is", null);
   if (error) throw error;
   const rows = (data ?? []) as { org_id: string }[];
-  for (const row of rows) await startMailboxPolling(db, row.org_id);
+  // One organization's poll that can't be queued must not leave the ones
+  // after it without theirs until the next sweep.
+  let failed: unknown = null;
+  for (const row of rows) {
+    try {
+      await startMailboxPolling(db, row.org_id);
+    } catch (error) {
+      failed ??= error;
+    }
+  }
+  if (failed) throw failed;
   return rows.length;
 }
 
