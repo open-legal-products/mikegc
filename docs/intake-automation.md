@@ -305,8 +305,9 @@ waits on a broken model.
   requester** back to work.
 - Any reply on an open request, except an answer to the readiness check, is
   read by the agent, which may update the request's subject, summary or
-  target date from it (never one a member has edited). It doesn't answer in
-  the thread once the rule is decided.
+  target date from it (never one a member has edited). Once the rule is
+  decided, it ends by answering in the thread: it acknowledges the message
+  and says what it added to the request.
 - A message on a resolved or cancelled request is recorded and flagged, and
   the request doesn't reopen.
 - Every reply raises a plain-text **New reply** marker in the queue until
