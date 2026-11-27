@@ -1,5 +1,4 @@
 "use client";
-import { pushWithDraftGuard } from "@/app/hooks/navigationGuard";
 
 import {
   createContext,
@@ -11,35 +10,53 @@ import {
   type ReactNode,
 } from "react";
 import { useRouter } from "next/navigation";
-import { OrganizationSkeuoIcon } from "@/app/components/shared/AppSidebarSkeuoIcons";
-import { TableEmptyState } from "@/app/components/shared/TablePrimitive";
+import { pushWithDraftGuard } from "@/app/hooks/navigationGuard";
 import {
-  SettingsShell,
-  type SettingsShellTab,
-} from "@/app/components/settings/SettingsShell";
+  IntakeSkeuoIcon,
+  OrganizationSkeuoIcon,
+} from "@/app/components/shared/AppSidebarSkeuoIcons";
+import {
+  AuditLogSkeuoIcon,
+  GeneralSkeuoIcon,
+  KeysSkeuoIcon,
+  MembersSkeuoIcon,
+  ModelsSkeuoIcon,
+  PrivacySkeuoIcon,
+} from "@/app/components/shared/SettingsSkeuoIcons";
+import { TableEmptyState } from "@/app/components/shared/TablePrimitive";
+import { SettingsShell } from "@/app/components/settings/SettingsShell";
+import type {
+  SettingsSection,
+  SettingsSectionGroup,
+} from "@/app/components/settings/settingsSections";
 import { EmptyState } from "@/app/components/ui/empty-state";
 import { useWorkspace } from "@/app/contexts/WorkspaceContext";
 import { useItemWorkspace } from "@/app/hooks/useItemWorkspace";
 import { getOrg, type Org } from "@/app/lib/mikeApi";
-import { isOrgAdmin, isOrgOwner } from "@/app/lib/permissions";
+import { isOrgAdmin, isOrgOwner, type OrgRole } from "@/app/lib/permissions";
 import { userFacingApiError } from "@/app/lib/userFacingError";
+import { organizationAreaName } from "@/app/lib/organizationAreaName";
+import { organizationSettingsSearchEntries } from "@/app/lib/organizationSettingsSearch";
+import { SettingsSearch } from "@/app/components/settings/SettingsSearch";
 import { PillButtonUI } from "@mike/ui";
 
 // An organization's settings area: the same frame as a person's settings,
-// with its sections down the side.
+// opening on an overview of its sections as cards.
 //
 //   General          everyone in the organization
 //   Profile          its owners and admins: what the assistant and the intake
 //                    agent are told about the organization
 //   Members          everyone in the organization; a full table page of its
 //                    own rather than a section inside the frame
-//   Model Preferences    its owners and admins: the models its features run
-//                        with, such as intake's triage and preprocessing
-//   Bring Your Own Keys  its owners and admins: the organization's model
-//                        provider keys, as in a person's own settings
+//   Audit log        its owners and admins; a full page of its own too
+//   Model Preferences  its owners and admins: the models its features run
+//                    with, such as intake's triage and preprocessing
+//   API Keys         its owners and admins: the organization's model
+//                    provider keys, as in a person's own settings
 //   Intake           its owners and admins: how MikeGC records requests from
 //                    email and Slack, with the rules on a table page of
 //                    their own (intake/rules)
+//   Privacy & Data   its owners
 //
 // An organization's settings are part of its workspace: they open only while
 // that organization is the caller's active workspace, never from another
@@ -62,6 +79,13 @@ interface OrganizationSettingsContextValue {
   setOrg: (org: Org) => void;
   /** Re-read the organization, after the caller's role may have changed. */
   reload: () => Promise<void>;
+  /** What the area is called for the caller (organizationAreaName). */
+  areaName: string;
+  /**
+   * The caller's role, from the organization once it has loaded and from
+   * their list of organizations until then; `undefined` until either says.
+   */
+  role: OrgRole | undefined;
 }
 
 const OrganizationSettingsContext =
@@ -76,12 +100,13 @@ export function useOrganizationSettings(): OrganizationSettingsContextValue {
   return value;
 }
 
+/** A section of an organization's settings, or with none its overview. */
 export function organizationSettingsHref(
   orgId: string,
-  section: OrganizationSettingsSection = "general",
+  section?: OrganizationSettingsSection,
 ): string {
   const root = `/organizations/${orgId}/settings`;
-  return section === "general" ? root : `${root}/${section}`;
+  return section ? `${root}/${section}` : root;
 }
 
 type OrganizationSettingsSection =
@@ -129,9 +154,16 @@ export function OrganizationSettingsProvider({
     void reload();
   }, [reload]);
 
+  // The caller's role, from the organization once it has loaded and from
+  // their list of organizations until then, so the name does not change
+  // under them as it loads.
+  const role =
+    org?.role ??
+    organizations?.find((candidate) => candidate.id === orgId)?.role;
+  const areaName = organizationAreaName(role);
   const value = useMemo(
-    () => ({ orgId, org, setOrg, reload }),
-    [orgId, org, reload],
+    () => ({ orgId, org, setOrg, reload, areaName, role }),
+    [orgId, org, reload, areaName, role],
   );
 
   if (!inWorkspace) {
@@ -196,86 +228,128 @@ export function OrganizationSettingsProvider({
   );
 }
 
-/** The sectioned frame around the settings pages that sit inside it. */
+/**
+ * The sections an organization's settings offer the caller, `null` until
+ * their role is known. A section they cannot use is not offered.
+ */
+export function organizationSettingsSections(
+  orgId: string,
+  role: OrgRole | undefined,
+): SettingsSectionGroup[] | null {
+  if (!role) return null;
+  const sections: SettingsSection[] = [
+    {
+      id: "general",
+      icon: GeneralSkeuoIcon,
+      label: "General",
+      description: "The organization's name and logo, and your membership.",
+      href: organizationSettingsHref(orgId, "general"),
+    },
+    ...(isOrgAdmin(role)
+      ? [
+          {
+            id: "profile",
+            icon: OrganizationSkeuoIcon,
+            label: "Profile",
+            description:
+              "What the assistant and the intake agent are told about the organization.",
+            href: organizationSettingsHref(orgId, "profile"),
+          },
+        ]
+      : []),
+    // A table page of its own; its header leads back here.
+    {
+      id: "members",
+      icon: MembersSkeuoIcon,
+      label: "Members",
+      description: "Everyone in the organization, their roles, and invitations.",
+      href: organizationSettingsHref(orgId, "members"),
+    },
+  ];
+  if (isOrgAdmin(role)) {
+    sections.push(
+      {
+        id: "audit",
+        icon: AuditLogSkeuoIcon,
+        label: "Audit log",
+        description: "A record of what members have done in the organization.",
+        href: organizationSettingsHref(orgId, "audit"),
+      },
+      {
+        id: "models",
+        icon: ModelsSkeuoIcon,
+        // Named as the same page is in a person's own settings.
+        label: "Model Preferences",
+        description:
+          "The models the organization's features run with, such as intake's triage.",
+        href: organizationSettingsHref(orgId, "models"),
+      },
+      {
+        id: "providers",
+        icon: KeysSkeuoIcon,
+        // Named as the same setting is in a person's own settings.
+        label: "API Keys",
+        description:
+          "The model provider keys everyone's work in the organization runs on.",
+        href: organizationSettingsHref(orgId, "providers"),
+      },
+      {
+        id: "intake",
+        icon: IntakeSkeuoIcon,
+        label: "Intake",
+        description:
+          "Requests from email and Slack, and who they are assigned to.",
+        href: organizationSettingsHref(orgId, "intake"),
+      },
+    );
+  }
+  // Its actions reach every member's work, so it is its owners' alone.
+  if (isOrgOwner(role)) {
+    sections.push({
+      id: "privacy-data",
+      icon: PrivacySkeuoIcon,
+      // Named as the same page is in a person's own settings.
+      label: "Privacy & Data",
+      description:
+        "Members' data, work left by departed members, and deleting data.",
+      href: organizationSettingsHref(orgId, "privacy-data"),
+    });
+  }
+  return [{ id: "organization", sections }];
+}
+
+/** The frame around the settings pages that sit inside it. */
 export function OrganizationSettingsFrame({
   children,
 }: {
   children: ReactNode;
 }) {
-  const { orgId, org } = useOrganizationSettings();
-  const canManage = org !== null && isOrgAdmin(org.role);
-  const isOwner = org !== null && isOrgOwner(org.role);
-  const tabs = useMemo<SettingsShellTab[]>(
-    () => [
-      {
-        id: "general",
-        label: "General",
-        href: organizationSettingsHref(orgId),
-      },
-      // Not offered to a member, nor before the caller's role is known.
-      ...(canManage
-        ? [
-            {
-              id: "profile",
-              label: "Profile",
-              href: organizationSettingsHref(orgId, "profile"),
-            },
-          ]
-        : []),
-      // A table page of its own; its header leads back here.
-      {
-        id: "members",
-        label: "Members",
-        href: organizationSettingsHref(orgId, "members"),
-      },
-      // Not offered to a member, nor before the caller's role is known.
-      ...(canManage
-        ? [
-            {
-              id: "audit",
-              label: "Audit log",
-              href: organizationSettingsHref(orgId, "audit"),
-            },
-            {
-              id: "models",
-              // Named as the same page is in a person's own settings.
-              label: "Model Preferences",
-              href: organizationSettingsHref(orgId, "models"),
-            },
-            {
-              id: "providers",
-              // Named as the same setting is in a person's own settings.
-              label: "Bring Your Own Keys",
-              href: organizationSettingsHref(orgId, "providers"),
-            },
-            {
-              id: "intake",
-              label: "Intake",
-              href: organizationSettingsHref(orgId, "intake"),
-            },
-          ]
-        : []),
-      // Its actions reach every member's work, so it is its owners' alone.
-      ...(isOwner
-        ? [
-            {
-              id: "privacy-data",
-              // Named as the same page is in a person's own settings.
-              label: "Privacy & Data",
-              href: organizationSettingsHref(orgId, "privacy-data"),
-            },
-          ]
-        : []),
-    ],
-    [canManage, isOwner, orgId],
+  const { orgId, areaName, role } = useOrganizationSettings();
+  const groups = useMemo(
+    () => organizationSettingsSections(orgId, role),
+    [orgId, role],
   );
-
+  // Search only the sections the caller is offered.
+  const searchEntries = useMemo(() => {
+    const offered = new Set(
+      groups?.flatMap((group) => group.sections.map((section) => section.id)) ??
+        [],
+    );
+    return organizationSettingsSearchEntries(orgId).filter((entry) =>
+      offered.has(entry.tabId),
+    );
+  }, [orgId, groups]);
   return (
     <SettingsShell
-      title="Organization"
-      navLabel="Organization"
-      tabs={tabs}
+      title={areaName}
       rootHref={organizationSettingsHref(orgId)}
+      groups={groups}
+      search={
+        <SettingsSearch
+          entries={searchEntries}
+          label={`Search ${areaName}`}
+        />
+      }
     >
       {children}
     </SettingsShell>

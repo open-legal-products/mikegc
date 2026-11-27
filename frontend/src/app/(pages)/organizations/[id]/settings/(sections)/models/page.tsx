@@ -29,7 +29,7 @@ export default function OrganizationModelPreferencesPage() {
           <PillButtonUI
             tone="white"
             size="sm"
-            onClick={() => router.push(organizationSettingsHref(orgId))}
+            onClick={() => router.push(organizationSettingsHref(orgId, "general"))}
           >
             Back to General
           </PillButtonUI>

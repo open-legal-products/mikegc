@@ -1,9 +1,4 @@
-import type {
-  ConnectorApprovalItem,
-  DocumentSearchEvent,
-  IntakeActionEvent,
-  TextCardEvent,
-} from "@mike/contracts";
+import type { ConnectorApprovalItem, DocumentSearchEvent } from "@mike/contracts";
 import { textCardEvent } from "./textCard";
 import { INTAKE_ACTION_TOOL_NAME, intakeActionEvent } from "./intakeActions";
 import { internalFailure } from "../../../../lib/serviceResult";
@@ -34,16 +29,31 @@ import {
 import { normalizeCaseDocument } from "../../../../lib/sourceDocuments";
 import {
   COURTLISTENER_TOOL_NAMES,
-  type CaseCitationEvent,
   type CourtlistenerToolEvent,
 } from "./courtlistenerTools";
-import { executeMcpToolCall, type McpToolEvent } from "../../../../lib/mcpConnectors";
+import {
+  executeMcpToolCall,
+  type McpToolCallResult,
+} from "../../../../lib/mcpConnectors";
+import {
+  externalSourceFromMcpCall,
+  mcpResultCharsFor,
+  stampSourceDocument,
+} from "../../../source-documents/sourceDocuments.service";
+import {
+  externalSourceCitationHint,
+  registerExternalSource,
+} from "./externalSources";
 import {
   APPROVAL_UNAVAILABLE_MESSAGE,
   addApprovalItems,
   planConnectorToolCall,
 } from "./connectorApprovals";
 import { createKeyedLock, type KeyedLock } from "./documentLocks";
+import {
+  emptyToolCallBatchResult,
+  type ToolCallBatchResult,
+} from "./toolBatchResult";
 import {
   GOOGLE_DRIVE_TOOL_PREFIX,
   executeGoogleDriveToolCall,
@@ -88,8 +98,6 @@ import {
   type DocEditedResult,
   type TurnEditState,
   type TurnReadState,
-  type DocCreatedResult,
-  type DocReplicatedResult,
   type TextMatch,
 } from "./documentOps";
 import {
@@ -111,6 +119,7 @@ import {
 } from "./courtlistenerTurnState";
 import type { Db } from "../../../../lib/supabase";
 import { renderTableCells } from "./tableCells";
+import { log } from "../../../../lib/log";
 
 /**
  * Report a server-side tool's failure and return what to log for it. The
@@ -392,61 +401,39 @@ export async function runToolCalls(
     documentsScoped?: boolean;
     /** The intake request the chat was started from, whose status it may propose changing. */
     intakeRequest?: { orgId: string; requestId: string } | null;
+    /**
+     * The turn's abort signal. Calls run one after another, so a turn stopped
+     * by Stop or a stream deadline starts none of the batch's remaining tools
+     * (their document edits, creations and connector writes included).
+     */
+    signal?: AbortSignal;
+    /**
+     * Where to collect the batch's results. They are added as each call
+     * completes, so if a later call rejects, the caller still knows which
+     * edits, creations and other results already happened.
+     */
+    results?: ToolCallBatchResult;
   } = {},
-): Promise<{
-  toolResults: unknown[];
-  docsRead: {
-    filename: string;
-    document_id?: string;
-    version_id?: string | null;
-    version_number?: number | null;
-  }[];
-  docsFound: {
-    filename: string;
-    document_id?: string;
-    version_id?: string | null;
-    version_number?: number | null;
-    query: string;
-    total_matches: number;
-  }[];
-  docsCreated: DocCreatedResult[];
-  documentSearchEvents: DocumentSearchEvent[];
-  docsReplicated: DocReplicatedResult[];
-  workflowsApplied: { workflow_id: string; title: string }[];
-  docsEdited: DocEditedResult[];
-  askInputsEvents: AskInputsEvent[];
-  textCardEvents: TextCardEvent[];
-  intakeActionEvents: IntakeActionEvent[];
-  courtlistenerEvents: CourtlistenerToolEvent[];
-  caseCitationEvents: CaseCitationEvent[];
-  mcpEvents: McpToolEvent[];
-}> {
-  const toolResults: unknown[] = [];
-  const docsRead: {
-    filename: string;
-    document_id?: string;
-    version_id?: string | null;
-    version_number?: number | null;
-  }[] = [];
-  const docsFound: {
-    filename: string;
-    document_id?: string;
-    version_id?: string | null;
-    version_number?: number | null;
-    query: string;
-    total_matches: number;
-  }[] = [];
-  const docsCreated: DocCreatedResult[] = [];
-  const documentSearchEvents: DocumentSearchEvent[] = [];
-  const docsReplicated: DocReplicatedResult[] = [];
-  const workflowsApplied: { workflow_id: string; title: string }[] = [];
-  const docsEdited: DocEditedResult[] = [];
-  const askInputsEvents: AskInputsEvent[] = [];
-  const textCardEvents: TextCardEvent[] = [];
-  const intakeActionEvents: IntakeActionEvent[] = [];
-  const courtlistenerEvents: CourtlistenerToolEvent[] = [];
-  const caseCitationEvents: CaseCitationEvent[] = [];
-  const mcpEvents: McpToolEvent[] = [];
+): Promise<ToolCallBatchResult> {
+  // Filled in place as each call completes, so a caller that passed
+  // `results` still has what finished when a later call rejects.
+  const results = options.results ?? emptyToolCallBatchResult();
+  const {
+    toolResults,
+    docsRead,
+    docsFound,
+    docsCreated,
+    documentSearchEvents,
+    docsReplicated,
+    workflowsApplied,
+    docsEdited,
+    askInputsEvents,
+    textCardEvents,
+    intakeActionEvents,
+    courtlistenerEvents,
+    caseCitationEvents,
+    mcpEvents,
+  } = results;
   const approvalItems: ConnectorApprovalItem[] = [];
   const documentLocks = options.documentLocks ?? createKeyedLock();
   const courtState: CourtlistenerTurnState = courtlistenerState ?? {
@@ -474,6 +461,35 @@ export async function runToolCalls(
     CourtlistenerToolEvent,
     { type: "courtlistener_find_in_case" }
   >[] = [];
+  // The grouped searches' summary. Kept current in the batch result as each
+  // search completes, so a later call's rejection still leaves the finished
+  // searches there; at the end of the batch it moves last and is streamed.
+  let groupedFindInCaseSummary: CourtlistenerToolEvent | null = null;
+  const summarizeGroupedFindInCase = (): CourtlistenerToolEvent => {
+    const errors = groupedFindInCaseEvents
+      .map((event) => event.error)
+      .filter((error): error is string => !!error);
+    const summary: CourtlistenerToolEvent = {
+      type: "courtlistener_find_in_case",
+      cluster_id: null,
+      query: "",
+      total_matches: groupedFindInCaseEvents.reduce(
+        (sum, event) => sum + event.total_matches,
+        0,
+      ),
+      searches: groupedFindInCaseEvents.map(findInCaseSearchSummary),
+      ...(errors.length ? { error: errors.join("; ") } : {}),
+    };
+    if (groupedFindInCaseSummary) {
+      courtlistenerEvents.splice(
+        courtlistenerEvents.indexOf(groupedFindInCaseSummary),
+        1,
+      );
+    }
+    courtlistenerEvents.push(summary);
+    groupedFindInCaseSummary = summary;
+    return summary;
+  };
 
   const registerGeneratedDocument = (
     tc: ToolCall,
@@ -540,7 +556,7 @@ export async function runToolCalls(
             `Before writing your final response, call read_document with doc_id "${newDocLabel}".`,
             `Base your description on the generated document's actual returned text, not on memory of what you intended to generate.`,
             `Do not include download links, URLs, or markdown links to the document in your prose response; the document card is shown automatically by the UI.`,
-            `Give a concise description of the generated document and, if you make factual claims about its contents, cite it with [N] markers and a final <CITATIONS> block using doc_id "${newDocLabel}", not any source/template document.`,
+            `Give a concise description of the generated document and, if you make factual claims about its contents, cite it with [N] markers and citation entries using doc_id "${newDocLabel}", not any source/template document.`,
           ].join(" "),
         }
       : safeToolResult;
@@ -555,8 +571,15 @@ export async function runToolCalls(
     args.scope === "document" &&
     !!resolveDocLabel(String(args.doc_id ?? ""), docStore, docIndex);
 
+  // Checked before each call and again right before a write that first awaits
+  // something (a document lock held by another call of the answer, connector
+  // planning, a source download): a turn stopped during that wait must not
+  // start the write after its readers were told it is over. runLLMStream
+  // throws its abort as soon as this returns.
+  const stopped = () => options.signal?.aborted === true;
   let connectorOwner: ConnectorOwner | undefined;
   for (const tc of toolCalls) {
+    if (stopped()) break;
     let args: Record<string, unknown> = {};
     try {
       args = JSON.parse(tc.function.arguments || "{}");
@@ -581,6 +604,7 @@ export async function runToolCalls(
         args,
         db,
       );
+      if (stopped()) break;
       if (plan.type === "approval" && options.connectorApprovals) {
         // Nothing runs now. The turn pauses on this item, and the user's
         // decision continues it (see connectorApprovals.ts).
@@ -604,7 +628,7 @@ export async function runToolCalls(
           name: tc.function.name,
         })}\n\n`,
       );
-      const { content, event } =
+      const result: McpToolCallResult =
         plan.type === "result"
           ? plan
           : plan.type === "approval"
@@ -629,6 +653,7 @@ export async function runToolCalls(
                   tc.function.name,
                   args,
                   db,
+                  { maxResultChars: mcpResultCharsFor },
                 )
               : isGoogleWorkspaceTool(tc.function.name)
                 ? await executeGoogleWorkspaceToolCall(
@@ -643,6 +668,19 @@ export async function runToolCalls(
                     args,
                     db,
                   );
+      const { event } = result;
+      let content = result.content;
+      // A complete document in the result becomes a citable source for the
+      // rest of the request; the model is told the handle to cite it by.
+      const source =
+        event.status === "ok" && result.call && docIndex
+          ? externalSourceFromMcpCall(result.call)
+          : null;
+      if (source && docIndex) {
+        const handle = registerExternalSource(source, docIndex, docStore);
+        content += externalSourceCitationHint(handle, result.truncated);
+        (results.externalSourceHandles ??= new Map()).set(tc.id, handle);
+      }
       toolResults.push({
         role: "tool",
         tool_call_id: tc.id,
@@ -843,7 +881,7 @@ export async function runToolCalls(
         // tell a 42883 from a 23505.
         const failureCode =
           result.kind === "error" ? diagnosticErrorTags(result.error).failure_code : undefined;
-        console.warn("[run_tools] find_documents failed", {
+        log.warn("run_tools", "find_documents failed", {
           category: failure.error_code,
           ...(failureCode === undefined ? {} : { failure_code: failureCode }),
         });
@@ -882,8 +920,10 @@ export async function runToolCalls(
       // must enter model context only through read_document/fetch_documents.
       // Those paths emit the visible read lifecycle and nonce-fence the entire
       // body. find_in_document otherwise returns raw, user-controlled snippets
-      // and would silently bypass both guarantees.
-      if (docInfo?.inline_text !== undefined) {
+      // and would silently bypass both guarantees. A provider-backed source
+      // is searched like any document, with its snippets fenced below.
+      const isExternalSource = !!docInfo?.external_source;
+      if (docInfo?.inline_text !== undefined && !isExternalSource) {
         toolResults.push({
           role: "tool",
           tool_call_id: tc.id,
@@ -939,7 +979,11 @@ export async function runToolCalls(
           total_matches: totalMatches,
         });
       }
-      toolResults.push({ role: "tool", tool_call_id: tc.id, content });
+      toolResults.push({
+        role: "tool",
+        tool_call_id: tc.id,
+        content: isExternalSource && nonce ? spotlight(content, nonce) : content,
+      });
     } else if (tc.function.name === "list_documents") {
       const list = Array.from(docStore.entries()).map(([doc_id, info]) => ({
         doc_id,
@@ -957,6 +1001,7 @@ export async function runToolCalls(
       const docIds = rawDocIds.map((id) => labelFor(id) ?? id);
       const parts: string[] = [];
       for (const docId of docIds) {
+        if (stopped()) break;
         const readIdentity = await getTurnReadIdentity({
           docLabel: docId,
           docStore,
@@ -1034,7 +1079,7 @@ export async function runToolCalls(
         });
       } catch (error) {
         reportToolFailure(error);
-        console.warn("[run_tools] list_playbooks failed", safeError(error));
+        log.warn("run_tools", "list_playbooks failed", safeError(error));
         toolResults.push({
           role: "tool",
           tool_call_id: tc.id,
@@ -1063,7 +1108,13 @@ export async function runToolCalls(
       } else {
         // The live Word document has no stored id; its request-local label
         // still serializes reviews of the same document within this turn.
-        const release = await documentLocks.acquire(indexed?.document_id ?? docId);
+        // A stop while this waits behind another review of the document
+        // ends the wait: the review is not started.
+        const release = await documentLocks.acquireUnlessAborted(
+          indexed?.document_id ?? docId,
+          options.signal,
+        );
+        if (!release) break;
         try {
           const isDocx = docInfo.file_type === "docx";
           // A Word document is read from its file by the review itself; other
@@ -1073,6 +1124,8 @@ export async function runToolCalls(
             : await readDocumentContent(docId, docStore, write, docIndex, db, {
                 emitEvents: false,
               });
+          // The review saves its suggestions as a new version.
+          if (stopped()) break;
           const run = await reviewWithPlaybook({
             userId,
             userEmail: options.userEmail,
@@ -1085,6 +1138,9 @@ export async function runToolCalls(
             model: options.model,
             reviewMode: args.review_mode === "permissive" ? "permissive" : "strict",
             db,
+            // A stop during the review also stops it: the model call ends,
+            // and its suggestions are not saved as a version.
+            signal: options.signal,
           });
           const annotations = run.findings.flatMap((finding) =>
             finding.edit ? [finding.edit] : [],
@@ -1153,10 +1209,12 @@ export async function runToolCalls(
             }),
           });
         } catch (error) {
+          // The review ended because the turn was stopped: not a failure.
+          if (stopped()) break;
           if (error instanceof PlaybookRequestError) fail(error.message);
           else {
             reportToolFailure(error);
-            console.warn("[run_tools] run_playbook failed", safeError(error));
+            log.warn("run_tools", "run_playbook failed", safeError(error));
             fail("The playbook review failed. Try again.");
           }
         } finally {
@@ -1243,23 +1301,32 @@ export async function runToolCalls(
         content: `${instructions}${assetNotice}`,
       });
     } else if (tc.function.name === "read_table_cells" && tabularStore) {
-      const { label, content } = renderTableCells(
-        tabularStore,
-        args.col_indices as number[] | undefined,
-        args.row_indices as number[] | undefined,
-      );
-      write(
-        `data: ${JSON.stringify({ type: "doc_read_start", filename: label })}\n\n`,
-      );
-      write(
-        `data: ${JSON.stringify({ type: "doc_read", filename: label })}\n\n`,
-      );
-      docsRead.push({ filename: label });
-      toolResults.push({
-        role: "tool",
-        tool_call_id: tc.id,
-        content,
-      });
+      try {
+        const { label, content } = await renderTableCells(
+          tabularStore,
+          args.col_indices as number[] | undefined,
+          args.row_indices as number[] | undefined,
+        );
+        write(
+          `data: ${JSON.stringify({ type: "doc_read_start", filename: label })}\n\n`,
+        );
+        write(
+          `data: ${JSON.stringify({ type: "doc_read", filename: label })}\n\n`,
+        );
+        docsRead.push({ filename: label });
+        toolResults.push({
+          role: "tool",
+          tool_call_id: tc.id,
+          content,
+        });
+      } catch (error) {
+        reportToolFailure(error);
+        toolResults.push({
+          role: "tool",
+          tool_call_id: tc.id,
+          content: "Unable to read the requested table cells. They may no longer be accessible. Try another selection or explain that the cells could not be read.",
+        });
+      }
     } else if (tc.function.name === COURTLISTENER_TOOL_NAMES.searchCaseLaw) {
       const query = typeof args.query === "string" ? args.query : "";
       write(
@@ -1364,15 +1431,17 @@ export async function runToolCalls(
               `data: ${JSON.stringify({
                 type: "case_opinions",
                 cluster_id: clusterId,
-                document: normalizeCaseDocument({
-                  clusterId,
-                  caseName: input.caseName,
-                  citations: input.citations,
-                  url: input.url,
-                  pdfUrl: input.pdfUrl,
-                  dateFiled: input.dateFiled,
-                  opinions: input.opinions,
-                }),
+                document: stampSourceDocument(
+                  normalizeCaseDocument({
+                    clusterId,
+                    caseName: input.caseName,
+                    citations: input.citations,
+                    url: input.url,
+                    pdfUrl: input.pdfUrl,
+                    dateFiled: input.dateFiled,
+                    opinions: input.opinions,
+                  }),
+                ),
               })}\n\n`,
             );
           }
@@ -1519,6 +1588,7 @@ export async function runToolCalls(
         };
         if (shouldGroupFindInCase) {
           groupedFindInCaseEvents.push(event);
+          summarizeGroupedFindInCase();
         } else {
           write(`data: ${JSON.stringify(event)}\n\n`);
           courtlistenerEvents.push(event);
@@ -1573,6 +1643,7 @@ export async function runToolCalls(
       };
       if (shouldGroupFindInCase) {
         groupedFindInCaseEvents.push(event);
+        summarizeGroupedFindInCase();
       } else {
         write(`data: ${JSON.stringify(event)}\n\n`);
         courtlistenerEvents.push(event);
@@ -1894,12 +1965,6 @@ export async function runToolCalls(
           content: JSON.stringify({ error: err }),
         });
       } else {
-        write(
-          `data: ${JSON.stringify({
-            type: "doc_edited_start",
-            filename: docInfo.filename,
-          })}\n\n`,
-        );
         const edits: EditInput[] = (editsRaw as Record<string, unknown>[]).map(
           (e) => ({
             find: String(e.find ?? ""),
@@ -1909,24 +1974,44 @@ export async function runToolCalls(
             reason: e.reason ? String(e.reason) : undefined,
           }),
         );
-        const result = await documentLocks.run(indexed.document_id, async () => {
-          const edited = await runEditDocument({
-            documentId: indexed.document_id,
-            userId,
-            userEmail: options.userEmail ?? null,
-            edits,
-            db,
-            reuseVersion: turnEditState?.get(indexed.document_id),
-          });
-          if (edited.ok) {
-            turnEditState?.set(indexed.document_id, {
-              versionId: edited.version_id,
-              versionNumber: edited.version_number,
-              storagePath: edited.storage_path,
+        // A stop while this waits behind another edit of the document ends
+        // the wait (runUnlessAborted resolves to null): the edit is skipped.
+        const result = await documentLocks.runUnlessAborted(
+          indexed.document_id,
+          options.signal,
+          async () => {
+            if (stopped()) return null;
+            // Announce the edit only once it is about to run: a turn stopped
+            // while this call waited on the lock must not leave an "Editing"
+            // card behind.
+            write(
+              `data: ${JSON.stringify({
+                type: "doc_edited_start",
+                filename: docInfo.filename,
+              })}\n\n`,
+            );
+            const edited = await runEditDocument({
+              documentId: indexed.document_id,
+              userId,
+              userEmail: options.userEmail ?? null,
+              edits,
+              db,
+              reuseVersion: turnEditState?.get(indexed.document_id),
+              signal: options.signal,
             });
-          }
-          return edited;
-        });
+            // Stopped while the source downloaded: nothing was written.
+            if (!edited.ok && stopped()) return null;
+            if (edited.ok) {
+              turnEditState?.set(indexed.document_id, {
+                versionId: edited.version_id,
+                versionNumber: edited.version_number,
+                storagePath: edited.storage_path,
+              });
+            }
+            return edited;
+          },
+        );
+        if (!result) break;
 
         if (result.ok) {
           clearTurnReadsForDocument(turnReadState, indexed.document_id);
@@ -1978,7 +2063,7 @@ export async function runToolCalls(
                 `The edited document remains available as doc_id "${docId}".`,
                 `Before making factual claims about the edited document's final contents, call read_document with doc_id "${docId}" and base the response on that returned text.`,
                 `Do not include download links or URLs in your prose response; the edited document card is shown automatically by the UI.`,
-                `If you describe specific content from the edited document, cite it with [N] markers and a final <CITATIONS> block using doc_id "${docId}".`,
+                `If you describe specific content from the edited document, cite it with [N] markers and citation entries using doc_id "${docId}".`,
               ].join(" "),
             }),
           });
@@ -2136,6 +2221,8 @@ export async function runToolCalls(
               sourceInfo.file_type,
             );
 
+            // Nothing is written before this point.
+            if (stopped()) break;
             // Parallel uploads: the doc bytes (and PDF
             // rendition if any) for every new copy.
             const uploadJobs: Promise<unknown>[] = [];
@@ -2428,40 +2515,12 @@ export async function runToolCalls(
   }
 
   if (shouldGroupFindInCase && groupedFindInCaseEvents.length > 0) {
-    const errors = groupedFindInCaseEvents
-      .map((event) => event.error)
-      .filter((error): error is string => !!error);
-    const groupEvent: CourtlistenerToolEvent = {
-      type: "courtlistener_find_in_case",
-      cluster_id: null,
-      query: "",
-      total_matches: groupedFindInCaseEvents.reduce(
-        (sum, event) => sum + event.total_matches,
-        0,
-      ),
-      searches: groupedFindInCaseEvents.map(findInCaseSearchSummary),
-      ...(errors.length ? { error: errors.join("; ") } : {}),
-    };
-    write(`data: ${JSON.stringify(groupEvent)}\n\n`);
-    courtlistenerEvents.push(groupEvent);
+    // Moves the summary after the batch's other CourtListener events.
+    const summary = summarizeGroupedFindInCase();
+    write(`data: ${JSON.stringify(summary)}\n\n`);
   }
 
   addApprovalItems(askInputsEvents, approvalItems);
 
-  return {
-    toolResults,
-    docsRead,
-    docsFound,
-    docsCreated,
-    documentSearchEvents,
-    docsReplicated,
-    workflowsApplied,
-    docsEdited,
-    askInputsEvents,
-    textCardEvents,
-    intakeActionEvents,
-    courtlistenerEvents,
-    caseCitationEvents,
-    mcpEvents,
-  };
+  return results;
 }

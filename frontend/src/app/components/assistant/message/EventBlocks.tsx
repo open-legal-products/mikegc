@@ -1,6 +1,6 @@
 import { useMarkdownCheckpoint } from "./markdownCheckpoint";
 import { memo, useEffect, useRef, useState, type ReactNode } from "react";
-import { useReasoningDisclosure, DocEditBlockUI, DocFindBlockUI, DocReadBlockUI } from "@mike/ui";
+import { useReasoningDisclosure, DocEditBlockUI, DocFindBlockUI, DocReadBlockUI, EventSourceUI } from "@mike/ui";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Download, Loader2 } from "lucide-react";
@@ -15,6 +15,7 @@ import { authenticatedFetch } from "@/app/lib/authEvents";
 import type { AssistantEvent } from "../../shared/types";
 import { FileTypeIcon } from "../../shared/FileTypeIcon";
 import { RESPONSE_GLASS_SURFACE, withoutMarkdownNode } from "./messageStyles";
+import { SourceTypeIcon } from "./CitationSources";
 
 const THINKING_PHRASES = [
     "Thinking...",
@@ -215,12 +216,15 @@ export function DocReadBlock({
     onClick,
     showConnector,
     isStreaming,
+    interrupted,
     showFileIcon = true,
 }: {
     filename: string;
     onClick?: () => void;
     showConnector?: boolean;
     isStreaming?: boolean;
+    /** The turn ended before the read reported its result. */
+    interrupted?: boolean;
     showFileIcon?: boolean;
 }) {
     return (
@@ -234,6 +238,7 @@ export function DocReadBlock({
             onClick={onClick}
             showConnector={showConnector}
             isStreaming={isStreaming}
+            interrupted={interrupted}
         />
     );
 }
@@ -243,6 +248,7 @@ export function DocFindBlock({
     query,
     totalMatches,
     isStreaming,
+    interrupted,
     showConnector,
     onClick,
 }: {
@@ -250,6 +256,8 @@ export function DocFindBlock({
     query: string;
     totalMatches: number;
     isStreaming?: boolean;
+    /** The turn ended before the find reported its matches. */
+    interrupted?: boolean;
     showConnector?: boolean;
     onClick?: () => void;
 }) {
@@ -259,6 +267,7 @@ export function DocFindBlock({
             query={query}
             totalMatches={totalMatches}
             isStreaming={isStreaming}
+            interrupted={interrupted}
             showConnector={showConnector}
             onClick={onClick}
         />
@@ -269,22 +278,29 @@ export function DocCreatedBlock({
     filename,
     showConnector,
     isStreaming,
+    interrupted,
     onClick,
 }: {
     filename: string;
     showConnector?: boolean;
     isStreaming?: boolean;
+    /** The turn ended before the document was reported as created. */
+    interrupted?: boolean;
     onClick?: () => void;
 }) {
     return (
         <EventBlock
             showConnector={showConnector}
             isStreaming={isStreaming}
-            dotColor="green"
+            dotColor={interrupted ? "gray" : "green"}
         >
             <div className="flex min-w-0 items-center gap-1.5">
                 <EventLabel className="shrink-0">
-                    {isStreaming ? "Creating" : "Created"}
+                    {isStreaming
+                        ? "Creating"
+                        : interrupted
+                          ? "Creation stopped"
+                          : "Created"}
                 </EventLabel>
                 {isStreaming || !onClick ? (
                     <span className="flex min-w-0 items-center gap-1.5">
@@ -321,6 +337,7 @@ export function DocReplicatedBlock({
     showConnector,
     isStreaming,
     hasError,
+    interrupted,
     onOpenCopy,
 }: {
     filename: string;
@@ -337,15 +354,23 @@ export function DocReplicatedBlock({
     showConnector?: boolean;
     isStreaming?: boolean;
     hasError?: boolean;
+    /** The turn ended before the replication reported its result. */
+    interrupted?: boolean;
     onOpenCopy?: (copy: {
         new_filename: string;
         document_id: string;
         version_id: string;
     }) => void;
 }) {
-    const label = isStreaming ? "Replicating" : "Replicated";
+    const label = isStreaming
+        ? "Replicating"
+        : hasError
+          ? "Replication failed"
+          : interrupted
+            ? "Replication stopped"
+            : "Replicated";
     const suffix =
-        !isStreaming && count > 1
+        !isStreaming && !hasError && !interrupted && count > 1
             ? ` ${count} times`
             : isStreaming
               ? "..."
@@ -354,7 +379,7 @@ export function DocReplicatedBlock({
         <EventBlock
             showConnector={showConnector}
             isStreaming={isStreaming}
-            dotColor={hasError ? "red" : "green"}
+            dotColor={hasError ? "red" : interrupted ? "gray" : "green"}
         >
             <div className="flex min-w-0 flex-wrap items-center gap-1.5">
                 <EventLabel className="shrink-0">{label}</EventLabel>
@@ -569,6 +594,104 @@ export function WorkflowAppliedBlock({
     );
 }
 
+const plural = (count: number, one: string, many: string) =>
+    `${count} ${count === 1 ? one : many}`;
+
+type CitedSource = Extract<
+    AssistantEvent,
+    { type: "citations_recorded" }
+>["sources"][number];
+
+/** A cite_sources call: what the answer recorded as its citations. */
+export function CitationsRecordedBlock({
+    refs,
+    removedRefs = [],
+    sources,
+    quotesNotFound,
+    rejected,
+    isStreaming,
+    interrupted,
+    showConnector,
+    openSource,
+}: {
+    refs: number[];
+    removedRefs?: number[];
+    sources: CitedSource[];
+    quotesNotFound: number;
+    rejected: number;
+    isStreaming?: boolean;
+    /** The turn ended before the call reported its result. */
+    interrupted?: boolean;
+    showConnector?: boolean;
+    /** Opens a source, when its citation can be opened. */
+    openSource?: (source: CitedSource) => (() => void) | undefined;
+}) {
+    const recorded = refs.length > 0;
+    const changes = [
+        removedRefs.length > 0 && `Removed ${plural(removedRefs.length, "citation", "citations")}`,
+        recorded && `${removedRefs.length ? "recorded" : "Recorded"} ${plural(refs.length, "citation", "citations")}`,
+    ].filter(Boolean).join(" and ");
+    const failed = !isStreaming && !interrupted && !changes;
+    const label = isStreaming
+        ? "Recording citations"
+        : interrupted
+          ? "Citation recording stopped"
+          : changes || "Could not record citations";
+    const problems =
+        isStreaming || interrupted
+            ? []
+            : [
+                  quotesNotFound > 0 &&
+                      `${plural(quotesNotFound, "quote", "quotes")} not found in the source`,
+                  rejected > 0 &&
+                      `${plural(rejected, "citation", "citations")} refused`,
+              ].filter((problem): problem is string => !!problem);
+    return (
+        <EventBlock
+            showConnector={showConnector}
+            isStreaming={isStreaming}
+            dotColor={failed ? "red" : interrupted ? "gray" : "green"}
+        >
+            {/* One flex row like the read step's, so each source's icon and
+                name sit on the label's line; several sources wrap. */}
+            <div className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5">
+                <EventLabel className="shrink-0">
+                    {label}
+                    {isStreaming ? "..." : null}
+                </EventLabel>
+                {recorded && !isStreaming && sources.length > 0 ? (
+                    <>
+                        <span className="shrink-0">from</span>
+                        {sources.map((source, index) => (
+                            <span
+                                key={source.ref}
+                                className="flex min-w-0 max-w-full items-center"
+                            >
+                                <EventSourceUI
+                                    name={source.name}
+                                    icon={
+                                        <SourceTypeIcon
+                                            type={source.type}
+                                            filename={source.name}
+                                        />
+                                    }
+                                    onClick={openSource?.(source)}
+                                />
+                                {index < sources.length - 1 ? (
+                                    <span aria-hidden="true">,</span>
+                                ) : null}
+                            </span>
+                        ))}
+                    </>
+                ) : null}
+            </div>
+            {problems.length > 0 ? (
+                <span className="block">{problems.join("; ")}</span>
+            ) : null}
+        </EventBlock>
+    );
+}
+
 export function AskInputsBlock({
     event,
     response,
@@ -669,6 +792,7 @@ export function CourtListenerBlock({
     detail,
     isStreaming,
     hasError,
+    interrupted,
     showConnector,
     items,
 }: {
@@ -676,6 +800,8 @@ export function CourtListenerBlock({
     detail?: string;
     isStreaming?: boolean;
     hasError?: boolean;
+    /** The turn ended before the call reported its result. */
+    interrupted?: boolean;
     showConnector?: boolean;
     items?: CourtListenerBlockItem[];
 }) {
@@ -685,7 +811,7 @@ export function CourtListenerBlock({
         <EventBlock
             showConnector={showConnector}
             isStreaming={isStreaming}
-            dotColor={hasError ? "red" : "green"}
+            dotColor={hasError ? "red" : interrupted ? "gray" : "green"}
         >
             {hasItems ? (
                 <EventDisclosureButton
@@ -709,8 +835,10 @@ export function CourtListenerBlock({
                             .filter(Boolean)
                             .join(", ");
                         const primary = label || item.url || "Unknown case";
+                        // A stopped call never reported these searches, so
+                        // they are named, not claimed as done.
                         const searchText = item.query
-                            ? `Searched for "${item.query}" in ${primary}${
+                            ? `${interrupted ? "Search for" : "Searched for"} "${item.query}" in ${primary}${
                                   typeof item.totalMatches === "number"
                                       ? ` (${item.totalMatches} ${
                                             item.totalMatches === 1
@@ -756,15 +884,24 @@ export function DocEditBlock({
     showConnector,
     isStreaming,
     hasError,
+    interrupted,
     onClick,
 }: {
     filename: string;
     showConnector?: boolean;
     isStreaming?: boolean;
     hasError?: boolean;
+    /** The turn ended before the edit reported its result. */
+    interrupted?: boolean;
     onClick?: () => void;
 }) {
-    const label = isStreaming ? "Editing" : hasError ? "Edit failed" : "Edited";
+    const label = isStreaming
+        ? "Editing"
+        : hasError
+          ? "Edit failed"
+          : interrupted
+            ? "Edit stopped"
+            : "Edited";
 
     return (
         <DocEditBlockUI
@@ -776,7 +913,7 @@ export function DocEditBlock({
             onClick={onClick}
             showConnector={showConnector}
             isStreaming={isStreaming}
-            dotColor={hasError ? "red" : "green"}
+            dotColor={hasError ? "red" : interrupted ? "gray" : "green"}
         />
     );
 }

@@ -94,6 +94,33 @@ describe('outbound telemetry privacy boundary', () => {
     expect(diagnosticEnvelope([{ trace: { transaction: 'Private.pdf' } }, [[{ type, filename: 'Private.pdf' }, { did: 'private-user' }]]])).toBeNull();
   });
 
+  it('lets logs and metrics leave only with a budget, rebuilt from named attributes and identifier-shaped values', () => {
+    const trace = 'a'.repeat(32);
+    const log = { timestamp: 1, level: 'warn', body: '[dbq] poll failed', trace_id: trace, span_id: 'private', severity_number: 13, attributes: {
+      tool: { value: 'read_document', type: 'string' }, count: { value: 2, type: 'integer' }, ok: { value: true, type: 'boolean' }, api_key: { value: 'sk-private-token', type: 'string' }, matter: { value: 'Private.pdf', type: 'string' },
+      filename: { value: 'Private agreement.pdf', type: 'string' }, 'user.email': { value: 'a@example.com', type: 'string' },
+      'server.address': { value: 'host-1', type: 'string' }, 'sentry.environment': { value: 'production', type: 'string' },
+    } };
+    const envelope = (type: string, items: unknown[]): Parameters<typeof diagnosticEnvelope>[0] => [{ sdk: { name: 'private' } }, [[{ type, item_count: 9, length: 99 }, { version: 2, ingest_settings: { infer_ip: 'auto' }, items }]]];
+    expect(diagnosticEnvelope(envelope('log', [log]))).toBeNull();
+    expect(diagnosticEnvelope(envelope('log', [log]), undefined, () => 0)).toBeNull();
+    expect(diagnosticEnvelope(envelope('log', [log, { ...log, body: 'Private agreement.pdf failed' }, { ...log, level: 'loud' }]), undefined, (_type, count) => count)).toEqual([{}, [[
+      { type: 'log', item_count: 1, content_type: 'application/vnd.sentry.items.log+json' },
+      { version: 2, items: [{ timestamp: 1, trace_id: trace, level: 'warn', body: '[dbq] poll failed', severity_number: 13, attributes: {
+        tool: { value: 'read_document', type: 'string' }, count: { value: 2, type: 'integer' },
+        'sentry.environment': { value: 'production', type: 'string' },
+      } }] },
+    ]]]);
+    const metric = { timestamp: 1, trace_id: trace, name: 'tool_activity', type: 'counter', value: 2, attributes: { outcome: { value: 'refused', type: 'string' } } };
+    const kept = diagnosticEnvelope(envelope('trace_metric', [metric, { ...metric, name: 'Private agreement' }, { ...metric, trace_id: undefined }, { ...metric, value: 'two' }]), undefined, (_type, count) => count);
+    expect(kept).toEqual([{}, [[
+      { type: 'trace_metric', item_count: 1, content_type: 'application/vnd.sentry.items.trace-metric+json' },
+      { version: 2, items: [{ timestamp: 1, trace_id: trace, name: 'tool_activity', type: 'counter', value: 2, attributes: { outcome: { value: 'refused', type: 'string' } } }] },
+    ]]]);
+    expect(JSON.stringify(kept)).not.toContain('Private');
+    expect(JSON.stringify(diagnosticEnvelope(envelope('log', [log]), undefined, (_type, count) => count))).not.toMatch(/sk-private-token|Private\.pdf/);
+  });
+
   it('rebuilds mixed envelopes and removes payload sizes and arbitrary envelope metadata', () => {
     const safe = diagnosticEnvelope([{ event_id: eventId, trace: { transaction: 'Private.pdf' }, private: true }, [[{ type: 'session' }, { did: 'private' }], [{ type: 'event', length: 999, filename: 'Private.pdf' }, { message: 'Private.pdf' }]]]);
     expect(safe).toEqual([{ event_id: eventId }, [[{ type: 'event' }, diagnosticEvent({})]]]);
@@ -232,6 +259,15 @@ describe('bounded error diagnostics', () => {
     expect(diagnosticErrorTags({ message: 'TypeError: private request failed', details: 'Caused by: Error: private (private_code)\n', code: '' })).toEqual({});
   });
 
+  it('names the codes PostgREST and Postgres emit while the database restarts', () => {
+    // PGRST002/PGRST003: PostgREST cannot build its schema cache / get a pooled
+    // connection; 57P02: crash shutdown. Unlisted, MIKE-BACKEND-4C and 8N arrived blank.
+    for (const code of ['PGRST002', 'PGRST003', '57P02']) {
+      const wrapped = new Error('Dependency failure (non-Error value)', { cause: { code, message: 'x', details: '', hint: '' } });
+      expect(diagnosticErrorTags(wrapped)).toEqual({ failure_code: code });
+    }
+  });
+
   it('keeps storage status and known database codes, drops arbitrary codes and metadata', () => {
     const tags = diagnosticErrorTags({ name: 'AccessDenied', $metadata: { httpStatusCode: 403, requestId: 'private' } });
     expect(diagnosticEvent({ tags }).tags).toEqual({ failure_code: 'AccessDenied', dependency_status: 403 });
@@ -309,6 +345,8 @@ it('retains provider categories and retry status without response bodies or cred
   const tags = diagnosticErrorTags(wrapped);
   expect(tags).toEqual({ provider_error: 'invalid_api_key', dependency_status: 401 });
   expect(diagnosticErrorTags(retry)).toEqual({ provider_error: 'retry_exhausted', dependency_status: 401 });
+  // Names are looked up as own keys only, so an inherited Object member is never a category.
+  for (const name of ['constructor', 'toString', '__proto__']) expect(diagnosticErrorTags({ name })).toEqual({});
   expect(diagnosticErrorTags(api)).toEqual({ provider_error: 'api_call', dependency_status: 401 });
   expect(JSON.stringify(diagnosticEvent({ tags, extra: api }))).not.toContain('PRIVATE_');
   const cyclic: { lastError?: unknown } = {};
@@ -342,6 +380,43 @@ it('names a provider refusal by its protocol type and a fixed reason, never its 
   // Appended only when present: an event without them groups as before.
   expect(diagnosticEvent({ tags: { component: 'chat-stream', provider_error: 'api_call' } }).fingerprint).toHaveLength(14);
   expect(event.fingerprint).toEqual(expect.arrayContaining(['invalid_request_error', 'prompt_too_long']));
+});
+
+it('names a Vercel AI Gateway refusal by its type, preferring the upstream body over the class default', () => {
+  // @ai-sdk/gateway marks every error with this symbol and wraps the APICallError as its cause.
+  const gatewayError = (name: string, type: string, upstreamType: string) => ({
+    [Symbol.for('vercel.ai.gateway.error')]: true, name, type, statusCode: 403, message: 'PRIVATE_ gateway text',
+    cause: { name: 'AI_APICallError', statusCode: 403, message: 'PRIVATE_', data: { error: { type: upstreamType, message: 'PRIVATE_' } } },
+  });
+  const forbidden = { name: 'AssistantStreamError', cause: gatewayError('GatewayForbiddenError', 'forbidden', 'forbidden') };
+  expect(diagnosticErrorTags(forbidden)).toMatchObject({ provider_error_type: 'forbidden', dependency_status: 403 });
+  // The SDK maps an upstream type it does not know to its internal_server_error class, keeping the 403.
+  // That class default is not the gateway's verdict on a 4xx, so the refusal carries its status and no type.
+  const unknown = diagnosticErrorTags(gatewayError('GatewayInternalServerError', 'internal_server_error', 'PRIVATE_type'));
+  expect(unknown).toMatchObject({ dependency_status: 403 });
+  expect(unknown).not.toHaveProperty('provider_error_type');
+  expect(diagnosticErrorTags({ ...gatewayError('GatewayInternalServerError', 'internal_server_error', 'PRIVATE_type'), statusCode: 500 }).provider_error_type).toBe('internal_server_error');
+  expect(diagnosticErrorTags(gatewayError('GatewayInternalServerError', 'internal_server_error', 'internal_server_error')).provider_error_type).toBe('internal_server_error');
+  expect(diagnosticErrorTags(gatewayError('GatewayInternalServerError', 'internal_server_error', 'permission_error')).provider_error_type).toBe('permission_error');
+  const event = diagnosticEvent({ tags: { component: 'chat-stream', ...diagnosticErrorTags(forbidden) } });
+  expect(event.tags).toMatchObject({ provider_error_type: 'forbidden' });
+  expect(JSON.stringify(event)).not.toContain('PRIVATE_');
+});
+
+it('names an OpenRouter mandatory-reasoning 400 and an Anthropic credit-balance 400 by a fixed reason', () => {
+  const refusal = (message: string) => ({ name: 'AppError', cause: { name: 'AI_APICallError', statusCode: 400, message } });
+  expect(diagnosticErrorTags(refusal('[Google] Reasoning is mandatory for this endpoint and cannot be disabled.')).provider_reason).toBe('reasoning_required');
+  expect(diagnosticErrorTags(refusal('Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.')).provider_reason).toBe('credit_balance');
+  expect(diagnosticErrorTags(refusal('reasoning effort must be one of low, medium, high')).provider_reason).toBeUndefined();
+  expect(diagnosticErrorTags(refusal('Your credit card was declined')).provider_reason).toBeUndefined();
+  const event = diagnosticEvent({ tags: diagnosticErrorTags(refusal('Your credit balance is too low PRIVATE_')) });
+  expect(event.tags).toMatchObject({ provider_reason: 'credit_balance' });
+  expect(JSON.stringify(event)).not.toContain('PRIVATE_');
+});
+
+it('keeps only a registry adapter id as the provider tag', () => {
+  expect(diagnosticEvent({ tags: { provider: 'azure-foundry' } }).tags).toEqual({ provider: 'azure-foundry' });
+  expect(diagnosticEvent({ tags: { provider: 'https://llm.private.example/v1' } }).tags).toEqual({});
 });
 
 it('allows only bounded network context and known model endpoints', () => {

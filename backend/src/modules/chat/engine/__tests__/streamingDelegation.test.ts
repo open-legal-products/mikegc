@@ -37,6 +37,7 @@ vi.mock("../../../../lib/mcpConnectors", () => ({ buildUserMcpTools }));
 
 vi.mock("../tools/toolDispatcher", () => ({ runToolCalls }));
 
+import { createCitationRecorder, documentCitations } from "../citeSources";
 import type { DelegationEvent } from "@mike/contracts";
 import { buildMessages, spotlight } from "../contextBuilders";
 import { runLLMStream } from "../streaming";
@@ -60,7 +61,7 @@ type StreamChatCall = {
     onToolCallStart?: (call: ReturnType<typeof delegate> & { invalid?: true }) => void;
     onContentDelta?: (text: string) => void;
     onUsage?: (
-      usage: { inputTokens: number; outputTokens: number },
+      usage: { inputTokens: number; outputTokens: number; cacheReadTokens?: number; cacheWriteTokens?: number },
       finishReason: string,
     ) => void;
   };
@@ -326,16 +327,18 @@ describe("runLLMStream delegation", () => {
     });
   });
 
-  it("ends the answer with its own model, reasoning and summed tokens, which no subagent repeats", async () => {
+  it.each([false, true])("ends the answer with its own summed usage, including cache reporting when enabled (%s)", async (cached) => {
     streamChatWithTools.mockImplementation(async (params) => {
       if (isSubagent(params)) {
         params.callbacks?.onUsage?.({ inputTokens: 900, outputTokens: 90 }, "stop");
         params.callbacks?.onContentDelta?.("Brief.");
         return { fullText: "Brief." };
       }
-      params.callbacks?.onUsage?.({ inputTokens: 1000, outputTokens: 50 }, "tool-calls");
+      params.callbacks?.onUsage?.({ inputTokens: 1000, outputTokens: 50,
+        ...(cached && { cacheReadTokens: 300, cacheWriteTokens: 200 }) }, "tool-calls");
       await params.runTools?.([delegate("d1")]);
-      params.callbacks?.onUsage?.({ inputTokens: 1200, outputTokens: 150 }, "stop");
+      params.callbacks?.onUsage?.({ inputTokens: 1200, outputTokens: 150,
+        ...(cached && { cacheReadTokens: 600, cacheWriteTokens: 100 }) }, "stop");
       params.callbacks?.onContentDelta?.("Answer");
       return { fullText: "Answer" };
     });
@@ -349,7 +352,8 @@ describe("runLLMStream delegation", () => {
         type: "response_details",
         model: "gemini-3.8-flash",
         reasoning: "medium",
-        usage: { input_tokens: 2200, output_tokens: 200 },
+        usage: { input_tokens: 2200, output_tokens: 200,
+          ...(cached && { cache_read_tokens: 900, cache_write_tokens: 300 }) },
       },
     ]);
     expect(result.events.at(-1)).toEqual(details[0]);
@@ -537,7 +541,7 @@ describe("runDelegateCall", () => {
   it("fences the brief, lists only the sources the subagent verified, and saves the run", async () => {
     const ctx = context({
       spawn: async () => ({
-        fullText: "Rent is due monthly [1] and rises yearly [2].\n<CITATIONS>[]</CITATIONS>",
+        fullText: "Rent is due monthly [1] and rises yearly [2].",
         events: [{ type: "content", text: "Rent is due monthly" }],
         citations: [
           { kind: "document", ref: 1, doc_id: "doc-0", verified: true, quotes: [{ page: 2, quote: "monthly" }] },
@@ -549,14 +553,57 @@ describe("runDelegateCall", () => {
     const { content, event } = await runDelegateCall(delegate("d1"), ctx);
 
     expect(content).toContain('<untrusted-content nonce="turnnonce">\nRent is due monthly [1]');
-    expect(content).toContain('"ref":1');
-    expect(content).not.toContain('"ref":2');
+    expect(content).toContain('"brief_ref":1');
+    expect(content).not.toContain('"brief_ref":2');
     expect(event).toMatchObject({ status: "completed", events: [] });
     expect(ctx.runStore.save).toHaveBeenCalledWith(
       event?.delegation_id,
       "completed",
       expect.anything(),
     );
+  });
+
+  it("formats delegated case, PDF and table sources for the parent tool's input schema", async () => {
+    const ctx = context({ spawn: async () => ({ fullText: "Review", events: [], citations: [
+      { ref: 1, kind: "case", cluster_id: 42, verified: true, quotes: [{ opinionId: 7, quote: "Holding" }] },
+      { ref: 2, kind: "document", doc_id: "doc-0", verified: true, quotes: [{ page: 2, quote: "Rent" }] },
+      { ref: 3, type: "tabular_citation", verified: true, col_index: 4, row_index: 2, quote: "Fee" },
+    ] }) });
+    const { content } = await runDelegateCall(delegate("d"), ctx);
+    const lines = content.split("\n").filter(line => line.startsWith('{"brief_ref":')).map(line => JSON.parse(line));
+    expect(lines).toEqual([
+      { brief_ref: 1, cluster_id: 42, quotes: [{ opinion_id: 7, quote: "Holding" }] },
+      { brief_ref: 2, doc_id: "doc-0", quotes: [{ page: "2", quote: "Rent" }] },
+      { brief_ref: 3, col_index: 4, row_index: 2, quote: "Fee" },
+    ]);
+  });
+
+  it("keeps two parallel briefs' ref 1 distinct from the parent's ref 1", async () => {
+    const quote = "Unique evidence from ";
+    const ctx = context({ spawn: async (child) => {
+      const doc_id = String(child.apiMessages.at(-1)?.content);
+      return { fullText: "Finding [1]", events: [], citations: [
+        { ref: 1, kind: "document", verified: true, doc_id, quotes: [{ quote: quote + doc_id }] },
+      ] };
+    } });
+    const docs = ["doc-0", "doc-1", "doc-2"];
+    const rec = createCitationRecorder(documentCitations({
+      docStore: new Map(), docIndex: Object.fromEntries(docs.map(label =>
+        [label, { document_id: label, filename: label + ".txt" }])),
+      casesByClusterId: new Map(), readSourceText: async label => quote + label, getCaseOpinions: async () => [],
+    }));
+    await rec.record({ citations: [{ ref: 1, doc_id: docs[0], quotes: [{ quote: quote + docs[0] }] }] });
+    const briefs = await Promise.all(docs.slice(1).map(task => runDelegateCall(delegate(task, { task }), ctx)));
+    const additions = briefs.map(({ content }, i) => {
+      expect(content).toContain("unused ref in your own answer");
+      const line = content.split("\n").find(row => row.startsWith('{"brief_ref":'));
+      const { brief_ref, ...source } = JSON.parse(line!);
+      expect(brief_ref).toBe(1);
+      expect(source.ref).toBeUndefined();
+      return { ...source, ref: i + 2 };
+    });
+    await rec.record({ citations: additions });
+    expect(rec.citations().map(row => [row.ref, row.doc_id])).toEqual([[1, "doc-0"], [2, "doc-1"], [3, "doc-2"]]);
   });
 
   it("shows and opens only the documents a scoped subagent was given", async () => {

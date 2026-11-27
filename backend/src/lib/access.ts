@@ -251,8 +251,31 @@ export async function getOrgRole(
     orgId: string | null | undefined,
     db: Db,
 ): Promise<OrgRole | null> {
-    if (!orgId) return null;
-    const { data } = await db
+    return (await readOrgRole(userId, orgId, db)).role;
+}
+
+/**
+ * Like getOrgRole, but tells a failed membership read apart from a confirmed
+ * non-member. Use it where treating a failed read as "not a member" would
+ * quietly change what the caller's work runs on.
+ */
+export async function getOrgRoleOrThrow(
+    userId: string,
+    orgId: string | null | undefined,
+    db: Db,
+): Promise<OrgRole | null> {
+    const { role, failed } = await readOrgRole(userId, orgId, db);
+    if (failed) throw new Error("Failed to read organization membership");
+    return role;
+}
+
+async function readOrgRole(
+    userId: string,
+    orgId: string | null | undefined,
+    db: Db,
+): Promise<{ role: OrgRole | null; failed: boolean }> {
+    if (!orgId) return { role: null, failed: false };
+    const { data, error } = await db
         .from("org_members")
         .select("role, organizations!inner(id)")
         .is("organizations.deleted_at", null)
@@ -260,7 +283,7 @@ export async function getOrgRole(
         .eq("user_id", userId)
         .maybeSingle();
     const role = (data as { role?: string } | null)?.role;
-    return isOrgRole(role) ? role : null;
+    return { role: isOrgRole(role) ? role : null, failed: Boolean(error) };
 }
 
 /**
@@ -350,6 +373,22 @@ export async function resolveStandaloneOrgId(
             detail: "You are not a member of that organization.",
         };
     return { ok: true, orgId };
+}
+
+/**
+ * Whether the creator of content filed under `orgId` can still reach it:
+ * always in Personal (no organization, or their own), and in a team
+ * organization only while they are a member of it — the creator branch of
+ * ensureSharedRowAccess, for content nobody else can be given, such as a
+ * Word chat.
+ */
+export async function creatorCanReachWorkspace(
+    db: Db,
+    userId: string,
+    orgId: string | null | undefined,
+): Promise<boolean> {
+    const teamOrgId = await teamOrgIdOf(db, orgId);
+    return !teamOrgId || (await getOrgRole(userId, teamOrgId, db)) !== null;
 }
 
 type ProjectRow = {
@@ -733,6 +772,28 @@ export async function ensureDocAccess(
     );
 }
 
+/**
+ * The key under which one ensureDocAccess verdict may stand for other
+ * documents in the same batch, or null when the verdict is the document's
+ * own. A project or workflow admits or refuses everything in it together,
+ * and the caller's own standalone files turn only on their organization
+ * membership. Someone else's standalone file is reached only through its own
+ * private-content grant, so it never shares a verdict.
+ */
+export function sharedDocAccessKey(
+    doc: Parameters<typeof ensureDocAccess>[0],
+    userId: string,
+    options: { readOnly?: boolean } = {},
+): string | null {
+    // An uploader's intake attachment is editable only while its own
+    // request is open, so outside a read-only batch it is checked alone.
+    const intake = doc.library_kind === "intake_attachment";
+    return doc.project_id ? `project:${doc.project_id}`
+        : doc.workflow_id ? `workflow:${doc.workflow_id}`
+        : doc.user_id === userId && doc.org_id && (!intake || options.readOnly)
+          ? `creator-org${intake ? "-intake" : ""}:${doc.org_id}` : null;
+}
+
 /** Reuse only shared container/membership verdicts within one authorized batch. */
 export function createDocumentAccessChecker(
     userId: string,
@@ -742,13 +803,7 @@ export function createDocumentAccessChecker(
 ) {
     const shared = new Map<string, Promise<ResourceAccess>>();
     return async (doc: Parameters<typeof ensureDocAccess>[0]): Promise<ResourceAccess> => {
-        // An uploader's intake attachment is editable only while its own
-        // request is open, so outside a read-only batch it is checked alone.
-        const intake = doc.library_kind === "intake_attachment";
-        const key = doc.project_id ? `project:${doc.project_id}`
-            : doc.workflow_id ? `workflow:${doc.workflow_id}`
-            : doc.user_id === userId && doc.org_id && (!intake || options.readOnly)
-              ? `creator-org${intake ? "-intake" : ""}:${doc.org_id}` : null;
+        const key = sharedDocAccessKey(doc, userId, options);
         if (!key) return ensureDocAccess(doc, userId, userEmail, db, options);
         let pending = shared.get(key);
         if (!pending) { pending = ensureDocAccess(doc, userId, userEmail, db, options); shared.set(key, pending); }

@@ -28,12 +28,12 @@ import { createTextExtractionCache } from "../../lib/textExtractionCache";
 // its way out. Instead every targeted cell is stamped with the generation id
 // before the jobs are enqueued, each worker renews the lease while it processes,
 // and whichever worker sees the last stamp cleared releases it
-// (`finishGenerationIfIdle`). The two cases where no worker will ever run —
-// nothing outstanding, or every enqueue failing — release the lease here.
+// (`finishGenerationIfIdle`). The producer settles rows it could not enqueue
+// and also checks for idleness, in case their stamps were the last ones left.
 
 import IORedis from "ioredis";
 import type { Response } from "express";
-import { REDIS_URL } from "../../lib/queue/connection";
+import { REDIS_URL, withRedisTimeout } from "../../lib/queue/connection";
 import { redisEnabled } from "../../lib/dbq/driver";
 import { startSseHeartbeat } from "../../lib/sseHeartbeat";
 import { enqueueExtraction } from "../../lib/queue/extractionQueue";
@@ -43,13 +43,16 @@ import {
     type RunProgressUpdate,
 } from "../../lib/queue/runProgress";
 import { type UserApiKeys } from "../../lib/llm";
+import { providerFailureKind, providerFailureStatus } from "../../lib/llm/providerErrors";
 import { AppError } from "../../lib/appError";
 import { reportError } from "../../lib/observability/sentry";
 import { extractRowColumns, finalizeCell } from "./tabular.extractRow";
+import { gridErrorFrame, isRefusalShownToUser } from "./tabular.extraction";
 import { type ReviewRow } from "./tabular.rows";
 import { mutateInBatches, selectAllByKey, selectInBatches } from "../../lib/batchedQuery";
 import {
     finishGeneration,
+    finishGenerationIfIdle,
     parseCellContent,
     type Column,
     type Db,
@@ -268,9 +271,10 @@ async function tailTabularRun(args: {
     // stream — there the DB-poll backstop below does all the resolving.
     if (process.env.ASYNC_TABULAR_EXTRACTION === "true" && redisEnabled()) {
         try {
-            sub = new IORedis(REDIS_URL, { maxRetriesPerRequest: null });
-            await sub.subscribe(runProgressChannel(reviewId));
-            sub.on("message", (_channel, message) => {
+            const subscriber = new IORedis(REDIS_URL, { maxRetriesPerRequest: null });
+            sub = subscriber;
+            await withRedisTimeout("progress subscribe", () => subscriber.subscribe(runProgressChannel(reviewId)));
+            subscriber.on("message", (_channel, message) => {
                 try {
                     onUpdate(JSON.parse(message) as RunProgressUpdate);
                 } catch {
@@ -278,6 +282,8 @@ async function tailTabularRun(args: {
                 }
             });
         } catch (err) {
+            sub?.disconnect();
+            sub = null;
             // The stream degrades to the DB-poll backstop; worth an issue
             // (the Redis error is the cause), not a failed response.
             log.error("[tabular/generate-async] subscribe failed", {
@@ -288,6 +294,7 @@ async function tailTabularRun(args: {
     }
 
     if (afterSubscribe) await afterSubscribe();
+    if (finished) return;
 
     // Backstop: reconcile against the DB in case a pub/sub frame was missed (or,
     // for a reconnecting view, to replay progress that happened while away).
@@ -535,7 +542,6 @@ export async function streamTabularGenerateAsync(args: {
         cellMap,
     });
 
-    let enqueued = 0;
     await tailTabularRun({
         res,
         db,
@@ -543,7 +549,10 @@ export async function streamTabularGenerateAsync(args: {
         log,
         pending,
         afterSubscribe: async () => {
-            for (const rowId of rowIds) {
+            // The first rejection ends submission. An unreachable queue costs
+            // a full timeout per row, so the rows behind it are settled too.
+            let rejectedRows: string[] = [];
+            for (const [index, rowId] of rowIds.entries()) {
                 try {
                     await enqueueExtraction({
                         reviewId,
@@ -551,29 +560,36 @@ export async function streamTabularGenerateAsync(args: {
                         rowId,
                         generationId,
                     });
-                    enqueued++;
                 } catch (err) {
+                    rejectedRows = rowIds.slice(index);
                     log.error("[tabular/generate-async] enqueue failed", {
                         err,
                         reviewId,
                         rowId,
                     });
+                    break;
                 }
+            }
+            if (!rejectedRows.length) return;
+
+            // Revoke only this run's claims. A row may have completed even
+            // though its enqueue acknowledgement was lost.
+            try {
+                await mutateInBatches("failed extraction submission", rejectedRows, (batch) =>
+                    db.from("tabular_cells")
+                        .update({ status: "error", content: null, generation_id: null })
+                        .eq("review_id", reviewId)
+                        .eq("generation_id", generationId)
+                        .in("row_id", batch),
+                );
+                await finishGenerationIfIdle(db, reviewId, generationId, log, "[tabular/generate-async]");
+            } catch (err) {
+                // Keep the accepted jobs' lease if the database also fails.
+                // The normal lease expiry still permits a subsequent retry.
+                log.error("[tabular/generate-async] failed to settle rejected rows", err);
             }
         },
     });
-
-    // Every enqueue failed (Redis down, say): nothing will renew or release the
-    // lease, so hand the review back now instead of waiting for the expiry.
-    if (enqueued === 0) {
-        await finishGeneration(
-            db,
-            reviewId,
-            generationId,
-            log,
-            "[tabular/generate-async]",
-        );
-    }
     return true;
 }
 
@@ -649,6 +665,24 @@ export async function streamTabularGenerateSync(args: {
     } = args;
 
     const textCache = createTextExtractionCache();
+    // Every row calls the same model with the same keys, so a refused key or
+    // an outage fails each row alike: report each kind of failure once per run.
+    // A user's own rejected key is not reported at all: the run sends the
+    // grid its frame below (the extract-row warning is its log line).
+    const reportedFailures = new Set<string>();
+    const reportFailure = (error: unknown): boolean => {
+        if (isRefusalShownToUser(error)) return false;
+        const kind = providerFailureKind(error);
+        // Unknown failures can be distinct adapter/application bugs with
+        // different stacks. Only identified provider conditions repeat here;
+        // the final transport owns sampling for everything else.
+        if (kind === "chat.stream_failed") return true;
+        const failure = `${kind}:${providerFailureStatus(error) ?? ""}`;
+        if (reportedFailures.has(failure)) return false;
+        reportedFailures.add(failure);
+        return true;
+    };
+    let sentErrorFrame = false;
     let nextRowIndex = 0;
     const cellFrame = (
         rowId: string,
@@ -684,6 +718,7 @@ export async function streamTabularGenerateSync(args: {
             apiKeys,
             generationId,
             abortSignal,
+            reportFailure,
             sink: {
                 activity: args.onActivity,
                 generating: (rowId, columnIndex) =>
@@ -694,6 +729,11 @@ export async function streamTabularGenerateSync(args: {
         });
 
         if (error) onError?.(error);
+        const frame = error && !sentErrorFrame ? gridErrorFrame(error) : null;
+        if (frame) {
+            sentErrorFrame = true;
+            write(`data: ${JSON.stringify({ type: "error", ...frame })}\n\n`);
+        }
 
         // Stopped cells return to pending; genuine missing model output is
         // still an error. Completed cells remain untouched.

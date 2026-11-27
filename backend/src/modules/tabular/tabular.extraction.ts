@@ -5,6 +5,7 @@ import { ExtractionLimitError } from "../../lib/extraction/limits";
 import { type ExtractionJobData } from "../../lib/queue/extractionQueue";
 import { publishCellUpdate as defaultPublish, type RunProgressUpdate } from "../../lib/queue/runProgress";
 import { assistantStreamErrorPayload } from "../chat/chat.service";
+import { isUserProviderRefusal } from "../../lib/llm/providerErrors";
 import { extractRowColumns, finalizeCell } from "./tabular.extractRow";
 import { loadReviewRow } from "./tabular.rows";
 import {
@@ -42,6 +43,30 @@ function reportLeaseLost(
         extra: { review_id: ids.reviewId, row_id: ids.rowId },
     });
     return failure;
+}
+
+/**
+ * The error frame a failed row sends the grid, or null when the failure has
+ * no remedy to name and the grid shows only failed cells. Read down the cause
+ * chain, so a queue failure wrapping the provider's error finds the frame the
+ * row sent.
+ */
+export function gridErrorFrame(error: unknown): ReturnType<typeof assistantStreamErrorPayload> | null {
+    for (let current = error, depth = 0; current && depth < 8; current = (current as { cause?: unknown }).cause, depth++) {
+        const payload = assistantStreamErrorPayload(current);
+        if (payload.code === "invalid_api_key") return payload;
+    }
+    return null;
+}
+
+/**
+ * The user's own account refused the request and the grid was sent the
+ * remedy: nothing the operator can act on, so it is logged, never reported
+ * (the chat engine's rule). A refusal with no frame (no credits, no model
+ * access) leaves the user with bare failed cells, so it keeps its warning.
+ */
+export function isRefusalShownToUser(error: unknown): boolean {
+    return isUserProviderRefusal(error) && gridErrorFrame(error) !== null;
 }
 
 // Queue jobs may share a source; revision keys prevent stale in-place edits.
@@ -173,14 +198,26 @@ export async function runExtractionJob(
         }
 
         // 3. Current cell state for this row, keyed by column.
-        const { data: cells } = await db
+        const { data: cells, error: cellError } = await db
             .from("tabular_cells")
             .select("*")
             .eq("review_id", reviewId)
             .eq("row_id", rowId);
+        if (cellError) throw new AppError("tabular.generation_failed", "Could not load the extraction row's cells", { cause: cellError });
         const existingByColumn = new Map<number, Record<string, unknown>>();
         for (const cell of (cells ?? []) as Record<string, unknown>[])
             existingByColumn.set(cell.column_index as number, cell);
+        // A submission timeout can revoke the claim even if the job landed
+        // in the queue. A late delivery has no work once the claim is gone.
+        if (generationId) {
+            columns = columns.filter((column) =>
+                existingByColumn.get(column.index)?.generation_id === generationId,
+            );
+            if (columns.length === 0) {
+                settled = true;
+                return;
+            }
+        }
 
         // 4. Model + keys for the owner (never serialized into the job payload).
         //    The model is the REVIEW's — the enqueuing request already validated
@@ -238,12 +275,8 @@ export async function runExtractionJob(
             },
         });
         if (error instanceof ExtractionLimitError || error instanceof ExtractionParseError) throw error;
-        if (error) {
-            const payload = assistantStreamErrorPayload(error);
-            if (payload.code === "invalid_api_key") {
-                await publish(reviewId, { type: "error", ...payload });
-            }
-        }
+        const frame = error ? gridErrorFrame(error) : null;
+        if (frame) await publish(reviewId, { type: "error", ...frame });
         if (processed.length === 0) {
             settled = true;
             return;

@@ -55,6 +55,8 @@ import type {
 import { REASONING_LEVELS } from "./types";
 import { vertexAuthClient } from "./vertexAuth";
 import { UserFacingError } from "../userFacingError";
+import { log, tpl } from "../log";
+import { providerDataRetentionAllowed } from "../runtimeConfig";
 
 const OPENROUTER_BASE_URL =
   process.env.OPENROUTER_BASE_URL?.trim().replace(/\/+$/, "") ||
@@ -91,6 +93,38 @@ const ROUTER_KEY_ENV_HINTS: Record<RouterProvider, string> = {
   "opencode-go": "OPENCODE_API_KEY",
 };
 
+/**
+ * Per-request settings asking a provider not to keep, or train on, what Mike
+ * sends it: lawyers' prompts and document text. Only providers whose API has
+ * such a request field are listed; for the others (Anthropic, Gemini,
+ * Vertex, Bedrock, Mistral) retention is set by the account's terms, not by
+ * the request. LLM_PROVIDER_DATA_RETENTION=allow sends none of these.
+ *
+ * - OpenAI, Azure OpenAI and xAI Responses APIs store every response unless
+ *   told not to. With store=false the SDKs ask for reasoning encrypted and
+ *   hand it back inline on the next tool step instead of by stored id.
+ * - OpenRouter routes only to upstreams that do not collect user data, and
+ *   the Vercel AI Gateway only to providers that do not train on prompts;
+ *   either can leave a model with no eligible upstream.
+ */
+const NO_RETENTION_OPTIONS: Partial<
+  Record<Provider, AiSdkAdapterConfig["requestProviderOptions"]>
+> = {
+  openai: { openai: { store: false } },
+  azure: { azure: { store: false } },
+  xai: { xai: { store: false } },
+  openrouter: { openrouter: { provider: { data_collection: "deny" } } },
+  vercel: { gateway: { disallowPromptTraining: true } },
+};
+
+function noRetentionOptions(
+  provider: Provider,
+): AiSdkAdapterConfig["requestProviderOptions"] {
+  return providerDataRetentionAllowed()
+    ? undefined
+    : NO_RETENTION_OPTIONS[provider];
+}
+
 // Env aliases a provider also answers to. CLAUDE_API_KEY is accepted by
 // envApiKey("claude") in lib/providerCredentials/store.ts, which decides
 // whether Settings reports the key as configured — without the same alias here
@@ -107,9 +141,9 @@ const ENVIRONMENT_KEY_ALIASES: Record<string, string[]> = {
  * never into a message every user of a hosted deployment can read.
  */
 function keyNotConfigured(label: string, operatorHint: string): UserFacingError {
-  console.warn(`[llm] ${label} API key is not configured. ${operatorHint}`);
+  log.warn(tpl`[llm] ${label} API key is not configured. ${operatorHint}`);
   return new ProviderConfigurationError(
-    `The ${label} API key is not configured. Add your own key in Settings → Bring Your Own Keys or contact your administrator.`,
+    `The ${label} API key is not configured. Add your own key in Settings → API Keys or contact your administrator.`,
   );
 }
 
@@ -200,6 +234,7 @@ async function createAnthropicAdapter(args: {
     label: args.label,
     model: anthropic(args.model),
     modelId: args.model,
+    anthropicCachePoint: true,
     keySource: args.keySource,
     supportsReasoning: args.supportsReasoning,
     // Only Anthropic itself runs the search; compatible gateways do not.
@@ -504,7 +539,7 @@ async function createCustomEndpointAdapter(
   const credentials = customEndpointCredentials(apiKeys);
   if (!credentials) {
     throw new ProviderConfigurationError(
-      "OpenAI-compatible endpoint is not configured. Add an API key and base URL in Settings → Bring Your Own Keys.",
+      "OpenAI-compatible endpoint is not configured. Add an API key and base URL in Settings → API Keys.",
     );
   }
   const { createOpenAICompatible } = await import("@ai-sdk/openai-compatible");
@@ -544,7 +579,7 @@ async function createConfiguredAdapter(
 ): Promise<AiSdkAdapterConfig> {
   const configured = configuredModelOrThrow(id);
   if (configured.apiKeyProvider && apiKeys?.disabledProviders?.includes(configured.apiKeyProvider)) {
-    throw new ProviderConfigurationError("This model provider is turned off. Turn it on in Settings → Bring Your Own Keys or select another model.");
+    throw new ProviderConfigurationError("This model provider is turned off. Turn it on in Settings → API Keys or select another model.");
   }
   const { createOpenAICompatible } = await import("@ai-sdk/openai-compatible");
   const apiKey = apiKeyForConfiguredModel(configured, apiKeys);
@@ -598,7 +633,7 @@ function configuredModelKeySource(
 
 function unsupportedOpenCodeGoModel(model: string): Error {
   return new Error(
-    `OpenCode Go model ${openCodeGoModelId(model)} requires a protocol Mike does not support yet. Select a model listed under Model Selections for OpenCode Go in Settings → Bring Your Own Keys.`,
+    `OpenCode Go model ${openCodeGoModelId(model)} requires a protocol Mike does not support yet. Select a model listed under Model Selections for OpenCode Go in Settings → API Keys.`,
   );
 }
 
@@ -622,9 +657,18 @@ async function createProviderAdapter(
   model: string,
   apiKeys?: UserApiKeys,
 ): Promise<AiSdkAdapterConfig> {
+  const adapter = await buildProviderAdapter(model, apiKeys);
+  const requestProviderOptions = noRetentionOptions(adapter.provider);
+  return requestProviderOptions ? { ...adapter, requestProviderOptions } : adapter;
+}
+
+async function buildProviderAdapter(
+  model: string,
+  apiKeys?: UserApiKeys,
+): Promise<AiSdkAdapterConfig> {
   const provider = providerForModel(model);
   if (apiKeys?.disabledProviders?.includes(provider)) {
-    throw new ProviderConfigurationError("This model provider is turned off. Turn it on in Settings → Bring Your Own Keys or select another model.");
+    throw new ProviderConfigurationError("This model provider is turned off. Turn it on in Settings → API Keys or select another model.");
   }
 
   // Last line of defence behind resolveModel and the save-time check: some

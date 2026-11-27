@@ -3,6 +3,8 @@
  * Mirrored in packages/client/src/sentryPrivacy.ts; the sync test guards drift.
  * Never infer whether arbitrary text is PII. Rebuild diagnostic events from an
  * allowlist and reject every other envelope item, including automatic sessions.
+ * Structured logs and metrics leave only when the runtime opts in (see
+ * telemetryItems), and are rebuilt from their own allowlist.
  */
 type RecordValue = Record<string, unknown>;
 type Envelope = [RecordValue, Array<[{ type: string; [key: string]: unknown }, unknown]>];
@@ -49,16 +51,19 @@ export const DIAGNOSTIC_VOCABULARY: Record<string, ReadonlySet<string>> = Object
   install: 'community official',
   http_method: 'GET POST PUT PATCH DELETE HEAD OPTIONS',
   // Every code a server emits (packages/client/src/userError.ts CODE_KINDS) plus the client's own two.
-  error_code: 'internal_error network_error upstream_unavailable schema_out_of_date rate_limited upload_session_control_rate_limit upload_session_poll_rate_limit upload_session_rate_limit_exceeded request_too_large upload_file_too_large upload_batch_too_large validation_failed invalid_request invalid_json password_too_short password_too_long email_address_invalid upload_incomplete missing_api_key model_unavailable model_required authentication_failed session_expired cookie_session_required mfa_verification_required untrusted_origin review_running review_stale memory_revision_conflict upload_target_busy access_inherited ask_inputs_stale intake_conflict intake_command_reused intake_purged',
+  error_code: 'internal_error network_error upstream_unavailable schema_out_of_date rate_limited upload_session_control_rate_limit upload_session_poll_rate_limit upload_session_rate_limit_exceeded request_too_large upload_file_too_large upload_batch_too_large validation_failed invalid_request invalid_json password_too_short password_too_long email_address_invalid upload_incomplete missing_api_key provider_account_refused model_unavailable model_required authentication_failed session_expired cookie_session_required mfa_verification_required untrusted_origin review_running review_stale memory_revision_conflict upload_target_busy access_inherited ask_inputs_stale intake_conflict intake_command_reused intake_purged',
   capture_source: 'exception console unhandled message',
   diagnostics_version: '2',
   build_mode: 'development production test',
-  failure_code: 'ECONNREFUSED ECONNRESET EADDRINUSE ETIMEDOUT ENOTFOUND EHOSTUNREACH ENETUNREACH EAI_AGAIN ENOENT EACCES EPERM ENOSPC EPIPE ERR_SERVER_NOT_RUNNING UND_ERR_CONNECT_TIMEOUT UND_ERR_HEADERS_TIMEOUT UND_ERR_BODY_TIMEOUT UND_ERR_SOCKET CERT_HAS_EXPIRED DEPTH_ZERO_SELF_SIGNED_CERT AccessDenied InvalidAccessKeyId SignatureDoesNotMatch NoSuchBucket NoSuchKey SlowDown ServiceUnavailable RequestTimeout 23505 23503 23514 22003 22P02 28P01 28000 42P10 42883 42501 42P01 42703 53300 57014 40001 40P01 55P03 53100 53200 57P01 57P03 08001 08003 08006 08P01 PGRST000 PGRST001 PGRST100 PGRST116 PGRST200 PGRST201 PGRST202 PGRST203 PGRST204 PGRST205 configuration_invalid signing_key_invalid conversion_unavailable conversion_timeout conversion_failed fetch_failed',
+  failure_code: 'ECONNREFUSED ECONNRESET EADDRINUSE ETIMEDOUT ENOTFOUND EHOSTUNREACH ENETUNREACH EAI_AGAIN ENOENT EACCES EPERM ENOSPC EPIPE ERR_SERVER_NOT_RUNNING UND_ERR_CONNECT_TIMEOUT UND_ERR_HEADERS_TIMEOUT UND_ERR_BODY_TIMEOUT UND_ERR_SOCKET CERT_HAS_EXPIRED DEPTH_ZERO_SELF_SIGNED_CERT AccessDenied InvalidAccessKeyId SignatureDoesNotMatch NoSuchBucket NoSuchKey SlowDown ServiceUnavailable RequestTimeout 23505 23503 23514 22003 22P02 28P01 28000 42P10 42883 42501 42P01 42703 53300 57014 40001 40P01 55P03 53100 53200 57P01 57P02 57P03 08001 08003 08006 08P01 PGRST000 PGRST001 PGRST002 PGRST003 PGRST100 PGRST116 PGRST200 PGRST201 PGRST202 PGRST203 PGRST204 PGRST205 configuration_invalid signing_key_invalid conversion_unavailable conversion_timeout conversion_failed fetch_failed SIGKILL SIGSEGV SIGBUS SIGILL SIGTRAP',
+  // The adapter id a model call went through (backend/src/lib/llm/types.ts Provider), never an endpoint's host.
+  provider: 'claude gemini openai mistral openai-compatible openrouter vercel opencode-go bedrock azure azure-foundry vertex xai custom ollama',
   provider_error: 'invalid_api_key api_call retry_exhausted stream_provider',
-  // The `error.type` model providers put in an error body (Anthropic, OpenAI and the gateways that copy them).
-  provider_error_type: 'invalid_request_error authentication_error permission_error not_found_error request_too_large rate_limit_error api_error overloaded_error billing_error timeout_error insufficient_quota server_error',
+  // The `error.type` model providers put in an error body (Anthropic, OpenAI and the gateways that copy them),
+  // then the Vercel AI Gateway's own error classes (@ai-sdk/gateway src/errors).
+  provider_error_type: 'invalid_request_error authentication_error permission_error not_found_error request_too_large rate_limit_error api_error overloaded_error billing_error timeout_error insufficient_quota server_error rate_limit_exceeded model_not_found not_found internal_server_error failed_dependency forbidden response_error',
   // Why a provider refused a request, matched by PROVIDER_REASONS below; never the provider's text.
-  provider_reason: 'prompt_too_long invalid_image invalid_tool_schema',
+  provider_reason: 'prompt_too_long invalid_image invalid_tool_schema reasoning_required credit_balance',
   network_state: 'online offline unknown',
   request_origin: 'same-origin cross-origin unknown',
   file_type: 'pdf doc docx odt rtf ppt pptx xls xlsx csv txt html',
@@ -77,9 +82,34 @@ export const DIAGNOSTIC_VOCABULARY: Record<string, ReadonlySet<string>> = Object
 const ENUMS = DIAGNOSTIC_VOCABULARY;
 const ROUTE_PARTS = new Set(('intake automation webhooks email slack teams graph mailbox outbound retry reply-seen stop_asking configuration requests assignment notes wait resume resolve reopen events word-chat orgs single-documents tabular-review quick-actions workflow-addons audit manifest-signing-key api auth login logout refresh session user users projects directory people access memory ids filter-options folder-paths resolve folder documents versions files folders upload uploads upload-sessions parts complete abort content download preview source text conversion chats chat messages stream cancel assistant tabular tabular-reviews reviews rows columns cells run results export workflows playbooks templates library models configured ollama openrouter vercel opencode-go bedrock azure azure-foundry vertex xai custom settings profile organizations members permissions shares keys api-keys health observability sentry-test').split(' '));
 const ID_KEYS = new Set(('request_id requestId document_id documentId file_id fileId job_id jobId review_id reviewId row_id rowId session_id sessionId version_id versionId run_id import_id playbook_id').split(' '));
-const CONFIGURATION_FIELDS = new Set('SUPABASE_URL SUPABASE_PUBLISHABLE_KEY SUPABASE_SECRET_KEY AUTH_HANDOFF_ENCRYPTION_SECRET USER_API_KEYS_ENCRYPTION_SECRET MCP_CONNECTORS_ENCRYPTION_SECRET FRONTEND_URL API_PUBLIC_URL WORD_ADDIN_URL'.split(' '));
+const CONFIGURATION_FIELDS = new Set('SUPABASE_URL SUPABASE_PUBLISHABLE_KEY SUPABASE_ANON_KEY SUPABASE_SECRET_KEY AUTH_HANDOFF_ENCRYPTION_SECRET DOWNLOAD_SIGNING_SECRET USER_API_KEYS_ENCRYPTION_SECRET MCP_CONNECTORS_ENCRYPTION_SECRET FRONTEND_URL API_PUBLIC_URL WORD_ADDIN_URL'.split(' '));
 /** Static exception identifiers are trusted under the source contract, not because of this syntax check. */
 const ERROR_TYPE = /^[A-Z][A-Za-z0-9]{1,60}(?:Error|Warning|Exception)$|^(?:Error|Warning)$/;
+// A DOMException's constructor is always DOMException; its spec-defined name is
+// what tells failures apart. The caller can pass any name, so only these pass.
+const DOM_EXCEPTION_NAMES = new Set('AbortError NotFoundError NotAllowedError NotSupportedError InvalidStateError SecurityError NetworkError TimeoutError QuotaExceededError DataCloneError HierarchyRequestError SyntaxError'.split(' '));
+function domExceptionName(error: unknown): string | undefined {
+  try {
+    if (typeof DOMException === 'function' && error instanceof DOMException && DOM_EXCEPTION_NAMES.has(error.name)) return error.name;
+  } catch { /* A host object must not break reporting. */ }
+  return undefined;
+}
+
+/** The browser SDK turns a stackless DOMException into a synthetic message. */
+export function restoreDomExceptionType(
+  event: { message?: string; exception?: { values?: Array<{ type?: string }> } },
+  original: unknown,
+): void {
+  const name = domExceptionName(original);
+  if (!name) return;
+  const values = event.exception?.values;
+  if (values?.length) values[values.length - 1]!.type = name;
+  else event.exception = { values: [{ type: name }] };
+  // This is an exception, even when its only frames came from captureException.
+  // Leaving message set makes the final boundary treat it as captureMessage.
+  delete event.message;
+}
+
 /** A frame's function name as V8 prints it: dotted identifiers, optionally `async`/`new`, `[as x]`, `<anonymous>`. ASCII identifier characters only; a document name has spaces or an extension-like tail that this still admits, so names are kept only for frames in our own files (see framesFor). */
 const FUNCTION_NAME = /^(?:async |new )?[A-Za-z_$<][\w$<>]{0,60}(?:\.[A-Za-z_$<][\w$<>]{0,60}){0,6}(?: \[as [\w$]{1,60}\]| \(index \d{1,6}\))?$/;
 /** Repository locations subject to the static diagnostic-name source contract. */
@@ -104,7 +134,20 @@ const PROVIDER_REASONS: Array<[string, RegExp]> = [
   ['prompt_too_long', /prompt is too long|context(?:[ _]length|[ _]window)|maximum context|too many (?:input )?tokens|input is too long|exceeds the maximum number of tokens/i],
   ['invalid_image', /\bimage\b.*\b(?:invalid|could not|unable to|unsupported|not supported|not valid|exceeds|too large)|could not process image|invalid base64/i],
   ['invalid_tool_schema', /\btools?\.\d+|input_schema|invalid schema for function|function parameters|tool[^.]*\bschema\b/i],
+  // OpenRouter, for a model that always reasons when the request turned reasoning off.
+  ['reasoning_required', /\breasoning is mandatory for this endpoint\b/i],
+  // Anthropic answers an empty prepaid balance with a 400 invalid_request_error, not a 402.
+  ['credit_balance', /\byour credit balance is too low\b/i],
 ];
+/** The provider_error tag for each provider failure class, keyed by the error's name. */
+const PROVIDER_ERROR_KIND: Readonly<Record<string, string>> = {
+  InvalidApiKeyError: 'invalid_api_key',
+  AI_APICallError: 'api_call',
+  AI_RetryError: 'retry_exhausted',
+  AI_StreamProviderError: 'stream_provider',
+};
+/** @ai-sdk/gateway's own instance marker (GatewayError.isInstance); its classes are not exported. */
+const GATEWAY_ERROR = Symbol.for('vercel.ai.gateway.error');
 
 function record(value: unknown): RecordValue {
   return value !== null && typeof value === 'object' && !Array.isArray(value) ? value as RecordValue : {};
@@ -155,6 +198,8 @@ export function retainExceptionTypes(
         const constructor = Object.getPrototypeOf(candidate)?.constructor;
         if (typeof constructor === 'function' && ERROR_TYPE.test(constructor.name)) types.add(constructor.name);
       }
+      const domName = domExceptionName(candidate);
+      if (domName) types.add(domName);
       const item = candidate as RecordValue;
       if (item.cause) pending.push(item.cause);
       if (item.lastError) pending.push(item.lastError);
@@ -206,14 +251,22 @@ export function diagnosticErrorTags(error: unknown): Record<string, string | num
         const fields = [...new Set(item.configurationFields.slice(0, 10).filter(field => typeof field === 'string' && CONFIGURATION_FIELDS.has(field)))];
         if (fields.length) tags.configuration_fields = fields.sort().join(',');
       }
-      const providerError = item.name === 'InvalidApiKeyError' ? 'invalid_api_key'
-        : item.name === 'AI_APICallError' ? 'api_call'
-          : item.name === 'AI_RetryError' ? 'retry_exhausted'
-            : item.name === 'AI_StreamProviderError' ? 'stream_provider' : undefined;
+      const providerError = typeof item.name === 'string' && Object.hasOwn(PROVIDER_ERROR_KIND, item.name)
+        ? PROVIDER_ERROR_KIND[item.name] : undefined;
       if (providerError && tags.provider_error === undefined) tags.provider_error = providerError;
-      if (item.name === 'AI_APICallError' || item.name === 'AI_StreamProviderError') {
+      // Recorded by withKeySource (backend/src/lib/llm/providerErrors.ts); admitted only as a registry id.
+      if (typeof item.keyProvider === 'string' && ENUMS.provider!.has(item.keyProvider) && tags.provider === undefined) tags.provider = item.keyProvider;
+      const gateway = (candidate as Record<symbol, unknown>)[GATEWAY_ERROR] === true;
+      if (item.name === 'AI_APICallError' || item.name === 'AI_StreamProviderError' || gateway) {
         // The SDK's parsed error body (`data.error.type`) or the stream error's own `type`; fixed protocol values only.
-        const providerType = record(record(item.data).error).type ?? item.type;
+        // A gateway error maps every upstream type it does not know to internal_server_error, so the
+        // upstream body on its APICallError cause is read first and the class's fixed `type` is the fallback.
+        // That catch-all on a 4xx is the SDK's default branch, not the gateway's verdict: an account refusal
+        // of a type outside the reviewed list carries no type rather than "internal_server_error".
+        const sdkDefault = item.type === 'internal_server_error' && typeof item.statusCode === 'number' && item.statusCode < 500;
+        const providerType = gateway
+          ? [record(record(record(item.cause).data).error).type, sdkDefault ? undefined : item.type].find(type => typeof type === 'string' && ENUMS.provider_error_type!.has(type))
+          : record(record(item.data).error).type ?? item.type;
         if (typeof providerType === 'string' && ENUMS.provider_error_type!.has(providerType) && tags.provider_error_type === undefined) tags.provider_error_type = providerType;
         const reason = typeof item.message === 'string' ? PROVIDER_REASONS.find(([, pattern]) => pattern.test(item.message as string))?.[0] : undefined;
         if (reason && tags.provider_reason === undefined) tags.provider_reason = reason;
@@ -384,10 +437,96 @@ export function diagnosticEvent(value: unknown): RecordValue {
   return out;
 }
 
-/** Drop all non-error telemetry, even if a future SDK enables it by default. */
-export function diagnosticEnvelope(envelope: Envelope, destination?: string): Envelope | null {
-  const items: Envelope[1] = envelope[1].flatMap(([header, payload]) => header.type === 'event'
-    ? [[{ type: 'event' }, diagnosticEvent(payload)] as Envelope[1][number]] : []);
+export type TelemetryItemType = 'log' | 'trace_metric';
+/** How many of `count` items of this type may leave now; the runtime's volume policy. */
+export type TelemetryBudget = (type: TelemetryItemType, count: number) => number;
+
+const TELEMETRY_CONTENT_TYPE: Record<TelemetryItemType, string> = {
+  log: 'application/vnd.sentry.items.log+json',
+  trace_metric: 'application/vnd.sentry.items.trace-metric+json',
+};
+const LOG_LEVELS = new Set(['trace', 'debug', 'info', 'warn', 'error', 'fatal']);
+const METRIC_TYPES = new Set(['counter', 'gauge', 'distribution']);
+/** `[scope] message`, as lib/log writes it from static source text; `{}` stands where a value was printed. */
+const LOG_BODY = /^\[[A-Za-z][A-Za-z0-9_/.-]{0,39}\] [^\x00-\x1f\x7f]{1,200}$/;
+const METRIC_NAME = /^[a-z][a-z0-9_.]{0,63}$/;
+/**
+ * The attributes a log or metric may carry. A new one is added here, in both
+ * copies of this file, with a reason it cannot hold a client's data: shape
+ * alone does not tell an identifier from a file name or a key.
+ */
+const TELEMETRY_ATTRIBUTES = new Set(['kind', 'tool', 'outcome', 'count']);
+/** An identifier, never a sentence: no spaces, quotes or slashes. */
+const ATTRIBUTE_TEXT = /^[A-Za-z0-9_.:-]{1,64}$/;
+const SDK_ATTRIBUTE_TEXT = /^[A-Za-z0-9_.:@+/-]{1,100}$/;
+
+/**
+ * Attributes rebuilt from an allowlist: only the keys in TELEMETRY_ATTRIBUTES,
+ * each with a number, a boolean or an identifier-shaped string. Everything
+ * else is dropped, including the SDK's own attributes (user.*,
+ * server.address, sentry.*) except environment and release.
+ */
+function telemetryAttributes(input: unknown): RecordValue {
+  const out: RecordValue = {};
+  for (const [key, typed] of Object.entries(record(input))) {
+    const { value, type } = record(typed);
+    if (key === 'sentry.environment' || key === 'sentry.release') {
+      if (typeof value === 'string' && SDK_ATTRIBUTE_TEXT.test(value)) out[key] = { value, type: 'string' };
+      continue;
+    }
+    if (!TELEMETRY_ATTRIBUTES.has(key)) continue;
+    if (typeof value === 'boolean') out[key] = { value, type: 'boolean' };
+    else if (typeof value === 'number' && Number.isFinite(value)) out[key] = { value, type: type === 'integer' && Number.isInteger(value) ? 'integer' : 'double' };
+    else if (typeof value === 'string' && ATTRIBUTE_TEXT.test(value)) out[key] = { value, type: 'string' };
+  }
+  return out;
+}
+
+/** The log or metric items of one container that may leave, each rebuilt field by field. */
+export function telemetryItems(type: TelemetryItemType, payload: unknown): RecordValue[] {
+  const items = record(payload).items;
+  if (!Array.isArray(items)) return [];
+  return items.flatMap(raw => {
+    const item = record(raw);
+    if (typeof item.timestamp !== 'number' || !Number.isFinite(item.timestamp)) return [];
+    const out: RecordValue = { timestamp: item.timestamp };
+    if (typeof item.trace_id === 'string' && HEX_ID.test(item.trace_id)) out.trace_id = item.trace_id;
+    if (type === 'log') {
+      if (typeof item.level !== 'string' || !LOG_LEVELS.has(item.level)) return [];
+      if (typeof item.body !== 'string' || !LOG_BODY.test(item.body)) return [];
+      out.level = item.level;
+      out.body = item.body;
+      if (Number.isInteger(item.severity_number)) out.severity_number = item.severity_number;
+    } else {
+      if (typeof item.name !== 'string' || !METRIC_NAME.test(item.name)) return [];
+      if (typeof item.type !== 'string' || !METRIC_TYPES.has(item.type)) return [];
+      if (typeof item.value !== 'number' || !Number.isFinite(item.value)) return [];
+      // Relay requires a trace id on a metric; one that is not ours to vouch for is not sent.
+      if (out.trace_id === undefined) return [];
+      out.name = item.name;
+      out.type = item.type;
+      out.value = item.value;
+    }
+    out.attributes = telemetryAttributes(item.attributes);
+    return [out];
+  });
+}
+
+/**
+ * Drop all telemetry but error events, even if a future SDK enables more by
+ * default. With a `telemetry` budget, structured logs and metrics leave too,
+ * rebuilt by telemetryItems and limited by that budget.
+ */
+export function diagnosticEnvelope(envelope: Envelope, destination?: string, telemetry?: TelemetryBudget): Envelope | null {
+  const items: Envelope[1] = envelope[1].flatMap(([header, payload]): Envelope[1] => {
+    if (header.type === 'event') return [[{ type: 'event' }, diagnosticEvent(payload)]];
+    if (!telemetry || (header.type !== 'log' && header.type !== 'trace_metric')) return [];
+    const safe = telemetryItems(header.type, payload);
+    const allowed = safe.slice(0, Math.max(0, Math.floor(telemetry(header.type, safe.length))));
+    return allowed.length
+      ? [[{ type: header.type, item_count: allowed.length, content_type: TELEMETRY_CONTENT_TYPE[header.type] }, { version: 2, items: allowed }]]
+      : [];
+  });
   if (!items.length) return null;
   const header: RecordValue = {};
   // Next's tunnel needs a DSN. Use client configuration, never envelope input.
@@ -398,7 +537,7 @@ export function diagnosticEnvelope(envelope: Envelope, destination?: string): En
 }
 
 /** Applies to browser, server, workers and add-in, in both install modes. */
-export function privacyBoundaryIntegration(options: { acceptEvent?: (event: RecordValue) => boolean } = {}) {
+export function privacyBoundaryIntegration(options: { acceptEvent?: (event: RecordValue) => boolean; telemetry?: TelemetryBudget } = {}) {
   return {
     name: 'MikePrivacyBoundary',
     setup(client: {
@@ -411,9 +550,9 @@ export function privacyBoundaryIntegration(options: { acceptEvent?: (event: Reco
       const dsn = client.getDsn?.();
       const destination = dsn?.publicKey ? `${dsn.protocol}://${dsn.publicKey}@${dsn.host}${dsn.port ? `:${dsn.port}` : ''}/${dsn.path ? `${dsn.path}/` : ''}${dsn.projectId}` : undefined;
       transport.send = envelope => {
-        const safe = diagnosticEnvelope(envelope, destination);
+        const safe = diagnosticEnvelope(envelope, destination, options.telemetry);
         if (!safe) return Promise.resolve({});
-        const items = safe[1].filter(([, payload]) => options.acceptEvent?.(record(payload)) ?? true);
+        const items = safe[1].filter(([header, payload]) => header.type !== 'event' || (options.acceptEvent?.(record(payload)) ?? true));
         if (!items.length) return Promise.resolve({});
         return send([safe[0], items]);
       };

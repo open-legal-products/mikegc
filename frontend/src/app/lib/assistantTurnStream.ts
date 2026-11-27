@@ -3,7 +3,13 @@ import { BACKEND_REPORTING_OWNER } from "@mike/client";
 
 import { streamChatTurn } from "@/app/lib/mikeApi";
 import { readSseFrames } from "@/app/lib/sse";
+import { reportGatewayLimit } from "@/app/lib/errorReporting";
 import { isPanelDocument } from "@/app/components/shared/types";
+import {
+  citationsRecordedEvent,
+  isRecordingCitations,
+  recordingCitationsEvent,
+} from "@/app/lib/citationsRecorded";
 import type { AssistantEvent, Citation } from "@/app/components/shared/types";
 import type { AssistantTurnHandle } from "@/app/lib/assistantTurnTypes";
 import type {
@@ -301,7 +307,14 @@ export function createTurnEventSink(
         if (!("isStreaming" in event) || !event.isStreaming) return event;
         const rest = { ...event };
         delete (rest as { isStreaming?: boolean }).isStreaming;
-        return rest as AssistantEvent;
+        // Text that stopped streaming is simply finished. Every other step
+        // that never reported its result (a document change, a read or
+        // search, a connector or CourtListener call, a subagent) may or may
+        // not have happened: show it as stopped, not as done.
+        if (rest.type === "content" || rest.type === "reasoning") {
+          return rest as AssistantEvent;
+        }
+        return { ...rest, interrupted: true } as AssistantEvent;
       });
 
   // Stop may reach the record twice: from the control itself and from the
@@ -317,9 +330,10 @@ export function createTurnEventSink(
     publish();
   };
 
-  // A turn that failed outside an error frame (the request was refused, or
-  // the connection broke for good): nothing is still running, so no
-  // "Thinking…" line or in-progress step may keep spinning beside the error.
+  // A turn that failed: an error frame (which always ends the turn, including
+  // the one a deadline writes), a refused request, or a connection that broke
+  // for good. Nothing is still running, so no "Thinking…" line or in-progress
+  // step (an edit, a replication, …) may keep spinning beside the error.
   const endStreamingAfterFailure = () => {
     eventsRef.current = cancelStreamingEvents(eventsRef.current);
     publish();
@@ -405,6 +419,7 @@ export async function consumeAssistantTurnStream(
     finalizeStreamingContent,
     finalizeStreamingReasoning,
     clearStreamingPlaceholders,
+    endStreamingAfterFailure,
     pushThinkingPlaceholder,
     pushEvent,
     updateMatchingEvent,
@@ -417,6 +432,12 @@ export async function consumeAssistantTurnStream(
     onEventId: (id) => {
       const seq = Number.parseInt(id, 10);
       if (Number.isFinite(seq)) cursor.lastSeq = seq;
+    },
+    // The turn's stream always ends with [DONE]. Ending without it looks, to
+    // this loop, exactly like a finished reply, so it is the only place the
+    // cut-off can be seen at all.
+    onIncomplete: () => {
+      if (!signal?.aborted) reportGatewayLimit("stream-incomplete");
     },
   })) {
     const data = frame as Record<string, unknown>;
@@ -466,9 +487,7 @@ export async function consumeAssistantTurnStream(
           // signal the surface can turn into "go fix your key" rather than
           // leaving it as one more line of failed-response text.
           if (data.code === "invalid_api_key") hooks.onRejectedApiKey?.();
-          clearStreamingPlaceholders();
-          finalizeStreamingContent();
-          finalizeStreamingReasoning();
+          endStreamingAfterFailure();
           eventsRef.current = [
             ...eventsRef.current,
             {
@@ -973,6 +992,24 @@ export async function consumeAssistantTurnStream(
           continue;
         }
 
+        if (data.type === "citations_recorded_start") {
+          pushEvent(recordingCitationsEvent());
+          continue;
+        }
+
+        if (data.type === "citations_recorded") {
+          const recorded = citationsRecordedEvent(data);
+          // Completes the step its start frame opened, or adds it.
+          if (
+            !updateMatchingEvent(isRecordingCitations, () => recorded)
+          ) {
+            pushEvent(recorded);
+          }
+          // The model writes the answer next.
+          pushThinkingPlaceholder();
+          continue;
+        }
+
         if (data.type === "text_card") {
           if (
             typeof data.card_id === "string" &&
@@ -1224,12 +1261,6 @@ export async function consumeAssistantTurnStream(
           continue;
         }
 
-        if (data.type === "web_sources") {
-          const sources = parseWebSources(data.sources);
-          if (sources.length) pushEvent({ type: "web_sources", sources });
-          continue;
-        }
-
         if (data.type === "response_details") {
           const details = parseResponseDetails(data);
           if (details) pushEvent(details);
@@ -1472,18 +1503,13 @@ export async function consumeAssistantTurnStream(
         }
 
         if (data.type === "citations") {
-          const status =
-            data.status === "started" ||
-            data.status === "partial" ||
-            data.status === "final"
-              ? data.status
-              : "final";
           const incoming = (data.citations ?? []) as Citation[];
-          if (status === "started" || status === "partial") {
+          // Recorded with cite_sources before the answer: the markers link
+          // as they stream.
+          if (data.status === "partial") {
             updateLatestAssistantMessage((message) => ({
               ...message,
               citations: incoming,
-              citationStatus: status,
             }));
             continue;
           }
@@ -1497,7 +1523,6 @@ export async function consumeAssistantTurnStream(
           updateLatestAssistantMessage((message) => ({
             ...message,
             citations: incoming,
-            citationStatus: incoming.length ? "final" : undefined,
           }));
           continue;
         }

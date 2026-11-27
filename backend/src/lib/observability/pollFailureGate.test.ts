@@ -29,9 +29,9 @@ describe("pollFailureClass", () => {
   });
 
   it("keys code-less errors by a message hash, so different messages differ", () => {
-    const a = pollFailureClass(new TypeError("fetch failed"));
+    const a = pollFailureClass(new TypeError("x is not a function"));
     expect(a).toMatch(/^TypeError#[0-9a-f]{8}$/);
-    expect(pollFailureClass(new TypeError("fetch failed"))).toBe(a);
+    expect(pollFailureClass(new TypeError("x is not a function"))).toBe(a);
     expect(pollFailureClass(new TypeError("other"))).not.toBe(a);
   });
 
@@ -68,6 +68,72 @@ describe("createPollFailureGate", () => {
     expect(g.failure(coded("PGRST202")).report).toBe(false);
     expect(g.failure(coded("ECONNREFUSED")).report).toBe(true);
     expect(g.failure(coded("ECONNREFUSED")).report).toBe(false);
+  });
+
+  it("reports one outage once while it walks several connectivity codes", () => {
+    const { g } = gate({ t: 0 });
+    // One Postgres/gateway restart: the backend is terminated, PostgREST
+    // loses its pool, then the gateway refuses connections (supabase-js
+    // network shape: code '' with the errno only in `details`).
+    const restart = [
+      // What the gateway answers while its upstream is gone: a non-2xx with no
+      // PostgREST body, which supabase-js surfaces as an error with every
+      // field blank (seen live as the first failure of a database restart).
+      new Error("Dependency failure (non-Error value)", {
+        cause: { code: "", details: null, hint: null, message: "" },
+      }),
+      coded("57P01"),
+      coded("PGRST002"),
+      {
+        message: "TypeError: fetch failed",
+        details: "TypeError: fetch failed\n\nCaused by: Error: connect ECONNREFUSED private.host:8000 (ECONNREFUSED)\n    at private (node:net:1)",
+        hint: "",
+        code: "",
+      },
+      coded("ECONNREFUSED"),
+    ];
+    expect(restart.map((error) => g.failure(error).report)).toEqual([
+      true, false, false, false, false,
+    ]);
+  });
+
+  it("treats a gateway answer with no PostgREST body as the same outage", () => {
+    const { g } = gate({ t: 0 });
+    const wrap = (cause: object) =>
+      new Error("Dependency failure (non-Error value)", { cause });
+    const outage = [
+      // postgrest-js, given an empty 503 body: { message: "" }, no `code`.
+      wrap({ message: "" }),
+      // The same with the status attached by withResponseStatus.
+      wrap({ message: "", status: 503 }),
+      // The gateway's own HTML error page.
+      wrap({ message: "<html><h1>502 Bad Gateway</h1></html>", status: 502 }),
+      coded("ECONNREFUSED"),
+    ];
+    expect(outage.map((error) => g.failure(error).report)).toEqual([
+      true, false, false, false,
+    ]);
+  });
+
+  it("does not fold a coded error or a 4xx with no code into the outage", () => {
+    const wrap = (cause: object) =>
+      new Error("Dependency failure (non-Error value)", { cause });
+    expect(pollFailureClass(wrap({ message: "denied", status: 403 }))).not.toBe(
+      pollFailureClass(coded("ECONNREFUSED")),
+    );
+    expect(pollFailureClass(wrap({ code: "42501", message: "", status: 503 }))).toBe(
+      "Error:42501",
+    );
+    // A blank Error that wraps a coded cause is classified by the cause.
+    expect(pollFailureClass(new Error("", { cause: { code: "42P01", message: "x" } }))).toBe(
+      "Error:42P01",
+    );
+  });
+
+  it("still reports a connectivity failure that follows a schema failure", () => {
+    const { g } = gate({ t: 0 });
+    expect(g.failure(coded("PGRST202")).report).toBe(true);
+    expect(g.failure(coded("ECONNREFUSED")).report).toBe(true);
   });
 
   it("logs a compact still-failing line at most once per summary interval", () => {

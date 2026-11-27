@@ -39,23 +39,16 @@ const PROVIDER_SECTIONS = [
     },
 ] as const;
 
-const DEFAULT_INTRO = (
-    <SettingsDescription>
-        Your keys are used in your Personal workspace only. In an organization,
-        models run on the keys its admins set up.
-    </SettingsDescription>
-);
-
 /**
  * The caller's own model provider keys: the Saved and Available provider
  * grids, the provider dialog and its on/off switches. Rendered by Settings →
- * Bring Your Own Keys and by the last onboarding step, so a key saved in
+ * API Keys and by the last onboarding step, so a key saved in
  * either place goes through the same checks.
  */
 export function PersonalProviderKeys({
-    intro = DEFAULT_INTRO,
+    intro = null,
 }: {
-    /** The sentence above the grids; `null` when the page says it already. */
+    /** A sentence above the grids, where the page needs one. */
     intro?: ReactNode;
 }) {
     const { profile, loading, updateApiKeyEnabled } = useUserProfile();

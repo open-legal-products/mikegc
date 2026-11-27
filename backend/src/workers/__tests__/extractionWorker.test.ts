@@ -36,7 +36,7 @@ import {
 import { UnrecoverableError, type Job } from "bullmq";
 import { ExtractionLimitError } from "../../lib/extraction/limits";
 import type { ExtractionJobData } from "../../lib/queue/extractionQueue";
-import { AssistantStreamError } from "../../modules/chat/chat.service";
+import { toProviderStreamError } from "../../lib/llm/providerErrors";
 import { markErrorHandled } from "../../lib/observability/sentry";
 
 type Call = {
@@ -66,7 +66,6 @@ function makeDb(responses: Record<string, { select?: SelectResponse }>) {
         };
         const b: Record<string, unknown> = {
             select() {
-                state.op = "select";
                 return b;
             },
             update(payload: Record<string, unknown>) {
@@ -100,7 +99,7 @@ function makeDb(responses: Record<string, { select?: SelectResponse }>) {
                 const value =
                     state.op === "select"
                         ? resolveRead()
-                        : { data: null, error: null };
+                        : { data: [{ id: "cell-id" }], error: null };
                 return Promise.resolve(value).then(onF, onR);
             },
         };
@@ -698,6 +697,15 @@ describe("markExtractionFailed", () => {
 });
 
 describe("generation lease", () => {
+    // The producer claims a row's cells before it enqueues the row's job.
+    const CLAIMED_CELLS = COLUMNS.map((column) => ({
+        id: `c${column.index}`,
+        column_index: column.index,
+        status: "pending",
+        content: null,
+        generation_id: "gen-1",
+    }));
+
     it("stamps and guards cell writes with the job's generation id", async () => {
         const publish = vi.fn(async () => {});
         const db = makeDb({
@@ -712,22 +720,7 @@ describe("generation lease", () => {
                     // with "nothing left" so the lease gets released.
                     call.filters.generation_id
                         ? { data: [] }
-                        : {
-                              data: [
-                                  {
-                                      id: "c0",
-                                      column_index: 0,
-                                      status: "pending",
-                                      content: null,
-                                  },
-                                  {
-                                      id: "c1",
-                                      column_index: 1,
-                                      status: "pending",
-                                      content: null,
-                                  },
-                              ],
-                          },
+                        : { data: CLAIMED_CELLS },
             },
         });
         queryTabularAllColumns.mockImplementation(
@@ -807,7 +800,7 @@ describe("generation lease", () => {
                 select: (call) =>
                     call.filters.generation_id
                         ? { data: [{ id: "c1" }] } // still mid-flight
-                        : { data: [] },
+                        : { data: CLAIMED_CELLS },
             },
         });
         // Only column 0 comes back → the job throws for a BullMQ retry.
@@ -844,26 +837,23 @@ describe("generation lease", () => {
                 },
             },
             tabular_cells: {
-                select: { data: [] },
+                select: { data: CLAIMED_CELLS },
             },
         });
-        const refusal = new Error("provider refused the key");
-        if (handled) markErrorHandled(refusal);
-        queryTabularAllColumns.mockRejectedValue(
-            new AssistantStreamError(
-                "rejected",
-                "",
-                [
-                    {
-                        type: "error",
-                        message: "The Anthropic API key was rejected.",
-                        safe_to_display: true,
-                        code: "invalid_api_key",
-                    },
-                ],
-                { cause: refusal },
-            ),
+        // The error the model call really throws: the provider layer's
+        // classification of a 401, not a chat-engine AssistantStreamError.
+        const { APICallError } = await import("ai");
+        const refusal = toProviderStreamError(
+            new APICallError({
+                message: "invalid x-api-key",
+                url: "https://api.example.test/v1/messages",
+                requestBodyValues: {},
+                statusCode: 401,
+            }),
+            { label: "Anthropic", modelId: "claude-test", keySource: "user" },
         );
+        if (handled) markErrorHandled(refusal);
+        queryTabularAllColumns.mockRejectedValue(refusal);
 
         await expect(
             runExtractionJob(
@@ -875,7 +865,7 @@ describe("generation lease", () => {
         expect(publish).toHaveBeenCalledWith("rev-1", {
             ...(handled ? { reporting_owner: "backend" } : {}),
             type: "error",
-            message: "The Anthropic API key was rejected.",
+            message: refusal.message,
             safe_to_display: true,
             code: "invalid_api_key",
         });

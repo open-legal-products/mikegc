@@ -8,7 +8,7 @@ import type { Db } from "../../../lib/supabase";
 import { listWorkspaceWorkflows } from "../../../lib/workflowWorkspace";
 import { teamOrgIdOf } from "../../../lib/personalOrgs";
 import type { OrgContext } from "../../../lib/orgProfile";
-import { ensureDocAccess } from "../../../lib/access";
+import { ensureDocAccess, sharedDocAccessKey } from "../../../lib/access";
 import { attachActiveVersionPaths } from "../../../lib/documentVersions";
 import { selectAllByKey, selectInBatches } from "../../../lib/batchedQuery";
 import {
@@ -23,16 +23,21 @@ import {
   MAX_ASK_INPUT_TEXT_LENGTH,
   devLog,
 } from "./types";
-import { buildSystemPrompt } from "./prompts";
+import {
+  buildSystemPrompt,
+  EARLIER_TURNS_PROMPT,
+  PRIOR_TOOL_ACTIVITY_HEADER,
+  PRIOR_TOOL_ACTIVITY_RECORD_HEADER,
+} from "./prompts";
 import {
   MESSAGE_TIME_PROMPT,
   answerTimeStamp,
   userMessageTimeStamp,
 } from "../../../lib/userTime";
 import { ACTIVE_WORD_DOCUMENT_LIVE_FILENAME } from "./wordPrompt";
-import { parseCitations, createCitation } from "./citations";
 import type { AssistantEvent } from "@mike/contracts";
-import { catalogWorkflowId, ensureDefaultWorkflows } from "../../../lib/workflowCatalog";
+import { queryFailureCause } from "../../../lib/batchedQuery";
+import { activeAssistantPrompts, catalogWorkflowId, ensureDefaultWorkflows } from "../../../lib/workflowCatalog";
 
 // ---------------------------------------------------------------------------
 // Prompt-injection spotlighting helpers
@@ -413,6 +418,58 @@ export function withDelegationEvents<T extends { type?: unknown; events?: unknow
   );
 }
 
+/** At most this many citations of the previous answer are replayed. */
+const MAX_REPLAYED_CITATIONS = 40;
+/** A replayed quote is cut at this length. */
+const MAX_REPLAYED_QUOTE_CHARS = 600;
+
+/**
+ * What the previous answer's [N] markers cite, rebuilt from what was stored,
+ * as cite_sources lines of the tool-activity record. Without them the
+ * markers point at nothing, and a model then reads its own earlier answer as
+ * unsupported and withdraws it. They go in the record, not in the answer:
+ * a model copies what it sees in its own answers, and must not learn to
+ * write citations into one. Only document citations whose document is still
+ * in this turn's index are replayed, under the handle that document has now.
+ */
+export function priorCitationLines(
+  stored: unknown,
+  slugByDocumentId: ReadonlyMap<string, string>,
+  untrustedRef: (value: unknown) => string,
+): string[] {
+  if (!Array.isArray(stored)) return [];
+  const lines: string[] = [];
+  for (const citation of stored as Record<string, unknown>[]) {
+    if (lines.length >= MAX_REPLAYED_CITATIONS) break;
+    if (!citation || typeof citation !== "object") continue;
+    if (typeof citation.ref !== "number") continue;
+    const slug =
+      typeof citation.document_id === "string"
+        ? slugByDocumentId.get(citation.document_id)
+        : undefined;
+    if (!slug || !Array.isArray(citation.quotes)) continue;
+    const quotes = (citation.quotes as Record<string, unknown>[]).flatMap(
+      (quote) => {
+        if (!quote || typeof quote.quote !== "string") return [];
+        const text = untrustedRef(quote.quote.slice(0, MAX_REPLAYED_QUOTE_CHARS));
+        if (typeof quote.sheet === "string" && typeof quote.cell === "string") {
+          return [
+            `sheet ${untrustedRef(quote.sheet)} cell ${untrustedRef(quote.cell)}: ${text}`,
+          ];
+        }
+        // Pages were normalized to a number or "N-M" when cited.
+        const page = String(quote.page ?? "");
+        return /^\d+(?:\s*-\s*\d+)?$/.test(page)
+          ? [`page ${page}: ${text}`]
+          : [text];
+      },
+    );
+    if (quotes.length === 0) continue;
+    lines.push(`- cite_sources → [${citation.ref}] ${slug}, ${quotes.join("; ")}`);
+  }
+  return lines;
+}
+
 export async function enrichWithPriorEvents(
   messages: ChatMessage[],
   chatId: string | null | undefined,
@@ -422,6 +479,13 @@ export async function enrichWithPriorEvents(
   messageTable = "chat_messages",
   /** When set, the user's answers are stamped with when they responded. */
   timeZone?: string,
+  /**
+   * For a model that disowns the record when it sits in its own message (see
+   * disownsReplayedToolRecord): the record opens the user's next message
+   * instead, and the answer gets its citations back. Pass the same value to
+   * buildMessages, which explains the record in the system prompt.
+   */
+  recordForUser = false,
 ): Promise<ChatMessage[]> {
   if (!chatId) return messages;
   // Skip streaming reservations: routeStreaming inserts the assistant row
@@ -430,14 +494,16 @@ export async function enrichWithPriorEvents(
   // otherwise shadow the previous turn's real events here.
   const { data: rows } = await db
     .from(messageTable)
-    .select("content, created_at")
+    .select("content, citations, created_at")
     .eq("chat_id", chatId)
     .eq("role", "assistant")
     .not("content", "is", null)
     .order("created_at", { ascending: false })
     .limit(1);
 
-  const lastRow = rows?.[0] as { content?: unknown } | undefined;
+  const lastRow = rows?.[0] as
+    | { content?: unknown; citations?: unknown }
+    | undefined;
   const content = lastRow?.content;
   if (!Array.isArray(content)) return messages;
 
@@ -501,10 +567,16 @@ export async function enrichWithPriorEvents(
         : `- ran ${label}`,
     ];
   };
+  // Documents a run_script script read. They are not replayed as the model's
+  // own reads: it was returned whatever the script returned, which may or may
+  // not have been their text. One line says the script ran and what it called.
+  let scriptReads = 0;
   for (const ev of content as Record<string, unknown>[]) {
     const docLines = documentLines(ev);
     if (docLines) {
       lines.push(...docLines);
+    } else if (ev?.type === "doc_read" && ev.by_script === true) {
+      scriptReads += 1;
     } else if (ev?.type === "doc_read") {
       // Live Word reads have no doc_id and belong to a different tool;
       // labeling them read_document would name a handle that doesn't exist.
@@ -523,6 +595,7 @@ export async function enrichWithPriorEvents(
     } else if (ev?.type === "web_read" && !ev.error) {
       lines.push(`- read_webpage → ${untrustedRef(ev.url)}`);
     } else if (ev?.type === "web_sources" && Array.isArray(ev.sources)) {
+      // No longer produced; answers saved before then still carry it.
       for (const source of ev.sources as { url?: unknown }[]) {
         lines.push(`- cited web page → ${untrustedRef(source.url)}`);
       }
@@ -631,10 +704,20 @@ export async function enrichWithPriorEvents(
       }
     }
   }
+  if (scriptReads > 0) {
+    lines.push(
+      `- run_script → your script ran and called read_document on ${scriptReads} document${scriptReads === 1 ? "" : "s"}; what the script returned came back to you`,
+    );
+  }
   for (const id of approvedIds) {
     if (approvalOutcomes.has(id)) continue;
     lines.push(
       `- approved ${approvalLabels.get(id) ?? "action"} has no recorded outcome. Tell the user to check the connected service before trying again; do not retry it yourself.`,
+    );
+  }
+  if (recordForUser) {
+    lines.push(
+      ...priorCitationLines(lastRow?.citations, slugByDocumentId, untrustedRef),
     );
   }
   if (rejectedApprovalSeen) {
@@ -648,10 +731,7 @@ export async function enrichWithPriorEvents(
     );
   }
   if (lines.length === 0) return messages;
-  const summary = `\n\n[Tool activity in your previous turn]\n${lines.join("\n")}`;
 
-  // Find the index of the last assistant message and attach the
-  // summary there only.
   let lastAssistantIdx = -1;
   for (let i = messages.length - 1; i >= 0; i--) {
     if (messages[i].role === "assistant") {
@@ -662,10 +742,39 @@ export async function enrichWithPriorEvents(
   if (lastAssistantIdx < 0) return messages;
   const enriched = messages.slice();
   const target = enriched[lastAssistantIdx];
+  if (!recordForUser) {
+    // Attach the summary to the last assistant message only.
+    enriched[lastAssistantIdx] = {
+      ...target,
+      content: `${target.content ?? ""}\n\n${PRIOR_TOOL_ACTIVITY_HEADER}\n${lines.join("\n")}`,
+    };
+    return enriched;
+  }
+
+  const record =
+    lines.length > 0
+      ? `${PRIOR_TOOL_ACTIVITY_RECORD_HEADER}\n${lines.join("\n")}`
+      : "";
+  // The record goes at the start of the user's next message, not on the
+  // answer: this model takes anything inside its own message for words it
+  // wrote, and disowns a record of tool calls it cannot see as invented.
+  const nextUserIdx = enriched.findIndex(
+    (message, index) => index > lastAssistantIdx && message.role === "user",
+  );
   enriched[lastAssistantIdx] = {
     ...target,
-    content: (target.content ?? "") + summary,
+    content:
+      (target.content ?? "") +
+      // Nothing follows the answer (a continuation): keep the record with it.
+      (record && nextUserIdx < 0 ? `\n\n${record}` : ""),
   };
+  if (record && nextUserIdx >= 0) {
+    const next = enriched[nextUserIdx];
+    enriched[nextUserIdx] = {
+      ...next,
+      content: `${record}\n\n${next.content ?? ""}`,
+    };
+  }
   return enriched;
 }
 
@@ -752,6 +861,8 @@ export function buildMessages(
   nonce?: string,
   systemPromptMode: "append" | "replace" = "append",
   time?: MessageTimeContext,
+  /** The value enrichWithPriorEvents was given as `recordForUser`. */
+  recordForUser = false,
 ) {
   const formatted: unknown[] = [];
   let systemContent =
@@ -759,6 +870,9 @@ export function buildMessages(
       ? (systemPromptExtra?.trim() ?? "")
       : buildSystemPrompt(includeResearchTools);
 
+  if (recordForUser && systemContent) {
+    systemContent += `\n\n${EARLIER_TURNS_PROMPT}`;
+  }
   if (systemPromptMode === "append" && systemPromptExtra) {
     systemContent += `\n\n${systemPromptExtra.trim()}`;
   }
@@ -912,15 +1026,6 @@ export async function loadUserMessageSentTimes(
   return times;
 }
 
-export function extractCitations(
-  fullText: string,
-  docIndex: DocIndex,
-  docStore?: DocStore,
-): unknown[] {
-  return parseCitations(fullText).map((c) =>
-    createCitation(c, docIndex, undefined, docStore),
-  );
-}
 
 export function stripTransientAssistantEvents(events: AssistantEvent[]) {
   return events.filter((event) => event.type !== "case_opinions");
@@ -932,6 +1037,7 @@ export function stripTransientAssistantEvents(events: AssistantEvent[]) {
 const COMPLETES_TEXTLESS_TURN = {
   text_card: true,
   intake_action: true,
+  citations_recorded: false,
   reasoning: false,
   ask_inputs: true,
   ask_inputs_response: false,
@@ -1324,41 +1430,37 @@ export async function appendAskInputsResponseToAssistantMessage(
         : "failed";
 }
 
+/** The stored outcome of an explicit Stop or a stream deadline. */
+export function buildStoppedAssistantEvent(
+  stopReason?: StreamStopReason | null,
+): AssistantEvent {
+  return !stopReason || stopReason === "user"
+    ? { type: "content", text: "Cancelled by user." }
+    : {
+        type: "error",
+        message: deadlineMessage(stopReason),
+        safe_to_display: true,
+      };
+}
+
 export function appendCancelledAssistantEvent(events: AssistantEvent[]) {
-  return [...events, { type: "content" as const, text: "Cancelled by user." }];
+  return [...events, buildStoppedAssistantEvent("user")];
 }
 
-export function buildCancelledAssistantMessage(args: {
-  fullText: string;
+/**
+ * Preserve partial output while distinguishing a deadline from an explicit
+ * Stop. The citations are the ones recorded before the turn stopped.
+ */
+export function buildStoppedAssistantMessage(args: {
   events: AssistantEvent[];
-  buildCitations: (fullText: string, events: AssistantEvent[]) => unknown[];
+  citations: unknown[];
+  stopReason?: StreamStopReason | null;
 }) {
-  const events = appendCancelledAssistantEvent(
-    stripTransientAssistantEvents(args.events),
-  );
-  return {
-    events,
-    citations: args.buildCitations(args.fullText, events),
-  };
-}
-
-/** Preserve partial output while distinguishing a deadline from an explicit Stop. */
-export function buildStoppedAssistantMessage(
-  args: Parameters<typeof buildCancelledAssistantMessage>[0] & {
-    stopReason?: StreamStopReason | null;
-  },
-) {
-  if (!args.stopReason || args.stopReason === "user")
-    return buildCancelledAssistantMessage(args);
   const events: AssistantEvent[] = [
     ...stripTransientAssistantEvents(args.events),
-    {
-      type: "error",
-      message: deadlineMessage(args.stopReason),
-      safe_to_display: true,
-    },
+    buildStoppedAssistantEvent(args.stopReason),
   ];
-  return { events, citations: args.buildCitations(args.fullText, events) };
+  return { events, citations: args.citations };
 }
 
 // ---------------------------------------------------------------------------
@@ -1467,25 +1569,11 @@ export async function buildDocContext(
     // costs nothing (it is a `user_id === caller` comparison in memory).
     //
     // A document filed on its own under an organization has no container
-    // either. The caller's own such files share one verdict (their
-    // membership), so they share a key. Anyone else's file is reached only
-    // through a grant on that one document (a share, or an intake request
-    // it is attached to), so it is asked about individually: keyed by its
-    // uploader, a readable file would open its siblings, and an intake
-    // attachment (no uploader) would open every other detached file.
-    const containerKey = (doc: {
-      user_id: string | null;
-      project_id: string | null;
-      workflow_id?: string | null;
-      org_id?: string | null;
-    }) =>
-      doc.project_id
-        ? `project:${doc.project_id}`
-        : doc.workflow_id
-          ? `workflow:${doc.workflow_id}`
-          : doc.org_id && doc.user_id && doc.user_id === userId
-            ? `org:${doc.org_id}:${userId}`
-            : null;
+    // either. The caller's own such files share one membership verdict;
+    // anyone else's is reached only through that file's own private-content
+    // grant, so it is asked about individually (sharedDocAccessKey).
+    const containerKey = (doc: (typeof candidates)[number]) =>
+      sharedDocAccessKey(doc, userId);
 
     const verdictByContainer = new Map<string, boolean>();
     for (const doc of candidates) {
@@ -1494,8 +1582,7 @@ export async function buildDocContext(
       // The representative carries the container this verdict is about. In
       // a project or a workflow its `user_id` only ever decides the ROLE,
       // never `ok`, so reusing one document's answer for its siblings cannot
-      // widen access; on its own in an organization only the caller's own
-      // files share a key.
+      // widen access.
       const verdict = await ensureDocAccess(doc, userId, userEmail ?? null, db);
       verdictByContainer.set(key, verdict.ok);
     }
@@ -1678,27 +1765,8 @@ export async function buildWorkflowStore(
   // deleting them, so the full history — every prompt_md ever shipped —
   // grows with each catalog sync. read_workflow resolves a retired id on
   // demand (findCatalogWorkflow), the rare case that needs one.
-  const { data: catalogWorkflows, error: catalogError } = await db
-    .from("mike_workflows")
-    .select("workflow_key, title, prompt_md, updated_at")
-    .eq("type", "assistant")
-    .eq("active", true)
-    .order("updated_at", { ascending: false });
-  if (catalogError) {
-    const failure = new AppError(
-      "chat.context_failed",
-      "Workflow catalog lookup failed",
-      { cause: catalogError },
-    );
-    reportError(failure, {
-      level: "warning",
-      tags: { component: "chat-stream" },
-    });
-    console.error(
-      "[buildWorkflowStore] workflow catalog lookup failed",
-      failure,
-    );
-  } else {
+  try {
+    const catalogWorkflows = await activeAssistantPrompts(db);
     for (const workflow of catalogWorkflows ?? []) {
       const id = catalogWorkflowId(workflow.workflow_key);
       if (store.has(id) || !workflow.prompt_md) continue;
@@ -1708,6 +1776,20 @@ export async function buildWorkflowStore(
         listed: false,
       });
     }
+  } catch (catalogError) {
+    const failure = new AppError(
+      "chat.context_failed",
+      "Workflow catalog lookup failed",
+      { cause: queryFailureCause(catalogError) },
+    );
+    reportError(failure, {
+      level: "warning",
+      tags: { component: "chat-stream" },
+    });
+    console.error(
+      "[buildWorkflowStore] workflow catalog lookup failed",
+      failure,
+    );
   }
 
   // Only workflows currently authorized in the conversation's workspace.

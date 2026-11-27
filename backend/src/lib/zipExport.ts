@@ -1,3 +1,5 @@
+import { normalizeDownloadFilename } from "./storage";
+
 export const MAX_ZIP_EXPORT_DOCUMENTS = 200;
 export const MAX_ZIP_EXPORT_BYTES = 2 * 1024 * 1024 * 1024;
 
@@ -14,48 +16,38 @@ export function zipExportLimitDetail(
   return null;
 }
 
-/**
- * A document's filename as one archive entry. A filename is whatever a
- * project member typed, and an archive reads "/" as a folder and ".." as
- * the folder above, so "../../x.pdf" would be written outside the folder the
- * archive is unpacked into by a tool that follows it.
- */
-function archiveEntryName(filename: string): string {
-  const name = filename.replace(/[/\\\u0000-\u001f]/g, "_").trim();
-  return name === "" || name === "." || name === ".." ? "Untitled" : name;
-}
-
-/**
- * The form two names are compared in. macOS and Windows unpack
- * "Contract.pdf" and "contract.pdf" to one file, as they do one name in two
- * Unicode forms, and Windows drops trailing dots and spaces; the second file
- * would replace the first there.
- */
+// Default macOS (APFS) and Windows (NTFS) disks treat "Agreement.pdf" and
+// "agreement.pdf" as one file, and APFS also equates the composed and
+// decomposed spellings of "Résumé.pdf", so extracting both keeps only one.
+// `usedNames` holds these folded keys, while the entry keeps the document's
+// own spelling. NFC, not NFKC: neither disk equates compatibility forms such
+// as "ﬁ" and "fi".
+// Windows also drops trailing dots and spaces, so "Contract." and
+// "Contract" unpack to one file there.
 function archiveNameKey(name: string): string {
   return name.normalize("NFC").toLowerCase().replace(/[. ]+$/, "");
 }
 
-/**
- * A name for a document that is one entry of the archive (never a path) and
- * that no earlier entry has.
- */
 export function uniqueArchiveFilename(
-  filename: string,
+  requestedName: string,
   usedNames: Set<string>,
 ): string {
-  const requestedName = archiveEntryName(filename);
-  const taken = (name: string) => usedNames.has(archiveNameKey(name));
-  if (!taken(requestedName)) {
-    usedNames.add(archiveNameKey(requestedName));
-    return requestedName;
+  // Callers supply document leaf names. Match individual downloads before
+  // reserving names, so renamed separators cannot become ZIP path aliases.
+  // JSZip also resolves bare dot segments to the empty path when reopening.
+  const filename = normalizeDownloadFilename(requestedName).replace(/^\.{1,2}$/, "_");
+  const key = archiveNameKey(filename);
+  if (!usedNames.has(key)) {
+    usedNames.add(key);
+    return filename;
   }
 
-  const dot = requestedName.lastIndexOf(".");
-  const stem = dot > 0 ? requestedName.slice(0, dot) : requestedName;
-  const extension = dot > 0 ? requestedName.slice(dot) : "";
+  const dot = filename.lastIndexOf(".");
+  const stem = dot > 0 ? filename.slice(0, dot) : filename;
+  const extension = dot > 0 ? filename.slice(dot) : "";
   let copyNumber = 2;
   let candidate = `${stem} (${copyNumber})${extension}`;
-  while (taken(candidate)) {
+  while (usedNames.has(archiveNameKey(candidate))) {
     copyNumber += 1;
     candidate = `${stem} (${copyNumber})${extension}`;
   }

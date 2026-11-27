@@ -118,13 +118,19 @@ export type PlaybookReviewRequest = {
    */
   keysOrgId?: string;
   db?: Db;
+  /**
+   * The assistant turn that asked for the review, when one did. Its Stop or
+   * deadline ends the model call and leaves the document unedited. Reviews
+   * queued from the Playbooks page have no turn and never see one.
+   */
+  signal?: AbortSignal;
 };
 /**
  * What a review needs that its run row does not record. The rules, model,
  * mode, scope, and document reference are all on the row; the text reviewed
  * and the document version the edits are made against are fixed here when the
- * review is requested, so a re-run reviews the same text and its edits are
- * refused, not doubled, if an earlier run already revised the document.
+ * review is requested. Publication checks the pin under a document lock; a
+ * completed run is replayed from its saved result without applying edits again.
  */
 export type PlaybookReviewInput = {
   runId: string;

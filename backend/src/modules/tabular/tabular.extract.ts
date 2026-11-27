@@ -132,7 +132,7 @@ export async function queryTabularAllColumns(
     apiKeys?: UserApiKeys,
     abortSignal?: AbortSignal,
     onActivity?: () => void,
-    reportFailure = true,
+    reportFailure: boolean | ((error: unknown) => boolean) = true,
 ): Promise<void> {
     const columnsDesc = columns
         .map((col) => {
@@ -156,7 +156,8 @@ Rules:
 - The "summary" and "reasoning" string VALUES may use markdown (bullets, bold, italics, etc.) — escape newlines as \\n inside the JSON string. This markdown is rendered in the UI.
 - Output ONLY the JSON lines themselves. Do NOT wrap the response in markdown code fences (e.g. \`\`\`json), and do not add any preamble or summary.`;
 
-    const USER = `Document: ${filename}\n\n${documentText}\n\n---\nColumns to extract:\n${columnsDesc}`;
+    const sourcePrefix = `Document: ${filename}\n\n${documentText}`;
+    const USER = `${sourcePrefix}\n\n---\nColumns to extract:\n${columnsDesc}`;
 
     let contentBuffer = "";
     const pending: Promise<unknown>[] = [];
@@ -198,6 +199,7 @@ Rules:
             model,
             systemPrompt: SYSTEM,
             messages: [{ role: "user", content: USER }],
+            sourcePrefixLength: sourcePrefix.length,
             tools: [],
             apiKeys,
             abortSignal,
@@ -219,9 +221,12 @@ Rules:
         });
     } catch (err) {
         streamError = err;
-        if (!abortSignal?.aborted && reportFailure) {
-            // Inline callers report here; queue callers let the runner own
-            // retries and severity. Reported once, here, under the kind that names the failure, with
+        if (
+            !abortSignal?.aborted &&
+            (typeof reportFailure === "function" ? reportFailure(err) : reportFailure)
+        ) {
+            // Inline callers report here (a run says whether the failure is
+            // new to it); queue callers let the runner own retries and severity. Reported once, here, under the kind that names the failure, with
             // the provider's error as the cause (provider_error and
             // dependency_status come from it). The raw error is still what is
             // rethrown: the row orchestrator classifies it for the grid, and

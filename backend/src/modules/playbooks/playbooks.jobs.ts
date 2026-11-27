@@ -50,6 +50,9 @@ import {
   recordPlaybookRunAudit,
 } from "./playbooks.audit";
 
+import { DocumentReviewRetryableError } from "../documents/documents.service";
+import { log } from "../../lib/log";
+
 export const PLAYBOOK_REVIEW_JOB = "playbook.review";
 export const PLAYBOOK_IMPORT_JOB = "playbook.import";
 
@@ -125,7 +128,13 @@ async function untilRecorded(
   try {
     await work();
   } catch (error) {
-    const row = await loadRow(db, table, id);
+    let row: Record<string, unknown> | null;
+    try { row = await loadRow(db, table, id); }
+    catch (readError) {
+      // Preserve the retry marker through a failed reconciliation read,
+      // especially for the inline dispatcher below.
+      throw error instanceof DocumentReviewRetryableError ? error : readError;
+    }
     if (!row || row.status !== "running") return;
     throw error;
   }
@@ -203,7 +212,7 @@ async function clearStagedImport(payload: PlaybookImportJobPayload) {
       jobKind: "playbook.import",
       ids: { import_id: payload.attemptId },
     });
-    console.warn("[playbooks] staged upload cleanup failed", {
+    log.warn("playbooks", "staged upload cleanup failed", {
       storageKey: payload.storageKey,
       error: safeError(error),
     });
@@ -312,10 +321,14 @@ async function dispatch(
             typeof payload.attemptId === "string" ? payload.attemptId : undefined,
         },
       });
-      console.warn("[playbooks] inline job failed", {
+      log.warn("playbooks", "inline job failed", {
         kind,
         error: safeError(error),
       });
+      // An inline transport fault has no automatic retry, but its RPC may
+      // still commit. Leave the run unresolved rather than racing it with
+      // a terminal failure. The history reader can report interrupted work.
+      if (error instanceof DocumentReviewRetryableError) return;
       await onFailure(db, job).catch((hookError: unknown) =>
         reportFailureHookCrash(hookError, kind),
       );
@@ -354,7 +367,7 @@ function reportFailureHookCrash(hookError: unknown, kind: string): void {
       tags: { component: "playbooks", stage: "failure-hook", job_kind: kind },
     },
   );
-  console.warn("[playbooks] job failure hook crashed", {
+  log.warn("playbooks", "job failure hook crashed", {
     kind,
     error: safeError(hookError),
   });

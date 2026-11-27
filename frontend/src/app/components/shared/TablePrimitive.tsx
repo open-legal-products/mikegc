@@ -92,7 +92,7 @@ function canPortalToDocument() {
     return typeof document !== "undefined";
 }
 
-export const TABLE_PRIMARY_CELL_WIDTH_CLASS =
+const TABLE_PRIMARY_CELL_WIDTH_CLASS =
     "w-[248px] sm:w-[292px] md:w-[332px] shrink-0";
 export const TABLE_CHECKBOX_CLASS =
     "mr-3 h-2.5 w-2.5 shrink-0 rounded border-gray-200 cursor-pointer accent-black";
@@ -294,7 +294,7 @@ export function TableScrollArea({
     return (
         <div
             className={cn(
-                "mx-3 mb-2 min-h-0 min-w-0 flex-1 md:mx-6.5 md:mb-3",
+                "mx-3 mb-2 min-h-0 min-w-0 flex-1 md:mx-6 md:mb-3",
                 preserveGridBorder && "rounded-2xl",
                 className,
             )}

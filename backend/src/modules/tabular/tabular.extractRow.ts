@@ -26,12 +26,14 @@ import type { TextExtractionCache } from "../../lib/textExtractionCache";
 // lease itself.
 
 import { ExtractionParseError } from "../../lib/extraction/failure";
+import { AppError } from "../../lib/appError";
 import { reportError } from "../../lib/observability/sentry";
 import { ExtractionBusyError, ExtractionLimitError } from "../../lib/extraction/limits";
 import { type UserApiKeys } from "../../lib/llm";
 import { queryTabularAllColumns } from "./tabular.extract";
 import { loadRowDocumentText, type ReviewRow } from "./tabular.rows";
 import { type CellResult, type Column, type Db } from "./tabular.shared";
+import { log, tpl } from "../../lib/log";
 
 /**
  * Where per-cell transitions are announced. Sync uses this to write SSE frames;
@@ -116,8 +118,11 @@ export async function extractRowColumns(args: {
     generationId?: string | null;
     /** Stops the run (client disconnect, or lease lost). */
     abortSignal?: AbortSignal;
-    /** Queue runners report failed attempts; inline streams report here. */
-    reportFailure?: boolean;
+    /**
+     * Queue runners report failed attempts; inline streams report here, and
+     * a run passes a gate that admits each kind of model failure once.
+     */
+    reportFailure?: boolean | ((error: unknown) => boolean);
     textCache?: TextExtractionCache;
 }): Promise<ExtractRowResult> {
     const {
@@ -222,7 +227,6 @@ export async function extractRowColumns(args: {
             markdown,
             processed,
             async (columnIndex, result) => {
-                received.add(columnIndex);
                 const query = db
                     .from("tabular_cells")
                     .update({
@@ -233,9 +237,19 @@ export async function extractRowColumns(args: {
                     .eq("review_id", reviewId)
                     .eq("row_id", row.id)
                     .eq("column_index", columnIndex);
-                await (generationId
-                    ? query.eq("generation_id", generationId)
+                const { data, error: writeError } = await (generationId
+                    ? query.eq("generation_id", generationId).select("id")
                     : query);
+                if (writeError) {
+                    // Returned, not thrown: the parser discards a throw from
+                    // this callback. The column stays missing for the caller.
+                    error = new AppError("tabular.generation_failed", "Could not save the extracted cell", { cause: writeError });
+                    return;
+                }
+                received.add(columnIndex);
+                // A late worker whose claim was revoked must not publish
+                // a result that was never written, even if its model finished.
+                if (generationId && !data?.length) return;
                 await sink.done(row.id, columnIndex, result);
             },
             apiKeys,
@@ -250,8 +264,7 @@ export async function extractRowColumns(args: {
         // Not console.error: either the query already reported this failure
         // or the queue runner will report the failed attempt.
         if (!abortSignal?.aborted) {
-            console.warn(
-                `[tabular/extract-row] queryTabularAllColumns error row=${row.id}`,
+            log.warn(tpl`[tabular/extract-row] queryTabularAllColumns error row=${row.id}`,
                 err,
             );
         }
